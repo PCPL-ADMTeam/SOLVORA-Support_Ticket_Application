@@ -195,12 +195,11 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Department-wise ticket numbering (e.g. "HW-0001"). ticketSequence is
-  // only ever advanced via an atomic `{ increment: 1 }` update inside the
-  // ticket-creation transaction (see ticket.service.js#createTicket) —
-  // never read-then-written — so concurrent creations for the same
-  // department can never collide. Not exposed as directly editable in the
-  // Admin UI to prevent an accidental reset/duplicate-ID situation.
+  // Department identity fields only — NOT used to generate Ticket.ticketNumber
+  // (that's now a global numeric sequence derived from Ticket.seq; see
+  // ticket.service.js#buildTicketNumber). Kept for department-identity
+  // display (e.g. DepartmentDetailsPage's "Prefix" chip) and left untouched
+  // by ticket creation. Not exposed as directly editable in the Admin UI.
   ticketPrefix   String @unique
   ticketSequence Int    @default(0)
 
@@ -214,9 +213,12 @@ model Department {
   @@map("departments")
 }
 
-// Predefined per-department issue list shown in the ticket form's searchable
-// Issue dropdown. The row with isOther=true powers the "Others" -> custom
-// text fallback (see Ticket.customIssueText).
+// Legacy per-department issue list — no longer used by ticket creation
+// (replaced by the free-text Problem Summary field; see
+// ticket.service.js#createTicket and Ticket.problemSummary below). Left in
+// place, dormant, purely for historical/backward-compatibility reasons
+// (mirrors how Team/TeamMember were kept after the four-role migration) —
+// never read or written by any current ticket flow.
 model Issue {
   id           String   @id @default(cuid())
   departmentId String
@@ -227,7 +229,6 @@ model Issue {
   updatedAt    DateTime @updatedAt
 
   department Department @relation(fields: [departmentId], references: [id], onDelete: Cascade)
-  tickets    Ticket[]
 
   @@unique([name, departmentId])
   @@index([departmentId])
@@ -297,11 +298,19 @@ enum TicketStatus {
 
 model Ticket {
   id           String       @id @default(cuid())
-  // Human-facing sequence powering ticketNumber, e.g. seq=1 -> "TKT-00001".
+  // Human-facing, globally unique, purely numeric sequence powering
+  // ticketNumber, e.g. seq=27001 -> ticketNumber "2627001" (see
+  // ticket.service.js#buildTicketNumber). Postgres-native autoincrement —
+  // inherently collision-safe, no manual locking/increment needed.
   seq          Int          @default(autoincrement())
   ticketNumber String       @unique
   title        String
-  description  String       @db.Text
+  // Free-text "Problem Summary" (<=50 words, enforced in
+  // ticket.validator.js / ticket.service.js) — replaces the old predefined
+  // Issue dropdown + rich-text Description. Column kept (renamed from the
+  // former `description`) so existing tickets' content is preserved rather
+  // than dropped.
+  problemSummary String     @db.Text
   status       TicketStatus @default(OPEN)
 
   categoryId String?
@@ -313,8 +322,6 @@ model Ticket {
   fromDepartmentId String?
   toDepartmentId   String?
   managerId        String?
-  issueId          String?
-  customIssueText  String? @db.Text
 
   dueAt          DateTime? // resolution deadline derived from SLA
   firstResponseAt DateTime?
@@ -344,7 +351,6 @@ model Ticket {
   fromDepartment Department? @relation("TicketFromDepartment", fields: [fromDepartmentId], references: [id])
   toDepartment   Department? @relation("TicketToDepartment", fields: [toDepartmentId], references: [id])
   manager        User?       @relation("TicketManager", fields: [managerId], references: [id])
-  issue          Issue?      @relation(fields: [issueId], references: [id])
 
   comments    TicketComment[]
   attachments TicketAttachment[]
@@ -364,7 +370,6 @@ model Ticket {
   @@index([createdAt])
   @@index([toDepartmentId])
   @@index([managerId])
-  @@index([issueId])
   @@map("tickets")
 }
 

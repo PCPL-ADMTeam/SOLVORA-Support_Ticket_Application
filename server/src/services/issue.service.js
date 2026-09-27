@@ -38,9 +38,10 @@ async function deleteIssue(actorId, id) {
     throw new ApiError(400, 'The "Others" fallback issue cannot be deleted — every department must always have one.');
   }
 
-  const inUse = await prisma.ticket.count({ where: { issueId: id } });
-  if (inUse > 0) throw new ApiError(409, "Cannot delete an issue that has tickets. Deactivate it instead.");
-
+  // Tickets no longer reference Issue at all (replaced by the free-text
+  // Problem Summary field — see ticket.service.js#createTicket), so the
+  // old "is this issue still in use by a ticket" guard no longer applies;
+  // this model is now dormant/historical only (see schema.prisma).
   await prisma.issue.delete({ where: { id } });
   await recordAudit({ userId: actorId, action: "ISSUE_DELETED", entityType: "Issue", entityId: id });
 }

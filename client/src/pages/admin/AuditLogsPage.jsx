@@ -25,6 +25,7 @@ import { auditLogsApi } from "../../api/auditLogs";
 import LoadingState from "../../components/common/LoadingState";
 import PaginationBar from "../../components/common/PaginationBar";
 import EmptyState from "../../components/common/EmptyState";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 // Defense-in-depth only — every existing recordAudit() call site already
 // passes hand-picked plain fields (name, email, level, color, etc.), never
@@ -152,7 +153,7 @@ export default function AuditLogsPage() {
           returned for the list (oldValues/newValues/ipAddress/user are all
           already present, just not rendered in the table), so no extra API
           call or backend change is needed to show the full entry. */}
-      <Dialog open={Boolean(selectedLog)} onClose={() => setSelectedLog(null)} maxWidth="sm" fullWidth>
+      <Dialog open={Boolean(selectedLog)} onClose={ignoreBackdropClick(() => setSelectedLog(null))} maxWidth="sm" fullWidth>
         <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           Audit Log Details
           <IconButton onClick={() => setSelectedLog(null)} size="small" aria-label="Close">

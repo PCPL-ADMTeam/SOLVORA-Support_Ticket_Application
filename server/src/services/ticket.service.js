@@ -1,14 +1,16 @@
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const prisma = require("../config/prisma");
 const ApiError = require("../utils/ApiError");
 const { parsePagination, buildPagedResult } = require("../utils/pagination");
-const { formatDepartmentTicketNumber } = require("../utils/ticketNumber");
+const { buildTicketNumber } = require("../utils/ticketNumber");
 const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
-const { sanitizeRichText } = require("../utils/sanitize");
+const { sanitizeRichText, sanitizePlainText } = require("../utils/sanitize");
+const { countWords, MAX_PROBLEM_SUMMARY_WORDS } = require("../utils/wordCount");
 const userDepartmentAccessService = require("./userDepartmentAccess.service");
-const { buildCreatedRecipients, buildStandardRecipients } = require("../utils/recipientBuilder");
+const { buildCreatedRecipients, buildStandardRecipients, buildAssignedOrCommentRecipients } = require("../utils/recipientBuilder");
 const blobStorageService = require("./blobStorage.service");
 const { uploadRoot } = require("../config/multer");
 
@@ -17,23 +19,61 @@ const { uploadRoot } = require("../config/multer");
 // be bypassed via a direct API call regardless of what the frontend does.
 const MAX_ATTACHMENTS_PER_TICKET = 5;
 
-// Early guard, checked BEFORE any Azure upload starts so an obviously
-// over-limit request never wastes a network call. This is NOT the sole
-// source of truth — addAttachment re-checks the count again immediately
-// before the actual insert (inside the same transaction as the create) to
-// narrow the window a concurrent upload for the same ticket could exploit
-// between this call and that one. Full atomicity isn't practical here
-// without a new row-locking primitive this codebase doesn't otherwise use
-// anywhere (Azure's network round-trip has to happen between any
-// "check" and the eventual insert, so it can never be a single atomic DB
-// operation), so this is a best-effort narrowing, not a hard guarantee.
-async function assertAttachmentLimit(ticketId, incomingCount) {
-  const currentCount = await prisma.ticketAttachment.count({ where: { ticketId } });
+// Combined size cap across every attachment a ticket holds (not per file) —
+// e.g. 2+3+4+1 = 10MB is allowed, anything over 10MB combined is rejected.
+// Independent of MAX_ATTACHMENTS_PER_TICKET above and of multer's own
+// per-file size limit (env.upload.maxSizeMb) — a request can be rejected by
+// either cap regardless of the other.
+const MAX_ATTACHMENTS_TOTAL_SIZE_MB = 10;
+const MAX_ATTACHMENTS_TOTAL_SIZE_BYTES = MAX_ATTACHMENTS_TOTAL_SIZE_MB * 1024 * 1024;
+
+function assertProblemSummaryWordLimit(problemSummary) {
+  if (countWords(problemSummary) > MAX_PROBLEM_SUMMARY_WORDS) {
+    throw new ApiError(400, `Problem Summary must be ${MAX_PROBLEM_SUMMARY_WORDS} words or fewer`);
+  }
+}
+
+// Enforces BOTH the per-ticket attachment COUNT cap and the combined SIZE
+// cap in one place — always against the running total (every attachment
+// already stored on the ticket, across both the ticket itself and its
+// comments, PLUS whatever is being added now), never per-file, so neither
+// limit can be bypassed by splitting an upload across multiple requests.
+// Checked BEFORE any Azure upload starts so an obviously over-limit request
+// never wastes a network call. This is NOT the sole source of truth —
+// addAttachment re-checks both counts again immediately before the actual
+// insert (inside the same transaction as the create) to narrow the window a
+// concurrent upload for the same ticket could exploit between this call and
+// that one. Full atomicity isn't practical here without a new row-locking
+// primitive this codebase doesn't otherwise use anywhere (Azure's network
+// round-trip has to happen between any "check" and the eventual insert, so
+// it can never be a single atomic DB operation), so this is a best-effort
+// narrowing, not a hard guarantee.
+async function assertAttachmentBudget(ticketId, incomingFiles) {
+  const existing = await prisma.ticketAttachment.aggregate({
+    where: { ticketId },
+    _count: { _all: true },
+    _sum: { fileSize: true },
+  });
+  const currentCount = existing._count._all;
+  const currentSize = existing._sum.fileSize || 0;
+  const incomingCount = incomingFiles.length;
+  const incomingSize = incomingFiles.reduce((sum, f) => sum + (f.size || 0), 0);
+
   const remainingSlots = Math.max(MAX_ATTACHMENTS_PER_TICKET - currentCount, 0);
   if (incomingCount > remainingSlots) {
     throw new ApiError(
       400,
       `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket. This ticket already has ${currentCount} attachment(s) and only ${remainingSlots} more can be uploaded.`
+    );
+  }
+
+  const totalSize = currentSize + incomingSize;
+  if (totalSize > MAX_ATTACHMENTS_TOTAL_SIZE_BYTES) {
+    const currentMb = currentSize / (1024 * 1024);
+    const remainingMb = Math.max(MAX_ATTACHMENTS_TOTAL_SIZE_MB - currentMb, 0);
+    throw new ApiError(
+      400,
+      `Attachments cannot exceed ${MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB combined per ticket. This ticket already has ${currentMb.toFixed(1)} MB and only ${remainingMb.toFixed(1)} MB more can be uploaded.`
     );
   }
 }
@@ -47,7 +87,6 @@ const ticketListInclude = {
   fromDepartment: { select: { id: true, name: true } },
   toDepartment: { select: { id: true, name: true } },
   manager: { select: { id: true, name: true, email: true } },
-  issue: { select: { id: true, name: true, isOther: true } },
 };
 
 const ticketDetailInclude = {
@@ -179,12 +218,19 @@ function scrubInternalComments(ticket, user, userDepartmentIds = []) {
 // own (to-)department — never an ADMIN, never a MANAGER, never a TEAMLEAD
 // (Managers/Team Leads manage tickets, they are never themselves a normal
 // assignee), never someone from an unrelated department.
+// Returns the fetched assignee record (never previously returned — a
+// caller that only cares about validation can still just call this and
+// ignore the result) so callers that already need this exact row for
+// display purposes (e.g. a human-readable name for TicketHistory — see
+// updateTicket's ASSIGNED entries) don't have to issue a second, duplicate
+// lookup.
 async function assertValidAssignee(assigneeId, departmentId) {
-  if (!assigneeId) return;
+  if (!assigneeId) return null;
   const assignee = await prisma.user.findUnique({ where: { id: assigneeId }, include: { role: true } });
   if (!assignee || !assignee.isActive || assignee.role.name !== "EMPLOYEE" || assignee.departmentId !== departmentId) {
     throw new ApiError(400, "Invalid assignee — must be an active employee in this ticket's department");
   }
+  return assignee;
 }
 
 // Resolves a new ticket's `fromDepartmentId` — an informational field
@@ -287,8 +333,11 @@ async function assertValidCcUserIds(ccUserIds) {
 // client-chosen; this is only reached when an ADMIN explicitly overrides it
 // via PATCH (see updateTicket) — a pre-existing, explicit Admin data-
 // correction feature, not a new "assign" action.
+// Returns the fetched manager record, same reasoning as
+// assertValidAssignee above (avoids a duplicate lookup just to get a
+// display name for TicketHistory).
 async function assertValidManager(managerId, departmentId) {
-  if (!managerId) return;
+  if (!managerId) return null;
   const manager = await prisma.user.findUnique({ where: { id: managerId }, include: { role: true } });
   if (!manager || !manager.isActive || !isManagementRole(manager)) {
     throw new ApiError(400, "Invalid manager — must be an active Manager or Team Lead");
@@ -296,6 +345,7 @@ async function assertValidManager(managerId, departmentId) {
   if (!(await userDepartmentAccessService.hasAccess(managerId, departmentId))) {
     throw new ApiError(400, "Invalid manager — this user does not have access to this ticket's department");
   }
+  return manager;
 }
 
 // Who may transfer a ticket to a different department — a deliberately
@@ -395,7 +445,6 @@ async function listTickets(user, query) {
       // match), never expand it beyond what scopeWhereForUser already
       // allows. Same reasoning applies to every filter in this array.
       query.departmentId ? { toDepartmentId: query.departmentId } : {},
-      query.issueId ? { issueId: query.issueId } : {},
       query.assigned === "true" ? { assigneeId: { not: null } } : query.assigned === "false" ? { assigneeId: null } : {},
       query.overdue === "true" ? { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } } : {},
       query.dateFrom ? { createdAt: { gte: new Date(query.dateFrom) } } : {},
@@ -408,9 +457,9 @@ async function listTickets(user, query) {
       // matter what time within it a ticket was created — symmetric with
       // dateFrom's own UTC-midnight boundary above.
       query.dateTo ? { createdAt: { lt: new Date(new Date(query.dateTo).getTime() + 24 * 60 * 60 * 1000) } } : {},
-      // Global search — covers ticket number/title/description plus the
-      // requester/assignee/department/issue it's linked to, per relation,
-      // so "search requester name" etc. means "search among MY authorized
+      // Global search — covers ticket number/title/Problem Summary plus the
+      // requester/assignee/department it's linked to, per relation, so
+      // "search requester name" etc. means "search among MY authorized
       // tickets for one whose requester matches" rather than searching the
       // User table directly. Still ANDed onto scopeWhereForUser above, so
       // it can never surface a ticket outside the caller's own scope no
@@ -420,13 +469,12 @@ async function listTickets(user, query) {
             OR: [
               { title: { contains: query.search, mode: "insensitive" } },
               { ticketNumber: { contains: query.search, mode: "insensitive" } },
-              { description: { contains: query.search, mode: "insensitive" } },
+              { problemSummary: { contains: query.search, mode: "insensitive" } },
               { requester: { name: { contains: query.search, mode: "insensitive" } } },
               { requester: { email: { contains: query.search, mode: "insensitive" } } },
               { assignee: { name: { contains: query.search, mode: "insensitive" } } },
               { assignee: { email: { contains: query.search, mode: "insensitive" } } },
               { toDepartment: { name: { contains: query.search, mode: "insensitive" } } },
-              { issue: { name: { contains: query.search, mode: "insensitive" } } },
             ],
           }
         : {},
@@ -484,12 +532,17 @@ async function createTicket(user, payload, files = []) {
   if (files.length > MAX_ATTACHMENTS_PER_TICKET) {
     throw new ApiError(400, `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket.`);
   }
+  const incomingFilesSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
+  if (incomingFilesSize > MAX_ATTACHMENTS_TOTAL_SIZE_BYTES) {
+    throw new ApiError(400, `Attachments cannot exceed ${MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB combined per ticket.`);
+  }
 
-  const { title, description, categoryId, priorityId, teamId, assigneeId, toDepartmentId, issueId, customIssueText, ccUserIds, fromDepartmentId: payloadFromDepartmentId } = payload;
+  const { title, problemSummary, categoryId, priorityId, teamId, assigneeId, toDepartmentId, ccUserIds, fromDepartmentId: payloadFromDepartmentId } = payload;
+  assertProblemSummaryWordLimit(problemSummary);
 
   const fromDepartmentId = await resolveFromDepartmentId(user, payloadFromDepartmentId, toDepartmentId);
 
-  const [priority, category, toDepartment, activeTeamLeads, activeManagers, issue, validCcUserIds] = await Promise.all([
+  const [priority, category, toDepartment, activeTeamLeads, activeManagers, validCcUserIds] = await Promise.all([
     prisma.priority.findUnique({ where: { id: priorityId } }),
     categoryId ? prisma.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
     prisma.department.findUnique({ where: { id: toDepartmentId } }),
@@ -503,44 +556,25 @@ async function createTicket(user, payload, files = []) {
     // TICKET_CREATED recipients further down (TO TeamLeads, CC Managers).
     userDepartmentAccessService.getActiveDepartmentTeamLeads(toDepartmentId),
     userDepartmentAccessService.getActiveDepartmentManagers(toDepartmentId),
-    prisma.issue.findUnique({ where: { id: issueId } }),
     assertValidCcUserIds(normalizeCcUserIds(ccUserIds)),
   ]);
   if (!priority) throw new ApiError(400, "Invalid priority");
   if (categoryId && !category) throw new ApiError(400, "Invalid category");
   if (!toDepartment) throw new ApiError(400, "Invalid department");
-  if (!issue || !issue.isActive || issue.departmentId !== toDepartmentId) {
-    throw new ApiError(400, "Invalid issue for this department");
-  }
-  if (issue.isOther && !customIssueText?.trim()) {
-    throw new ApiError(400, "Please describe the custom issue");
-  }
   await assertValidAssignee(assigneeId, toDepartmentId);
 
   const dueAt = await computeDueAt(priorityId);
 
   const ticket = await prisma.$transaction(async (tx) => {
-    // Department-wise ticket numbering: atomically increment the
-    // destination department's own sequence — a single
-    // UPDATE ... SET "ticketSequence" = "ticketSequence" + 1 is row-locked
-    // by Postgres for the duration of this transaction, so two concurrent
-    // ticket creations for the SAME department can never read/use the same
-    // number (no MAX()+1 race). If anything later in this transaction
-    // fails, the whole transaction — including this increment — rolls
-    // back, so a failed creation never "burns" a number or desyncs the
-    // sequence.
-    const departmentForNumbering = await tx.department.update({
-      where: { id: toDepartmentId },
-      data: { ticketSequence: { increment: 1 } },
-      select: { ticketPrefix: true, ticketSequence: true },
-    });
-    const ticketNumber = formatDepartmentTicketNumber(departmentForNumbering.ticketPrefix, departmentForNumbering.ticketSequence);
-
     const created = await tx.ticket.create({
       data: {
-        ticketNumber,
+        // Temporary, trivially-unique placeholder — replaced below with the
+        // real, human-facing number derived from this row's own `seq` (only
+        // known once the insert actually happens). Never visible outside
+        // this transaction.
+        ticketNumber: crypto.randomUUID(),
         title,
-        description: sanitizeRichText(description),
+        problemSummary: sanitizePlainText(problemSummary),
         categoryId: categoryId || null,
         priorityId,
         requesterId: user.id,
@@ -549,11 +583,15 @@ async function createTicket(user, payload, files = []) {
         fromDepartmentId,
         toDepartmentId,
         managerId: activeTeamLeads[0]?.id || activeManagers[0]?.id || null,
-        issueId,
-        customIssueText: issue.isOther ? customIssueText.trim() : null,
         dueAt,
       },
     });
+
+    // Purely numeric, globally unique ticket number derived from the
+    // Postgres-native autoincrement `seq` just assigned above — inherently
+    // collision-safe, no manual locking/increment required (see
+    // utils/ticketNumber.js#buildTicketNumber).
+    await tx.ticket.update({ where: { id: created.id }, data: { ticketNumber: buildTicketNumber(created.seq) } });
 
     await recordHistory(tx, { ticketId: created.id, userId: user.id, action: "CREATED" });
 
@@ -602,22 +640,27 @@ async function createTicket(user, payload, files = []) {
     type: "TICKET_CREATED",
     ticket: finalTicket,
     ccUserIds: created.userIds.length ? created.ccUserIds : [],
+    // Real uploaded files (if any) are attached to the TICKET_CREATED email
+    // itself — see notification.service.js#notify, which reads each row's
+    // filePath/storageProvider to fetch the actual bytes server-side. No
+    // other event currently attaches files this way.
+    attachments: finalTicket.attachments,
   });
 
   // A ticket created with an assignee already attached (e.g. an Admin
-  // pre-assigning at creation) follows the SAME standard recipient rule as
-  // a normal post-creation assignment (see notifyOnUpdate's ASSIGNED
-  // handling below) — TO requester + assignee, CC current department
-  // agents + Custom CC.
+  // pre-assigning at creation) follows the SAME TICKET_ASSIGNED recipient
+  // rule as a normal post-creation assignment (see notifyOnUpdate's ASSIGNED
+  // handling below) — TO the assignee ONLY, CC requester + current
+  // department Team Leads/Managers + Custom CC.
   if (finalTicket.assigneeId) {
-    const standard = await buildStandardRecipients(finalTicket);
+    const assigned = await buildAssignedOrCommentRecipients(finalTicket);
     await notificationService.notify({
       eventKey: "TICKET_ASSIGNED",
-      userIds: standard.userIds,
+      userIds: assigned.userIds,
       ticketId: finalTicket.id,
       type: "TICKET_ASSIGNED",
       ticket: finalTicket,
-      ccUserIds: standard.ccUserIds,
+      ccUserIds: assigned.ccUserIds,
     });
   }
 
@@ -634,7 +677,24 @@ const VALID_TRANSITIONS = {
 };
 
 async function updateTicket(user, id, payload) {
-  const ticket = await prisma.ticket.findUnique({ where: { id }, include: { requester: true, assignee: true } });
+  // manager/toDepartment/team/category/priority are included here ONLY so
+  // TicketHistory entries below can record a human-readable "before" name
+  // instead of a raw foreign-key id (TicketHistory.oldValue/newValue are
+  // plain strings, not relations, so whatever is pushed here is exactly
+  // what the Activity History UI displays verbatim) — never used for any
+  // authorization/business-logic decision in this function.
+  const ticket = await prisma.ticket.findUnique({
+    where: { id },
+    include: {
+      requester: true,
+      assignee: true,
+      manager: { select: { name: true } },
+      toDepartment: { select: { name: true } },
+      team: { select: { name: true } },
+      category: { select: { name: true } },
+      priority: { select: { name: true } },
+    },
+  });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   const userDepartmentIds = await resolveUserDepartmentIds(user);
   assertCanView(user, ticket, userDepartmentIds);
@@ -654,7 +714,7 @@ async function updateTicket(user, id, payload) {
   const canDriveWorkflow = isAdmin || isManagement || isAssignee;
 
   // The requester may edit the ORIGINAL content of a ticket they raised
-  // (priority/issue/description/title) — never merely because they're the
+  // (priority/problemSummary/title) — never merely because they're the
   // assignee, and never once the ticket has reached a terminal state
   // (mirrors the same RESOLVED/CLOSED gate the owner-reopen rule below
   // already uses). This is a separate authorization path from isAdmin/
@@ -673,6 +733,13 @@ async function updateTicket(user, id, payload) {
   const data = {};
   const historyEntries = [];
   let requesterContentChanged = false;
+  // Optional instructions entered in the Assign Ticket dialog — set ONLY
+  // when this call actually changes the assignee via the explicit
+  // assigneeId path below (never for "Assign to Me"). Trimmed before the
+  // empty check so a whitespace-only value is treated identically to no
+  // comment at all — never persisted as a blank comment, never rendered
+  // as an empty email section.
+  let assignmentComment = "";
 
   if (payload.status !== undefined && payload.status !== ticket.status) {
     // The requester may only reopen their own resolved/closed ticket — every
@@ -762,17 +829,30 @@ async function updateTicket(user, id, payload) {
       }
       if (ticket.assigneeId !== user.id) {
         data.assigneeId = user.id;
-        historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: user.id });
+        // TicketHistory.oldValue/newValue are plain display strings, shown
+        // verbatim by the Activity History UI (see ActivityTimeline.jsx) —
+        // never the raw id. The old assignee's name is already loaded on
+        // `ticket` (see the include above); the new one is simply the
+        // acting Team Lead's own name (assignToMe), always already in hand.
+        historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assignee?.name || "Unassigned", newValue: user.name });
       }
     } else if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
       const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
-      await assertValidAssignee(payload.assigneeId, targetDepartmentId);
+      // assertValidAssignee already fetches this exact user to validate it —
+      // reusing that return value here avoids a second, redundant lookup
+      // just to get a display name for history.
+      const newAssignee = await assertValidAssignee(payload.assigneeId, targetDepartmentId);
       data.assigneeId = payload.assigneeId || null;
-      historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assigneeId, newValue: payload.assigneeId });
+      historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assignee?.name || "Unassigned", newValue: newAssignee?.name || "Unassigned" });
+      assignmentComment = (payload.assignmentComment || "").trim();
     }
     if (payload.toDepartmentId !== undefined && payload.toDepartmentId !== ticket.toDepartmentId) {
       data.toDepartmentId = payload.toDepartmentId || null;
-      historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartmentId, newValue: payload.toDepartmentId });
+      // The new department's name needs its own lookup — nothing else in
+      // this branch already fetched it (unlike the assignee/manager cases
+      // above/below, which reuse an existing validation query).
+      const newToDepartment = payload.toDepartmentId ? await prisma.department.findUnique({ where: { id: payload.toDepartmentId }, select: { name: true } }) : null;
+      historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartment?.name || "—", newValue: newToDepartment?.name || "—" });
     }
   }
 
@@ -782,11 +862,13 @@ async function updateTicket(user, id, payload) {
   if (isAdmin || isManagement) {
     if (payload.teamId !== undefined && payload.teamId !== ticket.teamId) {
       data.teamId = payload.teamId || null;
-      historyEntries.push({ action: "TEAM_CHANGE", fieldName: "teamId", oldValue: ticket.teamId, newValue: payload.teamId });
+      const newTeam = payload.teamId ? await prisma.team.findUnique({ where: { id: payload.teamId }, select: { name: true } }) : null;
+      historyEntries.push({ action: "TEAM_CHANGE", fieldName: "teamId", oldValue: ticket.team?.name || "—", newValue: newTeam?.name || "—" });
     }
     if (payload.categoryId !== undefined && payload.categoryId !== ticket.categoryId) {
       data.categoryId = payload.categoryId;
-      historyEntries.push({ action: "CATEGORY_CHANGE", fieldName: "categoryId", oldValue: ticket.categoryId, newValue: payload.categoryId });
+      const newCategory = payload.categoryId ? await prisma.category.findUnique({ where: { id: payload.categoryId }, select: { name: true } }) : null;
+      historyEntries.push({ action: "CATEGORY_CHANGE", fieldName: "categoryId", oldValue: ticket.category?.name || "—", newValue: newCategory?.name || "—" });
     }
     if (payload.managerId !== undefined && payload.managerId !== ticket.managerId) {
       // Only an Administrator may manually override a ticket's manager.
@@ -801,15 +883,17 @@ async function updateTicket(user, id, payload) {
         throw new ApiError(403, "Only an Administrator can change a ticket's manager");
       }
       const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
-      await assertValidManager(payload.managerId, targetDepartmentId);
+      // Reuses assertValidManager's own fetch — same reasoning as
+      // assertValidAssignee above.
+      const newManager = await assertValidManager(payload.managerId, targetDepartmentId);
       data.managerId = payload.managerId || null;
-      historyEntries.push({ action: "MANAGER_CHANGE", fieldName: "managerId", oldValue: ticket.managerId, newValue: payload.managerId });
+      historyEntries.push({ action: "MANAGER_CHANGE", fieldName: "managerId", oldValue: ticket.manager?.name || "—", newValue: newManager?.name || "—" });
     }
   }
 
-  // Content fields — priority, issue, description, title. Editable by
-  // staff (isAdmin/isManagement, exactly as before for priority/issue) OR by
-  // the requester editing their own still-open ticket
+  // Content fields — priority, Problem Summary, title. Editable by staff
+  // (isAdmin/isManagement, exactly as before for priority) OR by the
+  // requester editing their own still-open ticket
   // (canRequesterEditDetails). Assignment/routing/status are NEVER part of
   // this block — those stay exclusively above, gated by isManagement /
   // canDriveWorkflow, so a requester can never use this path to reassign,
@@ -818,42 +902,21 @@ async function updateTicket(user, id, payload) {
     if (payload.priorityId !== undefined && payload.priorityId !== ticket.priorityId) {
       data.priorityId = payload.priorityId;
       data.dueAt = await computeDueAt(payload.priorityId, ticket.createdAt);
-      historyEntries.push({ action: "PRIORITY_CHANGE", fieldName: "priorityId", oldValue: ticket.priorityId, newValue: payload.priorityId });
+      const newPriority = await prisma.priority.findUnique({ where: { id: payload.priorityId }, select: { name: true } });
+      historyEntries.push({ action: "PRIORITY_CHANGE", fieldName: "priorityId", oldValue: ticket.priority?.name || "—", newValue: newPriority?.name || "—" });
       if (isRequesterEditPath) requesterContentChanged = true;
     }
-    if (payload.issueId !== undefined && payload.issueId !== ticket.issueId) {
-      // The issue must still belong to this ticket's own destination
-      // department — never trusted from the client, mirrors
-      // assertValidAssignee's department check and createTicket's own
-      // issue validation. Accounts for toDepartmentId also changing in the
-      // same request (staff-only), same pattern assertValidAssignee uses.
-      const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
-      const newIssue = await prisma.issue.findUnique({ where: { id: payload.issueId } });
-      if (!newIssue || !newIssue.isActive || newIssue.departmentId !== targetDepartmentId) {
-        throw new ApiError(400, "Invalid issue for this ticket's department");
-      }
-      if (newIssue.isOther && !(payload.customIssueText ?? ticket.customIssueText)?.trim()) {
-        throw new ApiError(400, "Please describe the custom issue");
-      }
-      data.issueId = payload.issueId;
-      historyEntries.push({ action: "ISSUE_CHANGE", fieldName: "issueId", oldValue: ticket.issueId, newValue: payload.issueId });
-      if (isRequesterEditPath) requesterContentChanged = true;
-    }
-    if (payload.customIssueText !== undefined && payload.customIssueText !== ticket.customIssueText) {
-      data.customIssueText = payload.customIssueText || null;
-      if (isRequesterEditPath) requesterContentChanged = true;
-    }
-    // Title is computed client-side from the selected issue (or the custom
-    // text for "Others"), exactly as createTicket already trusts it at
-    // creation time — never re-derived server-side here either.
+    // Title is now a directly user-typed field (no longer derived from an
+    // Issue selection) — trusted as-is, same as createTicket.
     if (payload.title !== undefined && payload.title.trim() && payload.title.trim() !== ticket.title) {
       data.title = payload.title.trim();
       if (isRequesterEditPath) requesterContentChanged = true;
     }
-    if (payload.description !== undefined) {
-      const cleanDescription = sanitizeRichText(payload.description);
-      if (cleanDescription !== ticket.description) {
-        data.description = cleanDescription;
+    if (payload.problemSummary !== undefined) {
+      assertProblemSummaryWordLimit(payload.problemSummary);
+      const cleanProblemSummary = sanitizePlainText(payload.problemSummary);
+      if (cleanProblemSummary !== ticket.problemSummary) {
+        data.problemSummary = cleanProblemSummary;
         if (isRequesterEditPath) requesterContentChanged = true;
       }
     }
@@ -861,9 +924,9 @@ async function updateTicket(user, id, payload) {
 
   // One combined marker — "Ticket details updated by {requester}" — only
   // for the requester's own edit-my-ticket path, kept separate from
-  // PRIORITY_CHANGE/ISSUE_CHANGE above so the existing staff Edit Ticket
-  // flow (priority-only, no email) is completely unaffected by this
-  // addition — its behavior before this change and after is identical.
+  // PRIORITY_CHANGE above so the existing staff Edit Ticket flow
+  // (priority-only, no email) is completely unaffected by this addition —
+  // its behavior before this change and after is identical.
   if (requesterContentChanged) {
     historyEntries.push({ action: "TICKET_DETAILS_UPDATED" });
   }
@@ -875,10 +938,22 @@ async function updateTicket(user, id, payload) {
     for (const entry of historyEntries) {
       await recordHistory(tx, { ticketId: id, userId: user.id, ...entry });
     }
+    // Assignment comment (optional) — saved as a normal, public TicketComment
+    // authored by the assigning user, exactly once per assignment, and only
+    // when non-empty (never a blank/whitespace-only comment). isInternal:
+    // false so it follows the SAME existing comment-visibility rules as any
+    // other public comment — this is deliberate: the TICKET_ASSIGNED email
+    // already CCs the requester, so the comment must be equally visible to
+    // them in the ticket's activity/comments, not hidden as staff-only.
+    if (assignmentComment) {
+      await tx.ticketComment.create({
+        data: { ticketId: id, authorId: user.id, body: sanitizeRichText(assignmentComment), isInternal: false },
+      });
+    }
     return result;
   });
 
-  await notifyOnUpdate(ticket, updated, historyEntries, user);
+  await notifyOnUpdate(ticket, updated, historyEntries, user, assignmentComment);
   return shapeTicketDetail(scrubInternalComments(updated, user, userDepartmentIds));
 }
 
@@ -893,18 +968,23 @@ function statusEventKey(newValue) {
   return "TICKET_STATUS_CHANGED";
 }
 
-async function notifyOnUpdate(before, after, historyEntries, actor) {
+async function notifyOnUpdate(before, after, historyEntries, actor, assignmentComment = "") {
   // Distinguishes a ticket's first-ever assignment from a later reassignment
   // — purely to pick the right event key; who gets notified is unchanged.
   const wasAlreadyAssigned = Boolean(before.assigneeId);
 
-  // Every event below shares the SAME standard recipient shape — TO
-  // requester + current assignee, CC the ticket's current department's
-  // active AGENTs + its Custom CC list (see utils/recipientBuilder.js).
-  // Computed once per call (not per history entry) since `after` — the
-  // ticket's post-update state — doesn't change across entries in the
-  // same updateTicket() call.
+  // Every event below except TICKET_ASSIGNED shares the SAME standard
+  // recipient shape — TO requester + current assignee, CC the ticket's
+  // current department's active Team Leads/Managers + its Custom CC list
+  // (see utils/recipientBuilder.js). TICKET_ASSIGNED alone uses the
+  // different assigned-or-comment shape (TO the assignee ONLY, requester
+  // moved to CC) — see buildAssignedOrCommentRecipients, shared with
+  // TICKET_COMMENT_ADDED in addComment(). TICKET_REASSIGNED deliberately
+  // keeps the standard shape, unchanged. Both computed once per call (not
+  // per history entry) since `after` — the ticket's post-update state —
+  // doesn't change across entries in the same updateTicket() call.
   const { userIds: standardUserIds, ccUserIds: standardCcUserIds } = await buildStandardRecipients(after);
+  const { userIds: assignedUserIds, ccUserIds: assignedCcUserIds } = await buildAssignedOrCommentRecipients(after);
 
   for (const entry of historyEntries) {
     // --- Status changes (OPEN/IN_PROGRESS/ON_HOLD/RESOLVED/CLOSED) -------
@@ -924,25 +1004,58 @@ async function notifyOnUpdate(before, after, historyEntries, actor) {
     }
 
     // --- Assignment ----------------------------------------------------
-    // Self-assignment ("Assign to Me") is a dedicated event handled in its
-    // own block below — never reuses this one, and is excluded here via
-    // `entry.newValue !== actor.id`.
-    if (entry.action === "ASSIGNED" && after.assigneeId && entry.newValue === after.assigneeId && entry.newValue !== actor.id && standardUserIds.length) {
-      await notificationService.notify({
-        eventKey: wasAlreadyAssigned ? "TICKET_REASSIGNED" : "TICKET_ASSIGNED",
-        userIds: standardUserIds,
-        ticketId: after.id,
-        type: "TICKET_ASSIGNED",
-        ticket: after,
-        ccUserIds: standardCcUserIds,
-      });
+    // Detected from the ACTUAL post-update assignee id (after.assigneeId)
+    // compared against the actor's own id — never from
+    // entry.oldValue/newValue, which are now human-readable display names
+    // for Activity History (see the ASSIGNED history-entry pushes above)
+    // and must never be used as identity comparisons. Self-assignment
+    // ("Assign to Me") is a dedicated event handled in its own block below
+    // — never reuses this one, and is excluded here via
+    // `after.assigneeId !== actor.id`.
+    if (entry.action === "ASSIGNED" && after.assigneeId && after.assigneeId !== actor.id) {
+      if (wasAlreadyAssigned) {
+        // TICKET_REASSIGNED — recipient shape unchanged, still the standard
+        // shape (TO requester + assignee). The optional assignment/
+        // reassignment comment is passed through here too (same "Assign
+        // Ticket" dialog/action) and renders via the SAME shared
+        // {{assignmentCommentSection}} placeholder TICKET_ASSIGNED uses —
+        // see emailTemplate.service.js#buildAssignmentCommentSection.
+        if (standardUserIds.length) {
+          await notificationService.notify({
+            eventKey: "TICKET_REASSIGNED",
+            userIds: standardUserIds,
+            ticketId: after.id,
+            type: "TICKET_ASSIGNED",
+            ticket: after,
+            ccUserIds: standardCcUserIds,
+            assignmentComment,
+          });
+        }
+      } else if (assignedUserIds.length) {
+        // TICKET_ASSIGNED (first-ever assignment) — TO the assignee ONLY,
+        // requester moved to CC (see buildAssignedOrCommentRecipients).
+        // assignmentComment renders as {{assignmentCommentSection}} in the
+        // template when non-empty, or an empty string when absent (see
+        // emailTemplate.service.js#buildPlaceholders) — recipient logic
+        // itself is completely unaffected.
+        await notificationService.notify({
+          eventKey: "TICKET_ASSIGNED",
+          userIds: assignedUserIds,
+          ticketId: after.id,
+          type: "TICKET_ASSIGNED",
+          ticket: after,
+          ccUserIds: assignedCcUserIds,
+          assignmentComment,
+        });
+      }
     }
 
     // Self-assignment ("Assign to Me") — a narrow, dedicated event outside
     // the standard 10-event recipient matrix, left exactly as it already
     // was: TO the requester only (never the acting Team Lead themselves), no
-    // CC, skipped entirely if the requester happens to be the actor.
-    if (entry.action === "ASSIGNED" && entry.newValue === actor.id && after.requesterId && after.requesterId !== actor.id) {
+    // CC, skipped entirely if the requester happens to be the actor. Detected
+    // from the actual after.assigneeId, same reasoning as the block above.
+    if (entry.action === "ASSIGNED" && after.assigneeId === actor.id && after.requesterId && after.requesterId !== actor.id) {
       await notificationService.notify({
         eventKey: "TICKET_SELF_ASSIGNED",
         userIds: [after.requesterId],
@@ -1081,8 +1194,8 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
 
 async function addComment(user, ticketId, { body, isInternal }, files = []) {
   // Includes the same relations as ticketListInclude so the comment-
-  // notification email template has department/priority/issue to show,
-  // not just the bare ticket row.
+  // notification email template has department/priority to show, not just
+  // the bare ticket row.
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: ticketListInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   const userDepartmentIds = await resolveUserDepartmentIds(user);
@@ -1112,7 +1225,7 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
   // itself is even created) if it obviously can't fit, rather than creating
   // a comment and then silently dropping some of its attachments.
   if (files.length > 0) {
-    await assertAttachmentLimit(ticketId, files.length);
+    await assertAttachmentBudget(ticketId, files);
   }
 
   const cleanBody = trimmedBody ? sanitizeRichText(trimmedBody) : "";
@@ -1152,16 +1265,21 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
 
   // Public comments notify the ticket's normal recipient group — internal
   // notes never leave staff (skipped entirely below — no email for
-  // anyone). Uses the SAME standard TO/CC rule as every other
-  // post-creation event (TO requester + current assignee, CC current
-  // department's active agents + Custom CC) — this supersedes the old
-  // role-based comment-recipient matrix entirely, per the current
-  // recipient-architecture requirement. An attachment-only public comment
-  // still triggers exactly this one email — there is no separate
+  // anyone). Uses the SAME shape as TICKET_ASSIGNED (see
+  // buildAssignedOrCommentRecipients): TO the current assigned EMPLOYEE
+  // ONLY, CC the requester + current department's active Team Leads/
+  // Managers + Custom CC. The comment's own author gets no special
+  // TO/CC treatment beyond whichever of those groups they already belong
+  // to — there is deliberately no "comment author -> TO" rule. If the
+  // ticket currently has no assignee, `userIds` is empty and (per the
+  // guard below, matching notification.service.js#notify's own existing
+  // behavior) no email is sent for this event at all — nobody is ever
+  // promoted into TO to work around that. An attachment-only public
+  // comment still triggers exactly this one email — there is no separate
   // "attachment added" event, and addAttachment() itself never sends its
   // own notification.
   if (!isInternal) {
-    const { userIds, ccUserIds } = await buildStandardRecipients(ticket);
+    const { userIds, ccUserIds } = await buildAssignedOrCommentRecipients(ticket);
     if (userIds.length) {
       await notificationService.notify({
         eventKey: "TICKET_COMMENT_ADDED",
@@ -1215,8 +1333,8 @@ async function addAttachment(user, ticketId, file, commentId = null) {
   assertCanView(user, ticket, await resolveUserDepartmentIds(user));
 
   // Early guard — never spend an Azure upload on a request that's already
-  // obviously over the limit.
-  await assertAttachmentLimit(ticketId, 1);
+  // obviously over either limit (count or combined size).
+  await assertAttachmentBudget(ticketId, [file]);
 
   // New uploads are organized by the ticket's human-readable ticketNumber
   // (e.g. "BI-001") rather than its internal id — purely a Blob folder
@@ -1240,12 +1358,17 @@ async function addAttachment(user, ticketId, file, commentId = null) {
     // cleaned up exactly the same way either way — a race that trips this
     // check never leaves an orphan blob behind.
     return await prisma.$transaction(async (tx) => {
-      const currentCount = await tx.ticketAttachment.count({ where: { ticketId } });
+      const existing = await tx.ticketAttachment.aggregate({ where: { ticketId }, _count: { _all: true }, _sum: { fileSize: true } });
+      const currentCount = existing._count._all;
       if (currentCount >= MAX_ATTACHMENTS_PER_TICKET) {
         throw new ApiError(
           400,
           `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket. This ticket already has ${currentCount} attachment(s) and only 0 more can be uploaded.`
         );
+      }
+      const currentSize = existing._sum.fileSize || 0;
+      if (currentSize + file.size > MAX_ATTACHMENTS_TOTAL_SIZE_BYTES) {
+        throw new ApiError(400, `Attachments cannot exceed ${MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB combined per ticket.`);
       }
       return tx.ticketAttachment.create({
         data: {

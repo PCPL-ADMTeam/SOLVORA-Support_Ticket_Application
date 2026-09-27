@@ -23,6 +23,8 @@ import { useSnackbar } from "notistack";
 import { teamsApi } from "../../api/teams";
 import LoadingState from "../../components/common/LoadingState";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import DialogCloseButton from "../../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 import SearchableUserSelector from "../../components/common/SearchableUserSelector";
 
 const emptyForm = { id: null, name: "", description: "", members: [] };
@@ -112,7 +114,8 @@ export default function TeamsPage() {
         ))}
       </Grid>
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={dialogOpen} onClose={ignoreBackdropClick(() => setDialogOpen(false))} fullWidth maxWidth="sm">
+        <DialogCloseButton onClose={() => setDialogOpen(false)} />
         <DialogTitle>{form.id ? "Edit Team" : "New Team"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

@@ -21,11 +21,28 @@ function getSender() {
   return env.cloudready.mailbox || null;
 }
 
+// Graph's fileAttachment shape — `contentBytes` is base64, never a storage
+// path/URL/credential (the caller, notification.service.js, has already
+// fetched the actual bytes server-side via blobStorage.service.js before
+// this is ever called, so Azure Storage credentials are never referenced
+// here, let alone sent to Microsoft Graph or exposed in the email itself).
+function toFileAttachments(attachments) {
+  if (!attachments?.length) return undefined;
+  return attachments.map((a) => ({
+    "@odata.type": "#microsoft.graph.fileAttachment",
+    name: a.name,
+    contentType: a.contentType || "application/octet-stream",
+    contentBytes: a.contentBytes,
+  }));
+}
+
 // Sends via Microsoft Graph on behalf of CLOUDREADY_MAILBOX. Never throws —
 // a delivery failure is logged and swallowed so it can never fail the
 // ticket action that triggered it (ticket creation/update must not roll
-// back because Graph/email is unavailable).
-async function sendMail({ to, cc, subject, html, text }) {
+// back because Graph/email is unavailable). `attachments` (optional) is an
+// array of { name, contentType, contentBytes(base64) } — currently only
+// ever passed for TICKET_CREATED (see notification.service.js#notify).
+async function sendMail({ to, cc, subject, html, text, attachments }) {
   if (!to) return;
 
   if (!entraService.isConfigured()) {
@@ -49,6 +66,7 @@ async function sendMail({ to, cc, subject, html, text }) {
           body: { contentType: html ? "HTML" : "Text", content: html || text || "" },
           toRecipients: toRecipients(to),
           ccRecipients: toRecipients(cc),
+          attachments: toFileAttachments(attachments),
         },
         saveToSentItems: true,
       },

@@ -25,6 +25,8 @@ import { useSnackbar } from "notistack";
 import { departmentsApi } from "../../api/departments";
 import LoadingState from "../../components/common/LoadingState";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import DialogCloseButton from "../../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 const emptyDeptForm = { id: null, name: "", ticketPrefix: "" };
 
@@ -129,7 +131,8 @@ export default function DepartmentsPage() {
         })}
       </Grid>
 
-      <Dialog open={deptDialogOpen} onClose={() => setDeptDialogOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={deptDialogOpen} onClose={ignoreBackdropClick(() => setDeptDialogOpen(false))} fullWidth maxWidth="sm">
+        <DialogCloseButton onClose={() => setDeptDialogOpen(false)} />
         <DialogTitle>{deptForm.id ? "Edit Department" : "New Department"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

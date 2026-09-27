@@ -23,17 +23,23 @@ function wrap(intro, rowsHtml, extraHtml = "") {
 </div>`;
 }
 
+// Subjects below are documentation only — every ticket-lifecycle email's
+// ACTUAL sent subject is now generated centrally as
+// "Ticket – {{ticketNumber}} – {{status}}" (see
+// emailTemplate.service.js#buildTicketEmailSubject), regardless of what's
+// stored here or edited in the Admin UI. Only PASSWORD_RESET_REQUESTED
+// (not a ticket event) still uses its own stored subject as-is.
 const emailTemplateDefaults = [
   {
     eventKey: "TICKET_CREATED",
     name: "Ticket Created",
-    subject: "New Support Ticket {{ticketNumber}} Created",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "A new support ticket has been raised for the {{department}} department and needs your review and assignment.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
-        row("Issue", "{{issue}}") +
+        row("Problem Summary", "{{problemSummary}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Requester", "{{requesterName}}"),
@@ -42,16 +48,21 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_ASSIGNED",
     name: "Ticket Assigned",
-    subject: "Ticket {{ticketNumber}} Assigned to You",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "Ticket {{ticketNumber}} has been assigned to {{assigneeName}}.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
-        row("Issue", "{{issue}}") +
+        row("Problem Summary", "{{problemSummary}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Manager", "{{managerName}}"),
+      // Renders a complete "Assignment Note" block when an assignment
+      // comment exists, or nothing at all when it doesn't — see
+      // emailTemplate.service.js#buildAssignmentCommentSection. Never a
+      // separate template/placeholder per case.
+      "{{assignmentCommentSection}}",
     ),
   },
   {
@@ -64,13 +75,13 @@ const emailTemplateDefaults = [
     // name via {{assigneeName}}, never a placeholder like "Assign to Me".
     eventKey: "TICKET_SELF_ASSIGNED",
     name: "Ticket Self-Assigned (Requester Notice)",
-    subject: "Ticket {{ticketNumber}} Has Been Assigned",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "Your support ticket has been assigned to {{assigneeName}}, who will be handling the ticket.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
-        row("Issue", "{{issue}}") +
+        row("Problem Summary", "{{problemSummary}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Assignee", "{{assigneeName}}"),
@@ -79,22 +90,28 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_REASSIGNED",
     name: "Ticket Reassigned",
-    subject: "Ticket {{ticketNumber}} Reassigned to You",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "Ticket {{ticketNumber}} has been reassigned to {{assigneeName}}.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
-        row("Issue", "{{issue}}") +
+        row("Problem Summary", "{{problemSummary}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Manager", "{{managerName}}"),
+      // Same shared, conditional placeholder TICKET_ASSIGNED uses — renders
+      // a complete "Assignment Note" block when a reassignment comment
+      // exists, or nothing at all when it doesn't (see
+      // emailTemplate.service.js#buildAssignmentCommentSection). Never a
+      // separate reassignment-only comment placeholder/engine.
+      "{{assignmentCommentSection}}",
     ),
   },
   {
     eventKey: "TICKET_STATUS_CHANGED",
     name: "Ticket Status Changed",
-    subject: "Ticket {{ticketNumber}} Status Changed",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "Ticket {{ticketNumber}} status changed from {{oldStatus}} to {{newStatus}}.",
       row("Ticket", "{{ticketNumber}}") +
@@ -113,7 +130,7 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_RESOLVED",
     name: "Ticket Resolved",
-    subject: "Ticket {{ticketNumber}} Resolved",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "Your ticket has been marked as resolved.",
       row("Ticket", "{{ticketNumber}}") +
@@ -128,7 +145,7 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_REOPENED",
     name: "Ticket Reopened",
-    subject: "Ticket {{ticketNumber}} Reopened",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "This ticket has been reopened and needs attention.",
       row("Ticket", "{{ticketNumber}}") +
@@ -143,7 +160,7 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_COMMENT_ADDED",
     name: "New Comment Added",
-    subject: "New Comment on Ticket {{ticketNumber}}",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "{{commentAuthor}} added a new comment on ticket {{ticketNumber}}:",
       row("Ticket", "{{ticketNumber}}") + row("Title", "{{title}}") + row("Department", "{{department}}") + row("Status", "{{status}}"),
@@ -157,13 +174,13 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_UPDATED",
     name: "Ticket Updated",
-    subject: "Ticket {{ticketNumber}} has been updated",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "The requester has updated the details of a ticket you're handling.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Department", "{{department}}") +
-        row("Issue", "{{issue}}") +
+        row("Problem Summary", "{{problemSummary}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Updated by", "{{requesterName}}"),
@@ -172,14 +189,14 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_DEPARTMENT_TRANSFERRED",
     name: "Ticket Department Transferred",
-    subject: "Ticket {{ticketNumber}} Has Been Transferred to {{department}}",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "This ticket has been transferred to your department and needs review.",
       row("Ticket", "{{ticketNumber}}") +
         row("Title", "{{title}}") +
         row("Old Department", "{{oldDepartment}}") +
         row("New Department", "{{department}}") +
-        row("Issue", "{{issue}}") +
+        row("Problem Summary", "{{problemSummary}}") +
         row("Priority", "{{priority}}") +
         row("Status", "{{status}}") +
         row("Requester", "{{requesterName}}") +
@@ -190,7 +207,7 @@ const emailTemplateDefaults = [
   {
     eventKey: "TICKET_CLOSED",
     name: "Ticket Closed",
-    subject: "Ticket {{ticketNumber}} Closed",
+    subject: "Ticket – {{ticketNumber}} – {{status}}",
     body: wrap(
       "This ticket has been closed.",
       row("Ticket", "{{ticketNumber}}") +

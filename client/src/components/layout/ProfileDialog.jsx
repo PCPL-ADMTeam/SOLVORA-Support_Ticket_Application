@@ -20,6 +20,7 @@ import { useSnackbar } from "notistack";
 import { useAuth } from "../../context/AuthContext";
 import { authApi } from "../../api/auth";
 import { usersApi } from "../../api/users";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 // A single "label / value" row used to lay out the real, existing profile
 // fields returned by GET /auth/me — never fabricated placeholders. A field
@@ -97,7 +98,7 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
   };
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="sm" fullWidth>
+    <Dialog open={open} onClose={ignoreBackdropClick(onClose)} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         {editable ? "Edit Profile" : "Profile"}
         <IconButton onClick={onClose} size="small" aria-label="Close">

@@ -30,6 +30,8 @@ import { useSnackbar } from "notistack";
 import { emailTemplatesApi } from "../../api/emailTemplates";
 import LoadingState from "../../components/common/LoadingState";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import DialogCloseButton from "../../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 // Separate from components/common/SafeHtml's config (that one's for
 // rich-text ticket descriptions and deliberately strips `style`) — email
@@ -214,7 +216,8 @@ function EditTemplateDialog({ template, placeholders, onClose, onSaved, onError 
   };
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="md">
+    <Dialog open onClose={ignoreBackdropClick(onClose)} fullWidth maxWidth="md">
+      <DialogCloseButton onClose={onClose} />
       <DialogTitle>Edit Email Template — {template.name}</DialogTitle>
       <DialogContent>
         <Stack spacing={2} sx={{ mt: 1 }}>

@@ -68,4 +68,37 @@ async function buildStandardRecipients(ticket) {
   return { userIds, ccUserIds };
 }
 
-module.exports = { buildCreatedRecipients, buildStandardRecipients, getTicketCcUserIds };
+// TICKET_ASSIGNED and TICKET_COMMENT_ADDED share this SAME, different-from-
+// the-standard-shape recipient rule (every other event keeps
+// buildStandardRecipients above, untouched):
+//   TO = the current assigned EMPLOYEE ONLY (empty/absent if unassigned —
+//        never invented, never promoted from CC; per
+//        notification.service.js#notify's existing behavior, an empty TO
+//        means no email is sent for that event at all, which is the
+//        intentional, accepted outcome here rather than something to work
+//        around)
+//   CC = the requester + every ACTIVE TEAMLEAD + every ACTIVE MANAGER of
+//        the ticket's CURRENT department + the ticket's stored Custom CC
+//        users
+// Notably the requester is NEVER in TO here (unlike buildStandardRecipients,
+// where they are) — they move to CC instead. Whoever performed the action
+// (assigned the ticket, or wrote the comment) gets no special TO/CC
+// treatment beyond whatever role-based group they already belong to — e.g.
+// a Manager who writes a comment is included only because they're an active
+// Manager of this department, exactly as if they hadn't written anything.
+async function buildAssignedOrCommentRecipients(ticket) {
+  const [teamLeads, managers, ticketCcUserIds] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(ticket.toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(ticket.toDepartmentId),
+    getTicketCcUserIds(ticket.id),
+  ]);
+  const userIds = ticket.assigneeId ? [ticket.assigneeId] : [];
+  const ccUserIds = [
+    ...new Set(
+      [ticket.requesterId, ...teamLeads.map((u) => u.id), ...managers.map((u) => u.id), ...ticketCcUserIds].filter(Boolean)
+    ),
+  ];
+  return { userIds, ccUserIds };
+}
+
+module.exports = { buildCreatedRecipients, buildStandardRecipients, buildAssignedOrCommentRecipients, getTicketCcUserIds };

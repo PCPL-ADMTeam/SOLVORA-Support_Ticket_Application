@@ -18,15 +18,16 @@ import CloseIcon from "@mui/icons-material/Close";
 import FlagIcon from "@mui/icons-material/Flag";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 
-import ReactQuill from "react-quill";
-import "react-quill/dist/quill.snow.css";
-
 import { useAuth } from "../../context/AuthContext";
 import { departmentsApi } from "../../api/departments";
 import { prioritiesApi } from "../../api/catalog";
 import AttachmentList from "./AttachmentList";
 import SearchableUserSelector from "../common/SearchableUserSelector";
 
+// Per-file size limit — separate from, and independent of, the combined
+// MAX_ATTACHMENTS_TOTAL_SIZE_MB cap below (a file can pass this check and
+// still be rejected by the combined cap, and vice versa is not possible
+// since the combined cap can only ever be stricter).
 const MAX_ATTACHMENT_MB = 10;
 
 // Mirrors ticket.service.js's MAX_ATTACHMENTS_PER_TICKET exactly — this is
@@ -35,45 +36,18 @@ const MAX_ATTACHMENT_MB = 10;
 // remains the authoritative, unbypassable check.
 const MAX_ATTACHMENTS_PER_TICKET = 5;
 
-/* =========================================================
-   QUILL TOOLBAR
-========================================================= */
+// Mirrors ticket.service.js's MAX_ATTACHMENTS_TOTAL_SIZE_MB exactly — the
+// COMBINED size of every attachment on the ticket (not per file).
+const MAX_ATTACHMENTS_TOTAL_SIZE_MB = 10;
+const MAX_ATTACHMENTS_TOTAL_SIZE_BYTES = MAX_ATTACHMENTS_TOTAL_SIZE_MB * 1024 * 1024;
 
-const quillModules = {
-  toolbar: [
-    [{ font: [] }],
-    [{ size: ["small", false, "large", "huge"] }],
-    ["bold", "italic", "underline", "strike"],
-    [{ color: [] }, { background: [] }],
-    [{ script: "sub" }, { script: "super" }],
-    [{ header: [1, 2, 3, 4, 5, 6, false] }],
-    [{ align: [] }],
-    [{ list: "ordered" }, { list: "bullet" }],
-    [{ indent: "-1" }, { indent: "+1" }],
-    ["blockquote", "code-block"],
-    ["link"],
-    ["clean"],
-  ],
-};
+// Mirrors ticket.service.js's MAX_PROBLEM_SUMMARY_WORDS exactly.
+const MAX_PROBLEM_SUMMARY_WORDS = 50;
 
-const quillFormats = [
-  "font",
-  "size",
-  "bold",
-  "italic",
-  "underline",
-  "strike",
-  "color",
-  "background",
-  "script",
-  "header",
-  "align",
-  "list",
-  "indent",
-  "blockquote",
-  "code-block",
-  "link",
-];
+function countWords(text) {
+  const trimmed = (text || "").trim();
+  return trimmed ? trimmed.split(/\s+/).length : 0;
+}
 
 const fieldLabelSx = {
   fontSize: 14,
@@ -102,7 +76,7 @@ export default function TicketForm({
   onSubmit,
   submitting = false,
   // "edit" reuses this exact form to let a ticket's own requester update
-  // the ticket's issue/priority/description (and add more attachments) —
+  // the ticket's title/priority/Problem Summary (and add more attachments) —
   // see EditTicketPage.jsx. Department is fixed once a ticket exists (its
   // ticket number/manager are already derived from it — see
   // ticket.service.js#createTicket's comment on stable ticket numbers), so
@@ -142,18 +116,16 @@ export default function TicketForm({
   const [form, setForm] = useState(() =>
     isEdit && initialTicket
       ? {
+          title: initialTicket.title || "",
           priorityId: initialTicket.priority.id,
           toDepartmentId: initialTicket.toDepartment?.id || "",
-          issueId: initialTicket.issue?.id || "",
-          customIssueText: initialTicket.customIssueText || "",
-          description: initialTicket.description || "",
+          problemSummary: initialTicket.problemSummary || "",
         }
       : {
+          title: "",
           priorityId: "",
           toDepartmentId: "",
-          issueId: "",
-          customIssueText: "",
-          description: "",
+          problemSummary: "",
           fromDepartmentId: isManagerRole ? (user.departmentAccess?.[0]?.id || "") : "",
         }
   );
@@ -190,14 +162,6 @@ export default function TicketForm({
     [user.departmentAccess, form.fromDepartmentId]
   );
 
-  const selectedIssue = useMemo(
-    () =>
-      selectedDepartment?.issues.find(
-        (i) => i.id === form.issueId
-      ) || null,
-    [selectedDepartment, form.issueId]
-  );
-
   const selectedPriority = useMemo(
     () =>
       priorities.find(
@@ -232,51 +196,11 @@ export default function TicketForm({
     setForm((prev) => ({
       ...prev,
       toDepartmentId: value?.id || "",
-      issueId: "",
-      customIssueText: "",
     }));
 
     setErrors((prev) => ({
       ...prev,
       toDepartmentId: "",
-      issueId: "",
-      customIssueText: "",
-    }));
-  };
-
-  /* =========================================================
-     ISSUE CHANGE
-  ========================================================= */
-
-  const handleIssueChange = (_, value) => {
-    setForm((prev) => ({
-      ...prev,
-      issueId: value?.id || "",
-      customIssueText: value?.isOther
-        ? prev.customIssueText
-        : "",
-    }));
-
-    setErrors((prev) => ({
-      ...prev,
-      issueId: "",
-      customIssueText: "",
-    }));
-  };
-
-  /* =========================================================
-     DESCRIPTION CHANGE
-  ========================================================= */
-
-  const handleDescriptionChange = (value) => {
-    setForm((prev) => ({
-      ...prev,
-      description: value,
-    }));
-
-    setErrors((prev) => ({
-      ...prev,
-      description: "",
     }));
   };
 
@@ -287,9 +211,16 @@ export default function TicketForm({
   // A ticket may have at most MAX_ATTACHMENTS_PER_TICKET total — counting
   // both what's already saved on the ticket (edit mode only; a new ticket
   // always starts at 0) and whatever's already staged for upload in this
-  // form session.
+  // form session. Combined SIZE is tracked the same way, against
+  // MAX_ATTACHMENTS_TOTAL_SIZE_BYTES — never per file.
   const existingAttachmentCount = isEdit ? initialTicket?.attachments?.length || 0 : 0;
+  const existingAttachmentSize = isEdit
+    ? (initialTicket?.attachments || []).reduce((sum, a) => sum + (a.fileSize || 0), 0)
+    : 0;
+  const stagedAttachmentSize = attachments.reduce((sum, f) => sum + (f.size || 0), 0);
+  const totalAttachmentSize = existingAttachmentSize + stagedAttachmentSize;
   const remainingAttachmentSlots = Math.max(MAX_ATTACHMENTS_PER_TICKET - existingAttachmentCount - attachments.length, 0);
+  const remainingAttachmentBytes = Math.max(MAX_ATTACHMENTS_TOTAL_SIZE_BYTES - totalAttachmentSize, 0);
 
   const handleAttachmentChange = (event) => {
     const files = Array.from(event.target.files || []);
@@ -308,9 +239,22 @@ export default function TicketForm({
       return;
     }
 
+    // Combined size — checked against the WHOLE selection at once (existing
+    // + already-staged + this batch), same "reject the whole thing, never
+    // silently drop files" philosophy as the count check above.
+    const incomingSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
+    if (incomingSize > remainingAttachmentBytes) {
+      setErrors((prev) => ({
+        ...prev,
+        attachments: `Attachments cannot exceed ${MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB combined per ticket. Only ${(remainingAttachmentBytes / (1024 * 1024)).toFixed(1)} MB more can be uploaded.`,
+      }));
+      event.target.value = "";
+      return;
+    }
+
     // General file types are allowed (images, documents, archives, etc.) —
-    // this is a UX convenience for the size limit only, same as the count
-    // check above; the backend's multer fileFilter (see
+    // this is a UX convenience for the per-file size limit only, same as
+    // the checks above; the backend's multer fileFilter (see
     // server/src/config/multer.js) is the authoritative, unbypassable
     // check, and blocks only genuinely dangerous file types, not a fixed
     // allowlist of "safe" ones.
@@ -351,8 +295,14 @@ export default function TicketForm({
      VALIDATION
   ========================================================= */
 
+  const problemSummaryWordCount = countWords(form.problemSummary);
+
   const validateForm = () => {
     const newErrors = {};
+
+    if (!form.title.trim()) {
+      newErrors.title = "Title is required";
+    }
 
     if (!form.priorityId) {
       newErrors.priorityId = "Priority is required";
@@ -363,25 +313,10 @@ export default function TicketForm({
         "Department is required";
     }
 
-    if (!form.issueId) {
-      newErrors.issueId = "Issue is required";
-    }
-
-    if (
-      selectedIssue?.isOther &&
-      !form.customIssueText.trim()
-    ) {
-      newErrors.customIssueText =
-        "Please enter the issue";
-    }
-
-    const plainDescription = form.description
-      .replace(/<(.|\n)*?>/g, "")
-      .trim();
-
-    if (!plainDescription) {
-      newErrors.description =
-        "Description is required";
+    if (!form.problemSummary.trim()) {
+      newErrors.problemSummary = "Problem Summary is required";
+    } else if (problemSummaryWordCount > MAX_PROBLEM_SUMMARY_WORDS) {
+      newErrors.problemSummary = `Problem Summary must be ${MAX_PROBLEM_SUMMARY_WORDS} words or fewer (currently ${problemSummaryWordCount}).`;
     }
 
     setErrors(newErrors);
@@ -398,19 +333,8 @@ export default function TicketForm({
 
     if (!validateForm()) return;
 
-    /*
-      TITLE IS NOW CREATED FROM ISSUE
-
-      Normal issue:
-      title = selectedIssue.name
-
-      Other issue:
-      title = customIssueText
-    */
-
-    const ticketTitle = selectedIssue?.isOther
-      ? form.customIssueText.trim()
-      : selectedIssue?.name || "";
+    const ticketTitle = form.title.trim();
+    const problemSummary = form.problemSummary.trim();
 
     if (isEdit) {
       // PATCH /tickets/:id only ever takes JSON (no multer on that route —
@@ -421,10 +345,8 @@ export default function TicketForm({
       // handleAddComment). Existing attachments are left untouched.
       const payload = {
         title: ticketTitle,
-        description: form.description,
+        problemSummary,
         priorityId: form.priorityId,
-        issueId: form.issueId,
-        customIssueText: selectedIssue?.isOther ? form.customIssueText.trim() : "",
       };
       await onSubmit(payload, attachments);
       return;
@@ -434,8 +356,8 @@ export default function TicketForm({
 
     formData.append("title", ticketTitle);
     formData.append(
-      "description",
-      form.description
+      "problemSummary",
+      problemSummary
     );
     formData.append(
       "priorityId",
@@ -445,17 +367,6 @@ export default function TicketForm({
       "toDepartmentId",
       form.toDepartmentId
     );
-    formData.append(
-      "issueId",
-      form.issueId
-    );
-
-    if (selectedIssue?.isOther) {
-      formData.append(
-        "customIssueText",
-        form.customIssueText.trim()
-      );
-    }
 
     // Manager-only — see ticket.service.js#resolveFromDepartmentId, which
     // independently validates this against the caller's real
@@ -525,7 +436,7 @@ export default function TicketForm({
           }}
         >
           {isEdit
-            ? "Update the issue, priority, or description of this ticket."
+            ? "Update the title, priority, or problem summary of this ticket."
             : "Provide the details below to create a support ticket."}
         </Typography>
       </Box>
@@ -568,12 +479,34 @@ export default function TicketForm({
                 <Typography
                   sx={sectionSubtitleSx}
                 >
-                  Select the department, issue and
-                  priority for your request.
+                  Provide a title, select the department and
+                  priority, and describe the problem.
                 </Typography>
               </Box>
 
               <Divider />
+
+              {/* =================================================
+                  TITLE
+              ================================================= */}
+
+              <Box>
+                <Typography sx={fieldLabelSx}>
+                  Title
+                </Typography>
+
+                <TextField
+                  fullWidth
+                  size="small"
+                  name="title"
+                  value={form.title}
+                  onChange={handleChange}
+                  placeholder="Enter a short issue title"
+                  error={Boolean(errors.title)}
+                  helperText={errors.title}
+                  inputProps={{ maxLength: 200 }}
+                />
+              </Box>
 
               {/* =================================================
                   PRIORITY
@@ -808,153 +741,35 @@ export default function TicketForm({
               )}
 
               {/* =================================================
-                  ISSUE
+                  PROBLEM SUMMARY
               ================================================= */}
 
               <Box>
-                <Typography sx={fieldLabelSx}>
-                  Issue
-                </Typography>
-
-                <Autocomplete
-                  fullWidth
-                  size="small"
-                  disabled={!selectedDepartment}
-                  options={
-                    selectedDepartment?.issues ||
-                    []
-                  }
-                  getOptionLabel={(i) => i.name}
-                  value={selectedIssue}
-                  onChange={handleIssueChange}
-                  renderInput={(params) => (
-                    <TextField
-                      {...params}
-                      placeholder={
-                        selectedDepartment
-                          ? "Search or select an issue"
-                          : "Select department first"
-                      }
-                      error={Boolean(
-                        errors.issueId
-                      )}
-                      helperText={
-                        errors.issueId ||
-                        "Search for a predefined issue"
-                      }
-                    />
-                  )}
-                />
-              </Box>
-
-              {/* =================================================
-                  CUSTOM ISSUE
-              ================================================= */}
-
-              {selectedIssue?.isOther && (
-                <Box>
-                  <Typography
-                    sx={fieldLabelSx}
-                  >
-                    Specify Issue
+                <Stack direction="row" justifyContent="space-between" alignItems="baseline">
+                  <Typography sx={fieldLabelSx}>
+                    Problem Summary
                   </Typography>
-
-                  <TextField
-                    fullWidth
-                    name="customIssueText"
-                    value={
-                      form.customIssueText
-                    }
-                    onChange={handleChange}
-                    placeholder="Enter the issue"
-                    error={Boolean(
-                      errors.customIssueText
-                    )}
-                    helperText={
-                      errors.customIssueText
-                    }
-                    size="small"
-                  />
-                </Box>
-              )}
-
-              {/* =================================================
-                  DESCRIPTION
-              ================================================= */}
-
-              <Box>
-                <Typography sx={fieldLabelSx}>
-                  Description
-                </Typography>
-
-                <Box
-                  sx={{
-                    "& .ql-toolbar": {
-                      border:
-                        "1px solid",
-                      borderBottom: "none",
-                      borderRadius:
-                        "6px 6px 0 0",
-                      backgroundColor:
-                        "action.hover",
-                    },
-
-                    "& .ql-container": {
-                      border:
-                        "1px solid",
-                      borderRadius:
-                        "0 0 6px 6px",
-                      minHeight: 170,
-                      fontSize: 14,
-                    },
-
-                    "& .ql-editor": {
-                      minHeight: 170,
-                    },
-
-                    "& .ql-editor.ql-blank::before":
-                      {
-                        color: "text.secondary",
-                        fontStyle: "normal",
-                      },
-
-                    ...(errors.description && {
-                      "& .ql-toolbar": {
-                        borderColor:
-                          "primary.main",
-                      },
-
-                      "& .ql-container": {
-                        borderColor:
-                          "primary.main",
-                      },
-                    }),
-                  }}
-                >
-                  <ReactQuill
-                    theme="snow"
-                    value={form.description}
-                    onChange={
-                      handleDescriptionChange
-                    }
-                    modules={quillModules}
-                    formats={quillFormats}
-                    placeholder="Describe your issue in detail..."
-                  />
-                </Box>
-
-                {errors.description && (
                   <Typography
                     sx={{
-                      color: "primary.main",
                       fontSize: 12,
-                      mt: 0.5,
-                      ml: 1.5,
+                      color: problemSummaryWordCount > MAX_PROBLEM_SUMMARY_WORDS ? "primary.main" : "text.secondary",
                     }}
                   >
-                    {errors.description}
+                    {problemSummaryWordCount} / {MAX_PROBLEM_SUMMARY_WORDS} words
                   </Typography>
-                )}
+                </Stack>
+
+                <TextField
+                  fullWidth
+                  multiline
+                  minRows={4}
+                  name="problemSummary"
+                  value={form.problemSummary}
+                  onChange={handleChange}
+                  placeholder="Briefly describe the problem (50 words max)..."
+                  error={Boolean(errors.problemSummary)}
+                  helperText={errors.problemSummary}
+                />
               </Box>
 
               {/* =================================================
@@ -970,7 +785,7 @@ export default function TicketForm({
                   {isEdit ? "Add Attachment" : "Attachment"}
                 </Typography>
 
-                {remainingAttachmentSlots > 0 ? (
+                {remainingAttachmentSlots > 0 && remainingAttachmentBytes > 0 ? (
                   <Button
                     component="label"
                     variant="outlined"
@@ -997,7 +812,9 @@ export default function TicketForm({
                   </Button>
                 ) : (
                   <Typography variant="body2" color="text.secondary">
-                    Maximum attachments reached — remove one to add another.
+                    {remainingAttachmentSlots > 0
+                      ? "Maximum combined attachment size reached — remove one to add another."
+                      : "Maximum attachments reached — remove one to add another."}
                   </Typography>
                 )}
 
@@ -1008,9 +825,10 @@ export default function TicketForm({
                     color: "text.secondary",
                   }}
                 >
-                  Any file type — up to{" "}
-                  {MAX_ATTACHMENT_MB} MB each. Maximum attachments: {MAX_ATTACHMENTS_PER_TICKET}
-                  {" "}({existingAttachmentCount + attachments.length}/{MAX_ATTACHMENTS_PER_TICKET} used)
+                  Any file type — up to {MAX_ATTACHMENT_MB} MB each.
+                  <br />
+                  Attachments: {existingAttachmentCount + attachments.length} / {MAX_ATTACHMENTS_PER_TICKET}
+                  {" "}&nbsp;•&nbsp; Size: {(totalAttachmentSize / (1024 * 1024)).toFixed(1)} MB / {MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB
                 </Typography>
 
                 {errors.attachments && (

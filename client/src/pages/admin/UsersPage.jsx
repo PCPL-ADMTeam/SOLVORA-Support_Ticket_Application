@@ -36,6 +36,8 @@ import { useAuth } from "../../context/AuthContext";
 import LoadingState from "../../components/common/LoadingState";
 import PaginationBar from "../../components/common/PaginationBar";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
+import DialogCloseButton from "../../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 const ROLES = ["ADMIN", "MANAGER", "TEAMLEAD", "EMPLOYEE"];
 
@@ -272,7 +274,8 @@ export default function UsersPage() {
         </Paper>
       )}
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} fullWidth maxWidth="sm">
+      <Dialog open={dialogOpen} onClose={ignoreBackdropClick(() => setDialogOpen(false))} fullWidth maxWidth="sm">
+        <DialogCloseButton onClose={() => setDialogOpen(false)} />
         <DialogTitle>{form.id ? "Edit User" : "New User"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -309,7 +312,8 @@ export default function UsersPage() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={Boolean(accessTarget)} onClose={() => setAccessTarget(null)} fullWidth maxWidth="sm">
+      <Dialog open={Boolean(accessTarget)} onClose={ignoreBackdropClick(() => setAccessTarget(null))} fullWidth maxWidth="sm">
+        <DialogCloseButton onClose={() => setAccessTarget(null)} />
         <DialogTitle>Department Access — {accessTarget?.name}</DialogTitle>
         <DialogContent>
           {accessLoading ? (

@@ -2,6 +2,12 @@ const prisma = require("../config/prisma");
 const env = require("../config/env");
 const ApiError = require("../utils/ApiError");
 const { recordAudit } = require("../utils/audit");
+// Same source of truth recipientBuilder.js already uses for "every active
+// Team Lead/Manager of this department" — reused here ONLY to render
+// {{teamLeadNames}}/{{managerNames}} as display text, never to decide who
+// actually receives the email (that remains exclusively recipientBuilder.js's
+// job).
+const userDepartmentAccessService = require("./userDepartmentAccess.service");
 
 // {{placeholder}} tokens only — plain string replacement, never eval'd or
 // otherwise executed as code.
@@ -17,7 +23,7 @@ const SUPPORTED_PLACEHOLDERS = [
   "ticketNumber",
   "title",
   "department",
-  "issue",
+  "problemSummary",
   "priority",
   "status",
   "requesterName",
@@ -36,6 +42,9 @@ const SUPPORTED_PLACEHOLDERS = [
   "oldDepartment",
   "transferReason",
   "resetLink",
+  "assignmentCommentSection",
+  "teamLeadNames",
+  "managerNames",
 ];
 
 // Placeholders whose value is pre-built, already-safe HTML this service
@@ -43,17 +52,11 @@ const SUPPORTED_PLACEHOLDERS = [
 // single piece of user-supplied text — exempted from renderString's
 // generic per-placeholder escaping so that HTML isn't escaped a second
 // time into visible entities. See buildAttachmentsHtml.
-const RAW_PLACEHOLDER_KEYS = new Set(["attachments"]);
+const RAW_PLACEHOLDER_KEYS = new Set(["attachments", "assignmentCommentSection"]);
 
 function stripHtml(value) {
   if (typeof value !== "string") return value;
   return value.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-}
-
-function issueLabel(ticket) {
-  if (!ticket) return "";
-  if (ticket.issue?.isOther) return ticket.customIssueText || ticket.issue?.name || "Others";
-  return ticket.issue?.name || "";
 }
 
 // TICKET_COMMENT_ADDED only — renders each attachment's ORIGINAL filename
@@ -75,25 +78,70 @@ function buildAttachmentsHtml(comment, hasText) {
   return `<div style="margin-top:${hasText ? "10px" : "0"};">${items}</div>`;
 }
 
+// TICKET_ASSIGNED (and TICKET_REASSIGNED, harmlessly, if that template is
+// ever given the same placeholder) only — renders the OPTIONAL assignment
+// comment as a complete, self-contained, already-styled HTML block when
+// present, or an empty string when it isn't. This is the ONE place that
+// decides whether an "Assignment Note" section exists at all — a template
+// only ever inserts the single {{assignmentCommentSection}} placeholder
+// itself (see emailTemplateDefaults.js), never its own separate label/
+// value markup, so there is no risk of a template showing an empty label
+// with nothing after it. The comment text is escaped individually since
+// this returns pre-built HTML that bypasses the generic per-placeholder
+// escaping below (see {{attachments}}'s own buildAttachmentsHtml, which
+// follows the identical pattern).
+function buildAssignmentCommentSection(assignmentComment) {
+  const trimmed = (assignmentComment || "").trim();
+  if (!trimmed) return "";
+  return `<div style="margin:16px 0 0;padding:12px 14px;background:#f7f7f7;border-left:3px solid #b43d35;border-radius:4px;">
+    <div style="font-weight:700;font-size:13px;color:#1a1a1a;margin-bottom:4px;">Assignment Note</div>
+    <div style="font-size:13px;color:#333;white-space:pre-wrap;">${escapeHtml(trimmed)}</div>
+  </div>`;
+}
+
+// TICKET_ASSIGNED (and any other template that chooses to reference them)
+// only — comma-joined display names of every currently active Team
+// Lead/Manager for the ticket's CURRENT department, via the exact same
+// userDepartmentAccessService queries recipientBuilder.js's own
+// buildAssignedOrCommentRecipients/buildStandardRecipients already use for
+// CC. This never decides who receives the email (recipientBuilder.js alone
+// does that) — it only renders the same set as readable text inside the
+// body. "None" is used instead of an empty string so the row never renders
+// as a blank-looking value.
+async function buildDepartmentStaffNames(toDepartmentId) {
+  if (!toDepartmentId) return { teamLeadNames: "", managerNames: "" };
+  const [teamLeads, managers] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(toDepartmentId),
+  ]);
+  return {
+    teamLeadNames: teamLeads.map((u) => u.name).join(", ") || "None",
+    managerNames: managers.map((u) => u.name).join(", ") || "None",
+  };
+}
+
 // All placeholders supported by the seeded templates. Every value is
 // optional — a ticket/comment/statusChange that doesn't apply to a given
 // event just leaves those placeholders blank when rendered, rather than
 // failing.
-function buildPlaceholders({ ticket, comment, recipientName, statusChange, departmentTransfer, resetLink } = {}) {
+async function buildPlaceholders({ ticket, comment, recipientName, statusChange, departmentTransfer, resetLink, assignmentComment } = {}) {
   const commentText = stripHtml(comment?.body)?.trim() || "";
   const hasCommentText = Boolean(commentText);
   const hasAttachments = Boolean(comment?.attachments?.length);
+  const { teamLeadNames, managerNames } = await buildDepartmentStaffNames(ticket?.toDepartmentId);
   return {
     recipientName: recipientName || "",
     ticketNumber: ticket?.ticketNumber || "",
     title: ticket?.title || "",
     department: ticket?.toDepartment?.name || "",
-    issue: issueLabel(ticket),
+    problemSummary: ticket?.problemSummary || "",
     priority: ticket?.priority?.name || "",
     status: ticket?.status || "",
     requesterName: ticket?.requester?.name || "",
     assigneeName: ticket?.assignee?.name || "Unassigned",
     managerName: ticket?.manager?.name || "",
+    teamLeadNames,
+    managerNames,
     // TICKET_COMMENT_ADDED: text when there is any; if there's none but the
     // comment has attachment(s), leave this blank so {{attachments}} below
     // is the box's only content (no leftover empty line above the file
@@ -133,6 +181,8 @@ function buildPlaceholders({ ticket, comment, recipientName, statusChange, depar
     // auth.service.js#forgotPassword, since there's no ticket to derive a
     // link from (mirrors how ticketLink itself is built above).
     resetLink: resetLink || "",
+    // TICKET_ASSIGNED only — see buildAssignmentCommentSection above.
+    assignmentCommentSection: buildAssignmentCommentSection(assignmentComment),
   };
 }
 
@@ -217,15 +267,30 @@ async function renderTemplate(eventKey, context) {
   }
 
   try {
-    const data = buildPlaceholders(context);
+    const data = await buildPlaceholders(context);
     return {
-      subject: renderString(template.subject, data),
+      // Every ticket-lifecycle event uses ONE centrally-generated subject
+      // format ("Ticket – {{ticketNumber}} – {{status}}") rather than each
+      // EmailTemplate row's own free-text subject — this is the single
+      // place that format is produced, so it can never drift out of sync
+      // across events. PASSWORD_RESET_REQUESTED (the only non-ticket
+      // event) is untouched — it has no `ticket` in its context and keeps
+      // its own stored subject exactly as before.
+      subject: context?.ticket ? buildTicketEmailSubject(context.ticket) : renderString(template.subject, data),
       body: stripEmptyLabeledRows(renderString(template.body, data, { escapeValues: true, rawKeys: RAW_PLACEHOLDER_KEYS })),
     };
   } catch (err) {
     console.error(`[emailTemplate] Failed to render template for "${eventKey}":`, err.message);
     return null;
   }
+}
+
+// Central ticket-email subject format — the ONLY place any ticket-related
+// email subject is assembled, so a future event never has to hardcode its
+// own variant. Uses the ticket's actual current status and its NEW,
+// purely-numeric ticketNumber (never the internal DB id).
+function buildTicketEmailSubject(ticket) {
+  return `Ticket – ${ticket.ticketNumber} – ${ticket.status}`;
 }
 
 // ---------------------------------------------------------------------------

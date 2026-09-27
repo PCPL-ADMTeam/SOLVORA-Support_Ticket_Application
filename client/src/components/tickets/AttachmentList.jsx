@@ -5,6 +5,7 @@ import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import CloseIcon from "@mui/icons-material/Close";
 import { ticketsApi } from "../../api/tickets";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 function formatSize(bytes) {
   if (bytes < 1024) return `${bytes} B`;
@@ -180,7 +181,7 @@ export default function AttachmentList({ ticketId, attachments }) {
 
       <Dialog
         open={Boolean(preview)}
-        onClose={() => setPreview(null)}
+        onClose={ignoreBackdropClick(() => setPreview(null))}
         maxWidth={false}
         PaperProps={{
           sx: {
@@ -207,6 +208,7 @@ export default function AttachmentList({ ticketId, attachments }) {
             <IconButton
               onClick={() => setPreview(null)}
               title="Close"
+              aria-label="Close"
               sx={{
                 position: "absolute",
                 top: -16,

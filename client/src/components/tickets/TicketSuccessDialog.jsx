@@ -6,6 +6,8 @@ import {
   Stack,
 } from "@mui/material";
 import CheckCircleIcon from "@mui/icons-material/CheckCircle";
+import DialogCloseButton from "../common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 export default function TicketSuccessDialog({
   open,
@@ -17,7 +19,7 @@ export default function TicketSuccessDialog({
   return (
     <Dialog
       open={open}
-      onClose={onClose}
+      onClose={ignoreBackdropClick(onClose)}
       maxWidth="xs"
       fullWidth
       slotProps={{
@@ -35,6 +37,7 @@ export default function TicketSuccessDialog({
         },
       }}
     >
+      <DialogCloseButton onClose={onClose} />
       <Box
         sx={{
           px: 3,

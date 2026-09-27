@@ -23,12 +23,14 @@ import AddIcon from "@mui/icons-material/Add";
 import EditIcon from "@mui/icons-material/Edit";
 import DeleteIcon from "@mui/icons-material/Delete";
 import { useSnackbar } from "notistack";
-import { departmentsApi, issuesApi } from "../../api/departments";
+import { departmentsApi } from "../../api/departments";
 import { usersApi } from "../../api/users";
 import LoadingState from "../../components/common/LoadingState";
 import EmptyState from "../../components/common/EmptyState";
 import ConfirmDialog from "../../components/common/ConfirmDialog";
 import SearchableUserSelector from "../../components/common/SearchableUserSelector";
+import DialogCloseButton from "../../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 // Department = the organizational unit (its Managers — many-to-many, no cap
 // — and its Team Leads — many-to-many, up to department.maxTeamLeads, but
@@ -66,15 +68,13 @@ export default function DepartmentDetailsPage() {
         <Chip label={`Prefix: ${department.ticketPrefix}`} sx={{ fontFamily: "monospace" }} />
       </Stack>
       <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-        Next ticket for this department will be numbered {department.ticketPrefix}-{String(department.ticketSequence + 1).padStart(4, "0")}.
-        To change the prefix, edit this department from the Departments list.
+        Ticket numbers are now assigned globally and no longer depend on this department's prefix.
       </Typography>
 
       <Stack spacing={3} sx={{ mt: 2 }}>
         <DepartmentManagersSection department={department} onChanged={load} />
         <DepartmentTeamLeadsSection department={department} onChanged={load} />
         <TeamMembersSection department={department} onChanged={load} />
-        <IssueTitlesSection department={department} onChanged={load} />
       </Stack>
     </Box>
   );
@@ -147,7 +147,8 @@ function DepartmentManagersSection({ department, onChanged }) {
         </List>
       )}
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={dialogOpen} onClose={ignoreBackdropClick(() => setDialogOpen(false))} fullWidth maxWidth="xs">
+        <DialogCloseButton onClose={() => setDialogOpen(false)} />
         <DialogTitle>Add Manager — {department.name}</DialogTitle>
         <DialogContent>
           {/* Managers may already have OTHER department access — that's not
@@ -266,7 +267,8 @@ function DepartmentTeamLeadsSection({ department, onChanged }) {
         </List>
       )}
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={dialogOpen} onClose={ignoreBackdropClick(() => setDialogOpen(false))} fullWidth maxWidth="xs">
+        <DialogCloseButton onClose={() => setDialogOpen(false)} />
         <DialogTitle>Add Team Lead — {department.name}</DialogTitle>
         <DialogContent>
           <SearchableUserSelector
@@ -376,7 +378,8 @@ function TeamMembersSection({ department, onChanged }) {
         </List>
       )}
 
-      <Dialog open={addOpen} onClose={() => setAddOpen(false)} fullWidth maxWidth="xs">
+      <Dialog open={addOpen} onClose={ignoreBackdropClick(() => setAddOpen(false))} fullWidth maxWidth="xs">
+        <DialogCloseButton onClose={() => setAddOpen(false)} />
         <DialogTitle>Add Employee to {department.name}</DialogTitle>
         <DialogContent>
           <SearchableUserSelector
@@ -418,111 +421,6 @@ function TeamMembersSection({ department, onChanged }) {
         danger
         onClose={() => setRemoveTarget(null)}
         onConfirm={handleRemove}
-      />
-    </Paper>
-  );
-}
-
-/* =========================================================
-   ISSUE TITLES (existing Issue model/API — "Others" untouched)
-========================================================= */
-
-function IssueTitlesSection({ department, onChanged }) {
-  const { enqueueSnackbar } = useSnackbar();
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [form, setForm] = useState({ id: null, name: "" });
-  const [deleteTarget, setDeleteTarget] = useState(null);
-
-  const openCreate = () => { setForm({ id: null, name: "" }); setDialogOpen(true); };
-  const openEdit = (issue) => { setForm({ id: issue.id, name: issue.name }); setDialogOpen(true); };
-
-  const handleSave = async () => {
-    try {
-      if (form.id) {
-        await issuesApi.update(form.id, { name: form.name });
-      } else {
-        await issuesApi.create({ departmentId: department.id, name: form.name });
-      }
-      setDialogOpen(false);
-      onChanged();
-      enqueueSnackbar("Issue saved", { variant: "success" });
-    } catch (err) {
-      enqueueSnackbar(err.response?.data?.message || "Save failed", { variant: "error" });
-    }
-  };
-
-  const handleDelete = async () => {
-    try {
-      await issuesApi.remove(deleteTarget.id);
-      setDeleteTarget(null);
-      onChanged();
-      enqueueSnackbar("Issue deleted", { variant: "success" });
-    } catch (err) {
-      enqueueSnackbar(err.response?.data?.message || "Failed to delete", { variant: "error" });
-    }
-  };
-
-  const normalIssues = department.issues.filter((i) => !i.isOther);
-  const othersIssue = department.issues.find((i) => i.isOther);
-
-  return (
-    <Paper variant="outlined" sx={{ p: 2.5 }}>
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1.5 }}>
-        <Typography variant="subtitle1" fontWeight={700}>Issue Titles</Typography>
-        <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openCreate}>Add Issue</Button>
-      </Stack>
-
-      {normalIssues.length === 0 ? (
-        <EmptyState title="No predefined issues yet" subtitle="Add common issue titles for this department." />
-      ) : (
-        <List dense disablePadding>
-          {normalIssues.map((issue) => (
-            <ListItem key={issue.id} divider sx={{ px: 0 }}>
-              <ListItemText primary={issue.name} />
-              <Stack direction="row" spacing={0.5}>
-                <IconButton size="small" onClick={() => openEdit(issue)}><EditIcon fontSize="small" /></IconButton>
-                <IconButton size="small" onClick={() => setDeleteTarget(issue)}><DeleteIcon fontSize="small" /></IconButton>
-              </Stack>
-            </ListItem>
-          ))}
-        </List>
-      )}
-
-      {othersIssue && (
-        <Box sx={{ mt: 1.5, pt: 1.5, borderTop: 1, borderColor: "divider" }}>
-          <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-            <Typography variant="body2" color="text.secondary">{othersIssue.name}</Typography>
-            <Chip size="small" label="Always available — cannot be edited or removed" />
-          </Stack>
-        </Box>
-      )}
-
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>{form.id ? "Edit Issue" : `New Issue — ${department.name}`}</DialogTitle>
-        <DialogContent>
-          <TextField
-            autoFocus
-            label="Issue name"
-            value={form.name}
-            onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-            fullWidth
-            sx={{ mt: 1 }}
-          />
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setDialogOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleSave} disabled={!form.name.trim()}>Save</Button>
-        </DialogActions>
-      </Dialog>
-
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        title="Delete issue?"
-        message={`"${deleteTarget?.name}" will be permanently removed. This fails if any tickets use it.`}
-        confirmLabel="Delete"
-        danger
-        onClose={() => setDeleteTarget(null)}
-        onConfirm={handleDelete}
       />
     </Paper>
   );

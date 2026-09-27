@@ -56,10 +56,22 @@ export default function ActivityTimeline({ history }) {
               </Typography>
               {h.fieldName && (
                 <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "pre-wrap" }}>
-                  {/* A note-only entry (RESOLUTION_NOTES/ON_HOLD_REASON/
-                      CLOSED_REASON) has no "before" value — show the note
-                      text on its own rather than a confusing "— → text". */}
-                  {h.oldValue ? `${h.oldValue} → ${h.newValue || "—"}` : h.newValue || "—"}
+                  {/* Reassignment reads better as "Assigned to <name>" than
+                      a generic "<old> → <new>" arrow — the "by <name>" on
+                      the line above already identifies who performed the
+                      action, so repeating the old assignee here would be
+                      redundant. oldValue/newValue are always already
+                      resolved, human-readable display names by this point
+                      (see ticket.service.js#updateTicket) — never a raw
+                      user id. */}
+                  {h.action === "ASSIGNED"
+                    ? `Assigned to ${h.newValue || "Unassigned"}`
+                    : /* A note-only entry (RESOLUTION_NOTES/ON_HOLD_REASON/
+                         CLOSED_REASON) has no "before" value — show the note
+                         text on its own rather than a confusing "— → text". */
+                      h.oldValue
+                      ? `${h.oldValue} → ${h.newValue || "—"}`
+                      : h.newValue || "—"}
                 </Typography>
               )}
             </TimelineContent>

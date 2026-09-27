@@ -88,4 +88,15 @@ async function downloadBlobStream(blobName) {
   return containerClient.getBlockBlobClient(blobName).download();
 }
 
-module.exports = { isConfigured, uploadBuffer, deleteBlob, downloadBlobStream };
+// Returns the blob's full contents as an in-memory Buffer — used only where
+// the whole file is needed at once (e.g. building a Microsoft Graph email
+// file attachment payload, which takes a single base64 blob rather than a
+// stream; see notification.service.js). Never used for the normal
+// authenticated download path (streamAttachment), which still streams to
+// avoid buffering large files in memory unnecessarily.
+async function downloadBlobBuffer(blobName) {
+  const containerClient = await getContainerClient();
+  return containerClient.getBlockBlobClient(blobName).downloadToBuffer();
+}
+
+module.exports = { isConfigured, uploadBuffer, deleteBlob, downloadBlobStream, downloadBlobBuffer };

@@ -108,8 +108,6 @@ export default function AgentQueuePage() {
           key={isMy ? `my-${myScope}` : "department"}
           hideHeading
           showRequester
-          showIssue
-          showIssueFilter
           showAssignee={!isMy || myScope === "created"}
           showAssigneeFilter={!isMy}
           showAssignedFilter={!isMy}

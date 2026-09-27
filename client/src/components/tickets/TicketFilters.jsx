@@ -14,16 +14,16 @@ const ASSIGNED_OPTIONS = [
 ];
 
 // Search/status/priority/date-range filters for every ticket list, plus a
-// set of role-gated extras (Department/Issue/Assignee/Assigned) that a
-// caller opts into individually — never all shown at once, so ADMIN can get
-// the richest filter set while MANAGER/TEAMLEAD/EMPLOYEE only see what's
+// set of role-gated extras (Department/Assignee/Assigned) that a caller
+// opts into individually — never all shown at once, so ADMIN can get the
+// richest filter set while MANAGER/TEAMLEAD/EMPLOYEE only see what's
 // relevant to their authorized scope (see TicketsListPage.jsx's callers for
 // exactly which
 // flags each role passes). Every filter here only NARROWS the request sent
 // to GET /tickets; the backend (ticket.service.js#listTickets) is what
 // actually enforces the role-based authorization scope — this component
 // has no say over what a request is allowed to return.
-export default function TicketFilters({ filters, onChange, showAssigneeFilter, showDepartmentFilter, showIssueFilter, showAssignedFilter }) {
+export default function TicketFilters({ filters, onChange, showAssigneeFilter, showDepartmentFilter, showAssignedFilter }) {
   const { user } = useAuth();
   const [priorities, setPriorities] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -32,9 +32,9 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
   // TEAMLEAD to only the departments they have UserDepartmentAccess to —
   // departments they lack access to must never be offered as a filter
   // choice, even though `departments` itself (below) still loads every
-  // department's full record (issues included) since GET /departments is
-  // readable by any authenticated user. null = not a management role, so no
-  // restriction applies.
+  // department's full record since GET /departments is readable by any
+  // authenticated user. null = not a management role, so no restriction
+  // applies.
   const [myDepartmentIds, setMyDepartmentIds] = useState(null);
 
   useEffect(() => {
@@ -47,8 +47,8 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
   useEffect(() => {
     // GET /departments is readable by any authenticated user (the ticket
     // form already relies on this), so this is not a new access grant.
-    if (showDepartmentFilter || showIssueFilter) departmentsApi.list().then(({ data }) => setDepartments(data.data));
-  }, [showDepartmentFilter, showIssueFilter]);
+    if (showDepartmentFilter) departmentsApi.list().then(({ data }) => setDepartments(data.data));
+  }, [showDepartmentFilter]);
 
   useEffect(() => {
     if (showDepartmentFilter && (user.role.name === "MANAGER" || user.role.name === "TEAMLEAD")) {
@@ -60,21 +60,8 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
 
   const set = (field) => (e) => onChange({ ...filters, [field]: e.target.value, page: 1 });
 
-  // Issue options come from whichever department is relevant: an ADMIN
-  // picks a department first (same cascading UX as TicketForm's own
-  // Department -> Issue picker); a Team Lead's department is already fixed
-  // by their UserDepartmentAccess, and a Manager's "own" department for
-  // this fallback is their first accessible one (their My Tickets tab,
-  // where this branch applies, isn't itself department-scoped) — neither
-  // reads the legacy User.departmentId, which is only meaningful for an
-  // Employee.
-  const issueSourceDepartment = showDepartmentFilter
-    ? departments.find((d) => d.id === filters.departmentId)
-    : departments.find((d) => d.id === (user.departmentAccess?.[0]?.id ?? user.departmentId));
-  const issueOptions = issueSourceDepartment?.issues || [];
-
   const handleDepartmentChange = (e) => {
-    onChange({ ...filters, departmentId: e.target.value, issueId: "", page: 1 });
+    onChange({ ...filters, departmentId: e.target.value, page: 1 });
   };
 
   return (
@@ -100,21 +87,6 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
           <TextField size="small" select label="Department" value={filters.departmentId || ""} onChange={handleDepartmentChange} sx={{ minWidth: 160 }}>
             <MenuItem value="">All Departments</MenuItem>
             {departmentOptions.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
-          </TextField>
-        )}
-        {showIssueFilter && (
-          <TextField
-            size="small"
-            select
-            label="Issue"
-            value={filters.issueId || ""}
-            onChange={set("issueId")}
-            disabled={showDepartmentFilter && !filters.departmentId}
-            helperText={showDepartmentFilter && !filters.departmentId ? "Select a department first" : ""}
-            sx={{ minWidth: 180 }}
-          >
-            <MenuItem value="">All</MenuItem>
-            {issueOptions.map((i) => <MenuItem key={i.id} value={i.id}>{i.name}</MenuItem>)}
           </TextField>
         )}
         {showAssigneeFilter && (

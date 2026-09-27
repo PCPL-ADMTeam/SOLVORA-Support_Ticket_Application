@@ -21,6 +21,8 @@ import { useSnackbar } from "notistack";
 import { prioritiesApi } from "../../api/catalog";
 import LoadingState from "../../components/common/LoadingState";
 import PriorityBadge from "../../components/common/PriorityBadge";
+import DialogCloseButton from "../../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 const emptyForm = { name: "", level: "", color: "#c81e2a" };
 
@@ -129,7 +131,8 @@ export default function SlaPage() {
         </Table>
       </Paper>
 
-      <Dialog open={dialogOpen} onClose={() => setDialogOpen(false)}>
+      <Dialog open={dialogOpen} onClose={ignoreBackdropClick(() => setDialogOpen(false))}>
+        <DialogCloseButton onClose={() => setDialogOpen(false)} />
         <DialogTitle>New Priority</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1, minWidth: 320 }}>

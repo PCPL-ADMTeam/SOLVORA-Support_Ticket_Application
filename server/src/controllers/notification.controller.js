@@ -15,4 +15,9 @@ async function markAllRead(req, res) {
   res.json({ success: true });
 }
 
-module.exports = { list, markRead, markAllRead };
+async function clearAll(req, res) {
+  await notificationService.clearAll(req.user.id);
+  res.json({ success: true });
+}
+
+module.exports = { list, markRead, markAllRead, clearAll };

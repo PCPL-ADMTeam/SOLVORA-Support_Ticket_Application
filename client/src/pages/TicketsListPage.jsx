@@ -42,8 +42,6 @@ export default function TicketsListPage({
   showAssignee,
   showAssigneeFilter,
   showRequester,
-  showIssue,
-  showIssueFilter,
   showDepartment = true,
   showDepartmentFilter,
   showAssignedFilter,
@@ -64,7 +62,6 @@ export default function TicketsListPage({
     search: searchParams.get("search") || "",
     assigned: searchParams.get("assigned") || "",
     departmentId: searchParams.get("departmentId") || "",
-    issueId: searchParams.get("issueId") || "",
     // "Raised by Me" ("created") / "Assigned to Me" ("assigned") — set only
     // when navigating in from a dashboard KPI/card (DashboardPage.jsx's
     // goToTickets); otherwise absent, preserving each page's own default
@@ -148,7 +145,6 @@ export default function TicketsListPage({
         onChange={setFilters}
         showAssigneeFilter={showAssigneeFilter}
         showDepartmentFilter={showDepartmentFilter}
-        showIssueFilter={showIssueFilter}
         showAssignedFilter={showAssignedFilter}
       />
 
@@ -198,7 +194,6 @@ export default function TicketsListPage({
                 <TableCell>Ticket #</TableCell>
                 <TableCell>Title</TableCell>
                 {showRequester && <TableCell>Requester</TableCell>}
-                {showIssue && <TableCell>Issue</TableCell>}
                 {showDepartment && <TableCell>Department</TableCell>}
                 {showAssignee && <TableCell>Assignee</TableCell>}
                 <TableCell>Priority</TableCell>
@@ -230,11 +225,6 @@ export default function TicketsListPage({
                   </TableCell>
                   <TableCell sx={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{t.title}</TableCell>
                   {showRequester && <TableCell>{t.requester?.name || "—"}</TableCell>}
-                  {showIssue && (
-                    <TableCell>
-                      {t.issue ? (t.issue.isOther ? (t.customIssueText || t.issue.name) : t.issue.name) : "—"}
-                    </TableCell>
-                  )}
                   {showDepartment && <TableCell>{t.toDepartment?.name || "—"}</TableCell>}
                   {showAssignee && (
                     <TableCell>

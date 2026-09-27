@@ -12,7 +12,6 @@ export default function AllTicketsPage() {
       showAssigneeFilter
       showRequester
       showDepartmentFilter
-      showIssueFilter
       showAssignedFilter
       showBulkActions
     />

@@ -33,6 +33,8 @@ import SafeHtml from "../components/common/SafeHtml";
 import CommentThread from "../components/tickets/CommentThread";
 import AttachmentList from "../components/tickets/AttachmentList";
 import ActivityTimeline from "../components/tickets/ActivityTimeline";
+import DialogCloseButton from "../components/common/DialogCloseButton";
+import { ignoreBackdropClick } from "../utils/dialog";
 
 // Mirrors ticket.service.js's VALID_TRANSITIONS exactly, for display
 // filtering only (so the dropdown doesn't offer a transition the backend
@@ -48,10 +50,9 @@ const VALID_TRANSITIONS = {
   REOPENED: ["IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED"],
 };
 
-// Description box height — matches the ~340px used by the dashboard's own
-// chart cards (StatusPieChart/PriorityBarChart) elsewhere in this app, so a
-// long rich-text description scrolls internally rather than growing the
-// whole page.
+// Problem Summary box height — matches the ~340px used by the dashboard's
+// own chart cards (StatusPieChart/PriorityBarChart) elsewhere in this app,
+// so a long entry scrolls internally rather than growing the whole page.
 const DESCRIPTION_MAX_HEIGHT = 340;
 
 // RESOLVED/ON_HOLD/CLOSED each need a persisted explanation — the backend
@@ -112,6 +113,7 @@ export default function TicketDetailPage() {
 
   const [assignOpen, setAssignOpen] = useState(false);
   const [draftAssigneeId, setDraftAssigneeId] = useState("");
+  const [draftAssignmentComment, setDraftAssignmentComment] = useState("");
   const [savingAssign, setSavingAssign] = useState(false);
 
   const [transferOpen, setTransferOpen] = useState(false);
@@ -267,6 +269,7 @@ export default function TicketDetailPage() {
     setDraftAssigneeId(
       ticket.assignee?.id === user.id ? ASSIGN_TO_ME_VALUE : (ticket.assignee?.id || "")
     );
+    setDraftAssignmentComment("");
     setAssignOpen(true);
   };
 
@@ -298,8 +301,16 @@ export default function TicketDetailPage() {
       // "Assign to Me" is its own explicit flag — the backend derives the
       // assignee from the authenticated caller for that path and never
       // trusts a raw assigneeId for self-assignment (see
-      // ticket.service.js#updateTicket).
-      await applyUpdate(isAssignToMe ? { assignToMe: true } : { assigneeId: newAssigneeId });
+      // ticket.service.js#updateTicket). The optional assignment comment
+      // only ever applies to the explicit-assignee path — trimmed here and
+      // omitted entirely when blank so the backend never has to
+      // distinguish "no comment" from "whitespace-only comment" itself.
+      const trimmedComment = draftAssignmentComment.trim();
+      await applyUpdate(
+        isAssignToMe
+          ? { assignToMe: true }
+          : { assigneeId: newAssigneeId, ...(trimmedComment ? { assignmentComment: trimmedComment } : {}) }
+      );
       setAssignOpen(false);
     } finally {
       setSavingAssign(false);
@@ -391,18 +402,21 @@ export default function TicketDetailPage() {
             on the left on desktop (md+). */}
         <Grid item xs={12} md={8} sx={{ order: { xs: 2, md: 1 } }}>
           <Stack spacing={3}>
-            {/* Description — its own card, visually separated from the
-                metadata. Long descriptions scroll internally rather than
-                growing the page indefinitely; nothing is truncated. */}
+            {/* Problem Summary — its own card, visually separated from the
+                metadata. Long entries scroll internally rather than growing
+                the page indefinitely; nothing is truncated. Tickets raised
+                before this field existed still render correctly here too —
+                this column was renamed in place from the old rich-text
+                Description, so their content is preserved byte-for-byte. */}
             <Paper variant="outlined" sx={{ p: 2 }}>
-              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>Description</Typography>
-              {ticket.description?.trim() ? (
+              <Typography variant="subtitle1" fontWeight={700} sx={{ mb: 1 }}>Problem Summary</Typography>
+              {ticket.problemSummary?.trim() ? (
                 <Box sx={{ maxHeight: DESCRIPTION_MAX_HEIGHT, overflowY: "auto", pr: 1 }}>
-                  <SafeHtml html={ticket.description} />
+                  <SafeHtml html={ticket.problemSummary} />
                 </Box>
               ) : (
                 <Typography variant="body2" color="text.secondary" sx={{ fontStyle: "italic" }}>
-                  No description provided.
+                  No problem summary provided.
                 </Typography>
               )}
             </Paper>
@@ -479,10 +493,6 @@ export default function TicketDetailPage() {
               {ticket.ccUsers?.length > 0 && (
                 <InfoRow label="Custom CC" value={ticket.ccUsers.map((u) => u.name).join(", ")} />
               )}
-              <InfoRow
-                label="Issue"
-                value={ticket.issue ? (ticket.issue.isOther ? (ticket.customIssueText || ticket.issue.name) : ticket.issue.name) : "—"}
-              />
               <InfoRow label="Raised By" value={ticket.requester.name} />
               <InfoRow
                 label="Assigned To"
@@ -502,9 +512,10 @@ export default function TicketDetailPage() {
       {/* Edit Ticket — Status is available to whoever may drive the
           ticket's workflow (staff OR the assignee); Priority is staff only.
           Never shown to an EMPLOYEE who is merely the requester (they get
-          the separate edit-icon flow instead, which covers issue/priority/
-          description via EditTicketPage/TicketForm). */}
-      <Dialog open={editOpen} onClose={() => setEditOpen(false)} maxWidth="xs" fullWidth>
+          the separate edit-icon flow instead, which covers title/priority/
+          Problem Summary via EditTicketPage/TicketForm). */}
+      <Dialog open={editOpen} onClose={ignoreBackdropClick(() => setEditOpen(false))} maxWidth="xs" fullWidth>
+        <DialogCloseButton onClose={() => setEditOpen(false)} />
         <DialogTitle>{canEditContent ? `Edit ${ticket.ticketNumber}` : `Update Status — ${ticket.ticketNumber}`}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -570,7 +581,8 @@ export default function TicketDetailPage() {
           scoped server-side to active EMPLOYEEs in this ticket's own
           department — never every employee, never re-filtered client-side
           as the source of truth. */}
-      <Dialog open={assignOpen} onClose={() => setAssignOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog open={assignOpen} onClose={ignoreBackdropClick(() => setAssignOpen(false))} maxWidth="xs" fullWidth>
+        <DialogCloseButton onClose={() => setAssignOpen(false)} />
         <DialogTitle>{ticket.assignee ? "Reassign Ticket" : "Assign Ticket"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
@@ -595,6 +607,22 @@ export default function TicketDetailPage() {
                 />
               )}
             />
+
+            {/* Optional — never required to complete an assignment (see
+                handleSaveAssign, which trims this and omits it entirely from
+                the PATCH payload when empty). Not shown for "Assign to Me",
+                which uses its own assignToMe flag/event, not this field. */}
+            {draftAssigneeId !== ASSIGN_TO_ME_VALUE && (
+              <TextField
+                multiline
+                minRows={2}
+                size="small"
+                label="Assignment Comment (optional)"
+                placeholder="Enter instructions for the assigned employee..."
+                value={draftAssignmentComment}
+                onChange={(e) => setDraftAssignmentComment(e.target.value)}
+              />
+            )}
           </Stack>
         </DialogContent>
         <DialogActions>
@@ -611,7 +639,8 @@ export default function TicketDetailPage() {
           any department with no active manager, and the reason is
           mandatory. The backend independently re-validates every one of
           these rules regardless of what this dialog allows to be selected. */}
-      <Dialog open={transferOpen} onClose={() => setTransferOpen(false)} maxWidth="xs" fullWidth>
+      <Dialog open={transferOpen} onClose={ignoreBackdropClick(() => setTransferOpen(false))} maxWidth="xs" fullWidth>
+        <DialogCloseButton onClose={() => setTransferOpen(false)} />
         <DialogTitle>Transfer Ticket</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>

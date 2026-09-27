@@ -1,6 +1,11 @@
 const prisma = require("../config/prisma");
 const emailService = require("./email.service");
 const emailTemplateService = require("./emailTemplate.service");
+const blobStorageService = require("./blobStorage.service");
+const { uploadRoot } = require("../config/multer");
+const fs = require("fs");
+const path = require("path");
+const { buildInAppNotificationContent } = require("../utils/inAppNotificationContent");
 
 // Used ONLY when the PostgreSQL EmailTemplate for `eventKey` is missing,
 // inactive, or fails to render (Step 7) — a minimal safety net so the
@@ -40,15 +45,6 @@ function fallbackContent(eventKey, ticket) {
 // it); it defaults to `eventKey`. Failures anywhere in here are logged,
 // never thrown, so a notification problem can't fail the ticket action
 // that triggered it.
-// The in-app notification bell renders `message` as plain text (React
-// children, no dangerouslySetInnerHTML) — it never interprets HTML. Now
-// that the rendered body is HTML (for the email), the bell needs a
-// readable plain-text summary rather than raw markup, so this strips tags
-// for that one column only; the actual email still gets the full HTML.
-function stripHtmlForBell(html) {
-  return String(html).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-}
-
 // `userIds` is the event's full TO group (one or more people — e.g.
 // "requester + current assignee," or "every active department TEAMLEAD" for
 // TICKET_CREATED) — see utils/recipientBuilder.js, which is what every
@@ -59,7 +55,7 @@ function stripHtmlForBell(html) {
 // groups" (or two different people both legitimately in TO) from ever
 // becoming multiple email sends for the same event. Each id still gets
 // its own in-app Notification row, since the bell is inherently per-user.
-async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, ccUserIds = [] }) {
+async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, ccUserIds = [], attachments = [], assignmentComment }) {
   // userId (singular) kept accepted for any caller not yet migrated to the
   // plural form — treated as a one-element array, identical behavior.
   const primaryIds = [...new Set((userIds || (userId ? [userId] : [])).filter(Boolean))];
@@ -73,15 +69,21 @@ async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comme
     console.error(`[notifications] Failed to load recipient ${primaryIds[0]}:`, err.message);
   }
 
-  const rendered = await emailTemplateService.renderTemplate(eventKey, { ticket, comment, recipientName, statusChange, departmentTransfer });
-  const { subject, body } = rendered || fallbackContent(eventKey, ticket);
+  // The bell (in-app Notification.title/message) and the email
+  // (subject/body) are two independent content representations of the SAME
+  // event — computed by two separate functions, never one derived from the
+  // other. The bell's short summary never depends on whether an
+  // EmailTemplate row exists/is active/was edited; it's the same fixed,
+  // concise text for a given eventKey regardless. See
+  // utils/inAppNotificationContent.js.
+  const inApp = buildInAppNotificationContent(eventKey, { ticket, comment, statusChange, departmentTransfer });
 
   // One Notification (bell) row per primary recipient — independent of how
   // many end up in the single combined email below.
   for (const userId of primaryIds) {
     try {
       await prisma.notification.create({
-        data: { userId, ticketId, type: type || eventKey, title: subject, message: stripHtmlForBell(body) },
+        data: { userId, ticketId, type: type || eventKey, title: inApp.title, message: inApp.message },
       });
     } catch (err) {
       console.error("[notifications] Failed to persist notification:", err.message);
@@ -89,6 +91,9 @@ async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comme
   }
 
   try {
+    const rendered = await emailTemplateService.renderTemplate(eventKey, { ticket, comment, recipientName, statusChange, departmentTransfer, assignmentComment });
+    const { subject, body } = rendered || fallbackContent(eventKey, ticket);
+
     const toEmails = [];
     const seen = new Set();
     for (const userId of primaryIds) {
@@ -102,11 +107,42 @@ async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comme
     if (!toEmails.length) return;
 
     const cc = await resolveCcEmails(ccUserIds, seen);
+    const fileAttachments = await buildEmailFileAttachments(attachments);
 
-    await emailService.sendMail({ to: toEmails, cc: cc.length ? cc : undefined, subject, html: body });
+    await emailService.sendMail({ to: toEmails, cc: cc.length ? cc : undefined, subject, html: body, attachments: fileAttachments });
   } catch (err) {
     console.error(`[notifications] Failed to email ${primaryIds.join(", ")}:`, err.message);
   }
+}
+
+// Fetches each attachment's actual bytes server-side (Azure or local disk,
+// mirroring ticket.service.js#streamAttachment's own storageProvider
+// branch) and base64-encodes them for Microsoft Graph's fileAttachment
+// payload (see email.service.js#toFileAttachments) — currently only ever
+// invoked for TICKET_CREATED (see ticket.service.js#createTicket). A single
+// attachment failing to read is logged and skipped rather than failing the
+// whole email; storage credentials never leave this function.
+async function buildEmailFileAttachments(attachments) {
+  if (!attachments?.length) return [];
+  const results = [];
+  for (const attachment of attachments) {
+    try {
+      let buffer;
+      if (attachment.storageProvider === "azure") {
+        buffer = await blobStorageService.downloadBlobBuffer(attachment.filePath);
+      } else {
+        buffer = await fs.promises.readFile(path.join(uploadRoot, attachment.filePath));
+      }
+      results.push({
+        name: attachment.fileName,
+        contentType: attachment.mimeType || "application/octet-stream",
+        contentBytes: buffer.toString("base64"),
+      });
+    } catch (err) {
+      console.error(`[notifications] Failed to read attachment "${attachment.fileName}" for email:`, err.message);
+    }
+  }
+  return results;
 }
 
 // Resolves each candidate CC user id to a deliverable email, silently
@@ -153,4 +189,15 @@ async function markAllRead(userId) {
   return prisma.notification.updateMany({ where: { userId, isRead: false }, data: { isRead: true } });
 }
 
-module.exports = { notify, listForUser, markRead, markAllRead };
+// Permanently removes every Notification row belonging to this user only —
+// scoped by `userId` exactly like every other function in this file (never
+// a client-supplied id), so a user can never clear anyone else's
+// notifications. Distinct from markAllRead: this actually deletes the rows
+// (the bell shows the existing empty state afterward) rather than just
+// flipping isRead. Never touches Ticket/TicketComment/TicketHistory/
+// EmailTemplate/AuditLog or any other user's Notification rows.
+async function clearAll(userId) {
+  return prisma.notification.deleteMany({ where: { userId } });
+}
+
+module.exports = { notify, listForUser, markRead, markAllRead, clearAll };

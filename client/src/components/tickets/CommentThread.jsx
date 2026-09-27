@@ -20,9 +20,11 @@ import SendIcon from "@mui/icons-material/Send";
 import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import CloseIcon from "@mui/icons-material/Close";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
+import LockIcon from "@mui/icons-material/Lock";
 import SafeHtml from "../common/SafeHtml";
 import EmptyState from "../common/EmptyState";
 import { ticketsApi } from "../../api/tickets";
+import { ignoreBackdropClick } from "../../utils/dialog";
 
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 
@@ -324,18 +326,56 @@ export default function CommentThread({ ticketId, comments, isStaff, onAddCommen
           </IconButton>
         </Box>
 
+        {/* Compact, neutral "setting" control — deliberately NOT styled as a
+            warning/error (no orange/warning palette anywhere here); the
+            primary Solvora color is used only to indicate the ON state,
+            exactly like any other active toggle in the app. The internal-
+            note behavior itself (isInternal state/onChange, RBAC visibility
+            server-side) is unchanged — only presentation. */}
         {isStaff && (
-          <FormControlLabel
-            sx={{ mt: 0.5, ml: 0 }}
-            control={<Switch size="small" checked={isInternal} onChange={(e) => setIsInternal(e.target.checked)} />}
-            label={<Typography variant="caption" color="text.secondary">Internal note (hidden from requester)</Typography>}
-          />
+          <Box
+            sx={{
+              mt: 1,
+              display: "inline-flex",
+              alignItems: "center",
+              maxWidth: "100%",
+              borderRadius: 2,
+              border: 1,
+              borderColor: "divider",
+              bgcolor: "action.hover",
+            }}
+          >
+            <FormControlLabel
+              sx={{ ml: 0.5, mr: 1.25, my: 0.25 }}
+              control={
+                <Switch
+                  size="small"
+                  color="primary"
+                  checked={isInternal}
+                  onChange={(e) => setIsInternal(e.target.checked)}
+                />
+              }
+              label={
+                <Box sx={{ display: "flex", alignItems: "center", gap: 0.75, py: 0.25 }}>
+                  <LockIcon sx={{ fontSize: 16, color: isInternal ? "primary.main" : "text.secondary" }} />
+                  <Box sx={{ lineHeight: 1.2 }}>
+                    <Typography variant="caption" fontWeight={600} color="text.primary" display="block" lineHeight={1.3}>
+                      Internal note
+                    </Typography>
+                    <Typography variant="caption" color="text.secondary" display="block" sx={{ fontSize: 11, lineHeight: 1.3 }}>
+                      Hidden from requester
+                    </Typography>
+                  </Box>
+                </Box>
+              }
+            />
+          </Box>
         )}
       </Box>
 
       <Dialog
         open={Boolean(preview)}
-        onClose={() => setPreview(null)}
+        onClose={ignoreBackdropClick(() => setPreview(null))}
         maxWidth={false}
         PaperProps={{
           sx: {
@@ -362,6 +402,7 @@ export default function CommentThread({ ticketId, comments, isStaff, onAddCommen
             <IconButton
               onClick={() => setPreview(null)}
               title="Close"
+              aria-label="Close"
               sx={{
                 position: "absolute",
                 top: -16,
