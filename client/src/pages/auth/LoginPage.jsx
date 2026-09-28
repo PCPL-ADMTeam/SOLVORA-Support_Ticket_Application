@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate, useLocation, Link as RouterLink } from "react-router-dom";
 import { Box, Paper, Button, Typography, Alert, Stack, Link } from "@mui/material";
+import { keyframes } from "@emotion/react";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import { useAuth } from "../../context/AuthContext";
 import { homeForRole } from "../../routes/ProtectedRoute";
@@ -262,16 +263,47 @@ function NetworkBackground() {
   );
 }
  
+// One full rotation per second for 10s (10 full spins), ending back at a
+// multiple of 360deg — visually identical to the resting position, so no
+// explicit "reset" step is needed once the animation completes.
+const logoSpin = keyframes`
+  from { transform: rotate(0deg); }
+  to { transform: rotate(3600deg); }
+`;
+const LOGO_SPIN_CLICKS = 5;
+const LOGO_SPIN_DURATION_MS = 10000;
+
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
- 
+
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
- 
+
+  // Easter egg: click the logo 5 times to make it spin for 10 seconds.
+  const [isLogoSpinning, setIsLogoSpinning] = useState(false);
+  const logoClickCount = useRef(0);
+
+  const handleLogoClick = () => {
+    if (isLogoSpinning) return;
+    logoClickCount.current += 1;
+    if (logoClickCount.current >= LOGO_SPIN_CLICKS) {
+      logoClickCount.current = 0;
+      setIsLogoSpinning(true);
+      setTimeout(() => setIsLogoSpinning(false), LOGO_SPIN_DURATION_MS);
+    }
+  };
+
+  const handleLogoKeyDown = (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      handleLogoClick();
+    }
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -338,7 +370,24 @@ export default function LoginPage() {
             <Box aria-hidden sx={{ position: "absolute", width: 140, height: 140, borderRadius: "50%", bgcolor: "rgba(255,255,255,0.06)", top: 60, right: -30 }} />
  
             <Stack spacing={1.5} alignItems="center" sx={{ position: "relative" }}>
-              <Box sx={{ position: "relative", width: 150, height: 150, display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <Box
+                role="button"
+                tabIndex={0}
+                onClick={handleLogoClick}
+                onKeyDown={handleLogoKeyDown}
+                sx={{
+                  position: "relative",
+                  width: 150,
+                  height: 150,
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  cursor: "pointer",
+                  outline: "none",
+                  borderRadius: "50%",
+                  "&:focus-visible": { boxShadow: "0 0 0 3px rgba(255,255,255,0.6)" },
+                }}
+              >
                 <Box
                   aria-hidden
                   sx={{
@@ -352,7 +401,15 @@ export default function LoginPage() {
                   component="img"
                   src={logo}
                   alt="SOLVORA"
-                  sx={{ position: "relative", width: 112, height: 112, borderRadius: "50%", objectFit: "cover", boxShadow: "0 10px 30px rgba(0,0,0,0.3)" }}
+                  sx={{
+                    position: "relative",
+                    width: 112,
+                    height: 112,
+                    borderRadius: "50%",
+                    objectFit: "cover",
+                    boxShadow: "0 10px 30px rgba(0,0,0,0.3)",
+                    animation: isLogoSpinning ? `${logoSpin} ${LOGO_SPIN_DURATION_MS}ms linear` : "none",
+                  }}
                 />
               </Box>
               <Typography variant="h4" fontWeight={800}>SOLVORA</Typography>
