@@ -143,10 +143,6 @@ export default function CommentThread({ ticketId, comments, isStaff, onAddCommen
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column" }}>
-      <Box sx={{ pb: 1.5, mb: 1, borderBottom: 1, borderColor: "divider" }}>
-        <Typography variant="subtitle1" fontWeight={700}>Comments</Typography>
-      </Box>
-
       {/* Message list — the only scrollable part of this panel */}
       <Box
         ref={listRef}
@@ -171,13 +167,22 @@ export default function CommentThread({ ticketId, comments, isStaff, onAddCommen
                   sx={{
                     p: 1.5,
                     borderRadius: 3,
-                    bgcolor: c.isInternal ? "warning.light" : "background.paper",
+                    // Soft Solvora-themed tint instead of the old bright
+                    // warning/orange — `secondary.light` is the theme's own
+                    // pale maroon-pink surface tone (see theme.js), and
+                    // `secondary.main` gives the border a bit more definition
+                    // than the default divider outline every other comment
+                    // card already gets from MuiPaper's theme override.
+                    // Public comments are completely untouched (still fall
+                    // through to the same "background.paper" as before).
+                    bgcolor: c.isInternal ? "secondary.light" : "background.paper",
+                    borderColor: c.isInternal ? "secondary.main" : undefined,
                   }}
                 >
                   <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
                     <Avatar sx={{ width: 26, height: 26, fontSize: 13, flexShrink: 0 }}>{c.author.name[0]}</Avatar>
                     <Typography variant="body2" fontWeight={600}>{c.author.name}</Typography>
-                    {c.isInternal && <Chip label="Internal note" size="small" color="warning" />}
+                    {c.isInternal && <Chip label="Internal note" size="small" color="secondary" />}
                     <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
                       {format(new Date(c.createdAt), "MMM d, h:mm a")}
                     </Typography>

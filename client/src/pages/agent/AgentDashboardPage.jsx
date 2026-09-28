@@ -1,6 +1,7 @@
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Box, Fade, Grid, Stack, Typography, Button, ToggleButtonGroup, ToggleButton, TextField, MenuItem } from "@mui/material";
+import { useSnackbar } from "notistack";
+import { Box, Fade, Stack, Typography, Button, ToggleButtonGroup, ToggleButton, TextField, MenuItem, Chip, LinearProgress } from "@mui/material";
 import ListAltIcon from "@mui/icons-material/ListAlt";
 import AssignmentLateIcon from "@mui/icons-material/AssignmentLate";
 import PendingActionsIcon from "@mui/icons-material/PendingActions";
@@ -19,7 +20,8 @@ import PriorityBarChart from "../../components/dashboard/PriorityBarChart";
 import TrendLineChart from "../../components/dashboard/TrendLineChart";
 import DateRangeFilter from "../../components/dashboard/DateRangeFilter";
 import EmployeeWorkloadTable from "../../components/dashboard/EmployeeWorkloadTable";
-import { STATUS_SCALE } from "../../theme/theme";
+import DepartmentWorkloadTable from "../../components/dashboard/DepartmentWorkloadTable";
+import { STATUS_SCALE, DASHBOARD_SECTION_SPACING } from "../../theme/theme";
 
 // Two large, clickable page-level headings standing in for the usual
 // single H4 title — literally variant="h4" (same font family/size/weight
@@ -116,35 +118,125 @@ export default function AgentDashboardPage() {
 
   const [days, setDays] = useState(30);
   const [stats, setStats] = useState(null);
-  const [loading, setLoading] = useState(true);
+  // `initialLoading` gates the one-time full-page LoadingState (first paint
+  // only — there is nothing to keep visible yet). `refreshing` covers every
+  // later fetch (filter click, date-range change, department switch): the
+  // dashboard stays fully mounted with its LAST GOOD `stats` on screen, and
+  // this only drives a subtle top progress bar (see the render below) — it
+  // must never blank/replace the page, which was the root cause of the
+  // reload-flash this fixes (the old code used one `loading` flag for both
+  // cases, unmounting the entire dashboard on every single filter click).
+  const [initialLoading, setInitialLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [myDepartments, setMyDepartments] = useState([]);
+  const { enqueueSnackbar } = useSnackbar();
+
+  // BI-style dashboard cross-filtering — dashboard-local only, sent to
+  // GET /dashboard/stats as `status`/`assigneeId` (see
+  // dashboard.service.js#getStats) so the Priority chart (and, for
+  // "department", the Status chart/KPIs too) recalculate server-side.
+  // `selectedEmployee` is only ever set from a real Employee Workload row
+  // ({ id: agentId, name: agentName } — see EmployeeWorkloadTable.jsx), so
+  // it's always a real, already-in-scope user id. "my" has no Employee
+  // Workload table at all, so it only ever uses `selectedMyStatus`.
+  const [selectedMyStatus, setSelectedMyStatus] = useState(null);
+  const [selectedDeptStatus, setSelectedDeptStatus] = useState(null);
+  const [selectedEmployee, setSelectedEmployee] = useState(null); // { id, name } | null
+
+  // Plain refs (never trigger a re-render themselves) used only to: (a)
+  // ignore a stale response if a second click fires before the first
+  // request returns (never overwrite fresher state with an older answer),
+  // and (b) remember the last combination of filters that successfully
+  // rendered, so a failed request can revert the optimistic filter change
+  // that caused it rather than leaving the UI pointing at data that was
+  // never actually fetched.
+  const requestIdRef = useRef(0);
+  const hasLoadedOnceRef = useRef(false);
+  const lastGoodFiltersRef = useRef({ selectedMyStatus: null, selectedDeptStatus: null, selectedEmployee: null });
 
   useEffect(() => {
     usersApi.myDepartmentAccess().then(({ data }) => setMyDepartments(data.data)).catch(() => setMyDepartments([]));
   }, []);
 
   const load = useCallback(async () => {
-    setLoading(true);
-    const dateFrom = subDays(new Date(), days).toISOString();
-    const scope = view === "my" ? myScope : undefined;
-    const { data } = await dashboardApi.getStats({ days, dateFrom, scope, departmentId: departmentId || undefined });
-    setStats(data.data);
-    setLoading(false);
-  }, [days, view, myScope, departmentId]);
+    const requestId = ++requestIdRef.current;
+    if (!hasLoadedOnceRef.current) setInitialLoading(true);
+    else setRefreshing(true);
+
+    const attemptedFilters = { selectedMyStatus, selectedDeptStatus, selectedEmployee };
+    try {
+      const dateFrom = subDays(new Date(), days).toISOString();
+      const scope = view === "my" ? myScope : undefined;
+      const status = view === "my" ? selectedMyStatus : selectedDeptStatus;
+      const { data } = await dashboardApi.getStats({
+        days,
+        dateFrom,
+        scope,
+        departmentId: departmentId || undefined,
+        status: status || undefined,
+        assigneeId: view === "department" ? selectedEmployee?.id || undefined : undefined,
+      });
+      if (requestId !== requestIdRef.current) return; // a newer request already won
+      setStats(data.data);
+      hasLoadedOnceRef.current = true;
+      lastGoodFiltersRef.current = attemptedFilters;
+    } catch (err) {
+      if (requestId !== requestIdRef.current) return;
+      enqueueSnackbar(err.response?.data?.message || "Failed to update the dashboard", { variant: "error" });
+      // Restore whichever filter(s) actually caused this failed request —
+      // `stats` itself is left completely untouched, so the dashboard stays
+      // exactly as it looked before the click, never a broken partial state.
+      const lastGood = lastGoodFiltersRef.current;
+      if (lastGood.selectedMyStatus !== selectedMyStatus) setSelectedMyStatus(lastGood.selectedMyStatus);
+      if (lastGood.selectedDeptStatus !== selectedDeptStatus) setSelectedDeptStatus(lastGood.selectedDeptStatus);
+      if ((lastGood.selectedEmployee?.id || null) !== (selectedEmployee?.id || null)) setSelectedEmployee(lastGood.selectedEmployee);
+    } finally {
+      if (requestId === requestIdRef.current) {
+        setInitialLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, [days, view, myScope, departmentId, selectedMyStatus, selectedDeptStatus, selectedEmployee, enqueueSnackbar]);
 
   useEffect(() => {
     load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [load]);
 
-  const handleViewChange = (value) => setSearchParams({ view: value });
+  const handleViewChange = (value) => {
+    // Switching between "My Dashboard" and "Department Dashboard" is a
+    // different ticket set for each — never carry a filter meant for one
+    // into the other.
+    setSelectedMyStatus(null);
+    setSelectedDeptStatus(null);
+    setSelectedEmployee(null);
+    // Unlike a filter click, this genuinely swaps to a different section
+    // with differently-shaped KPIs (My Dashboard's Raised/Assigned vs.
+    // Department's Total/Unassigned) — briefly showing the OTHER section's
+    // stale numbers under the new layout would be more confusing than a
+    // proper one-time loading state, so this is the one interaction that
+    // still gets the full LoadingState treatment (key={view} below already
+    // remounts the Fade for it).
+    hasLoadedOnceRef.current = false;
+    setSearchParams({ view: value });
+  };
   const handleMyScopeChange = (_event, value) => {
     if (!value) return; // ToggleButtonGroup fires with null when the active button is clicked again
+    setSelectedMyStatus(null);
     setSearchParams({ view: "my", scope: value });
   };
-  const handleDepartmentChange = (e) => {
-    const value = e.target.value;
+  // Reused for both the Department dropdown's onChange AND a Department
+  // Workload row click (see the render below) — clicking a row is defined
+  // to behave exactly like selecting that department from the dropdown.
+  const handleDepartmentChange = (value) => {
     const next = { view: "department" };
     if (value) next.departmentId = value;
+    // Changing which department is selected can put the currently-selected
+    // employee outside the new scope entirely (a Manager's employee filter
+    // must never silently keep pointing at someone in a department they no
+    // longer have narrowed the view to) — clear it and recalculate. Status
+    // is department-independent, so it's preserved.
+    setSelectedEmployee(null);
     setSearchParams(next);
   };
 
@@ -155,6 +247,31 @@ export default function AgentDashboardPage() {
   // never silently falling back to Raised by Me.
   const goToMyFilteredTickets = (params) => navigate(`/agent/queue?${new URLSearchParams({ view: "my", scope: myScope, ...params }).toString()}`);
   const goToDepartmentTickets = (params) => navigate(`/agent/queue?${new URLSearchParams({ view: "department", ...(departmentId ? { departmentId } : {}), ...params }).toString()}`);
+
+  // Priority is the final drill-down step of the dashboard's BI-style
+  // cross-filtering — navigates to the existing Tickets List carrying EVERY
+  // currently active filter (status, and for "department", the selected
+  // employee's real assigneeId), never just the clicked priority alone.
+  // Reuses the Tickets List's own existing `assigneeId`/`status`/
+  // `priorityId` query params — no new list implementation.
+  const priorityDrillDownMy = (entry) => goToMyFilteredTickets({ ...(selectedMyStatus ? { status: selectedMyStatus } : {}), priorityId: entry.id });
+  const priorityDrillDownDept = (entry) =>
+    goToDepartmentTickets({
+      ...(selectedEmployee ? { assigneeId: selectedEmployee.id } : {}),
+      ...(selectedDeptStatus ? { status: selectedDeptStatus } : {}),
+      priorityId: entry.id,
+    });
+
+  const clearDeptFilters = () => {
+    setSelectedEmployee(null);
+    setSelectedDeptStatus(null);
+    // A Manager's "Clear All Filters" also returns the Department dropdown
+    // to "All Departments" (their own full accessible scope) — a Team Lead
+    // has no dropdown to reset (isManager is false, departmentId is always
+    // "" already), so this is a no-op for them, never touching their
+    // existing single-department scope.
+    if (isManager && departmentId) setSearchParams({ view: "department" });
+  };
 
   const kpis = stats?.kpis;
   const byStatus = stats?.byStatus;
@@ -194,7 +311,7 @@ export default function AgentDashboardPage() {
               size="small"
               label="Department"
               value={departmentId}
-              onChange={handleDepartmentChange}
+              onChange={(e) => handleDepartmentChange(e.target.value)}
               sx={{ minWidth: 200 }}
             >
               <MenuItem value="">All Departments</MenuItem>
@@ -207,16 +324,25 @@ export default function AgentDashboardPage() {
         </Stack>
       </Stack>
 
-      {loading || !stats ? (
+      {!stats || initialLoading ? (
         <LoadingState minHeight={300} />
       ) : (
-        // key={view} forces a clean remount on switch so the fade-in always
-        // plays; entry-only (no coordinated exit) keeps this simple while
-        // still reading as a subtle crossfade rather than a hard cut.
+        // key={view} forces a clean remount ONLY on an actual My/Department
+        // view switch (a genuinely different section) so the fade-in still
+        // plays there; a filter click, date-range change, or department-
+        // dropdown change never touches `view`, so none of those remount
+        // this at all — the dashboard (KPIs, charts, Employee Workload)
+        // stays mounted throughout, and `refreshing` below drives a subtle
+        // top progress bar instead of ever hiding it.
         <Fade in appear timeout={200} key={view}>
-          <Box>
+          <Box sx={{ position: "relative", opacity: refreshing ? 0.7 : 1, transition: "opacity 250ms ease" }}>
+            {refreshing && (
+              <LinearProgress
+                sx={{ position: "absolute", top: -8, left: 0, right: 0, height: 3, borderRadius: 1.5, zIndex: 1 }}
+              />
+            )}
             {view === "my" ? (
-              <Stack spacing={3}>
+              <Stack spacing={DASHBOARD_SECTION_SPACING}>
                 {/* Same ToggleButtonGroup component/sx as AgentQueuePage.jsx's
                     "Raised by Me"/"Assigned to Me" control. Unlike a plain
                     nav shortcut, this one IS the My Dashboard's own data
@@ -263,23 +389,37 @@ export default function AgentDashboardPage() {
                   </Box>
                 </Box>
 
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6}>
-                    <StatusPieChart data={byStatus} onSliceClick={(status) => goToMyFilteredTickets({ status })} />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <PriorityBarChart data={byPriority} />
-                  </Grid>
-                </Grid>
+                {selectedMyStatus && (
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Typography variant="body2" fontWeight={600} color="text.secondary">Active Filters:</Typography>
+                    <Chip
+                      label={`Status: ${selectedMyStatus.replace("_", " ")}`}
+                      size="small"
+                      color="primary"
+                      variant="outlined"
+                      onDelete={() => setSelectedMyStatus(null)}
+                    />
+                    <Button size="small" onClick={() => setSelectedMyStatus(null)}>Clear All Filters</Button>
+                  </Stack>
+                )}
 
-                <Grid container spacing={2}>
-                  <Grid item xs={12}>
-                    <TrendLineChart data={trend} />
-                  </Grid>
-                </Grid>
+                <Box sx={{ display: "flex", flexDirection: { xs: "column", md: "row" }, gap: 2 }}>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <StatusPieChart
+                      data={byStatus}
+                      selectedStatus={selectedMyStatus}
+                      onSliceClick={(status) => setSelectedMyStatus((prev) => (prev === status ? null : status))}
+                    />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <PriorityBarChart data={byPriority} onBarClick={priorityDrillDownMy} />
+                  </Box>
+                </Box>
+
+                <TrendLineChart data={trend} />
               </Stack>
             ) : (
-              <Stack spacing={3}>
+              <Stack spacing={DASHBOARD_SECTION_SPACING}>
                 {/* Department KPIs — same flex-row treatment as above. */}
                 <Box sx={{ display: "flex", flexWrap: { xs: "wrap", md: "nowrap" }, gap: 2 }}>
                   <Box sx={{ flex: { xs: "1 1 45%", sm: "1 1 30%", md: "1 1 0" }, minWidth: 0 }}>
@@ -305,16 +445,69 @@ export default function AgentDashboardPage() {
                   </Box>
                 </Box>
 
-                <Grid container spacing={2}>
-                  <Grid item xs={12} md={6}>
-                    <StatusPieChart data={byStatus} onSliceClick={(status) => goToDepartmentTickets({ status })} />
-                  </Grid>
-                  <Grid item xs={12} md={6}>
-                    <PriorityBarChart data={byPriority} />
-                  </Grid>
-                </Grid>
+                {/* BI-style cross-filter bar — Employee (from Employee
+                    Workload below) and Status (from the pie chart) combine
+                    cumulatively, never replace each other; clearing one
+                    preserves the other exactly as specified. */}
+                {(selectedEmployee || selectedDeptStatus) && (
+                  <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+                    <Typography variant="body2" fontWeight={600} color="text.secondary">Active Filters:</Typography>
+                    {selectedEmployee && (
+                      <Chip
+                        label={`Employee: ${selectedEmployee.name}`}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                        onDelete={() => setSelectedEmployee(null)}
+                      />
+                    )}
+                    {selectedDeptStatus && (
+                      <Chip
+                        label={`Status: ${selectedDeptStatus.replace("_", " ")}`}
+                        size="small"
+                        color="primary"
+                        variant="outlined"
+                        onDelete={() => setSelectedDeptStatus(null)}
+                      />
+                    )}
+                    <Button size="small" onClick={clearDeptFilters}>Clear All Filters</Button>
+                  </Stack>
+                )}
 
-                <EmployeeWorkloadTable workload={workload} />
+                <Box sx={{ display: "flex", flexDirection: { xs: "column", md: "row" }, gap: 2 }}>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <StatusPieChart
+                      data={byStatus}
+                      selectedStatus={selectedDeptStatus}
+                      onSliceClick={(status) => setSelectedDeptStatus((prev) => (prev === status ? null : status))}
+                    />
+                  </Box>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <PriorityBarChart data={byPriority} onBarClick={priorityDrillDownDept} />
+                  </Box>
+                </Box>
+
+                {/* Manager "All Departments" (no departmentId selected) shows
+                    the department-level rollup; selecting one (via the
+                    dropdown above OR clicking a row here) drills into that
+                    department's own Employee Workload — the same table Team
+                    Lead always sees directly, since they have no "all
+                    departments" level to start from (isManager is false, so
+                    this condition never applies to them). */}
+                {isManager && !departmentId ? (
+                  <DepartmentWorkloadTable
+                    departments={stats?.departmentWorkload || []}
+                    onSelectDepartment={(d) => handleDepartmentChange(d.departmentId)}
+                  />
+                ) : (
+                  <EmployeeWorkloadTable
+                    workload={workload}
+                    selectedEmployeeId={selectedEmployee?.id}
+                    onSelectEmployee={(w) => setSelectedEmployee((prev) => (prev?.id === w.agentId ? null : { id: w.agentId, name: w.agentName }))}
+                    title={isManager && departmentId ? `Employee Workload — ${myDepartments.find((d) => d.id === departmentId)?.name || ""}` : "Employee Workload"}
+                    onBack={isManager && departmentId ? () => handleDepartmentChange("") : undefined}
+                  />
+                )}
 
                 <Box>
                   <Button variant="outlined" startIcon={<ListAltIcon />} onClick={() => goToDepartmentTickets({})}>

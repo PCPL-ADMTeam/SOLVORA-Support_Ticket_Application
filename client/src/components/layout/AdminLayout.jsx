@@ -24,7 +24,7 @@ const navItems = [
   { to: "/admin/tickets", label: "All Tickets", icon: <ConfirmationNumberIcon /> },
   { to: "/admin/users", label: "Users", icon: <PeopleIcon /> },
   { to: "/admin/departments", label: "Departments", icon: <ApartmentIcon /> },
-  { to: "/admin/sla", label: "Priorities & SLA", icon: <RuleIcon /> },
+  { to: "/admin/priorities", label: "Priorities", icon: <RuleIcon /> },
   { to: "/admin/email-templates", label: "Email Templates", icon: <MarkEmailReadIcon /> },
   { to: "/admin/settings", label: "Settings", icon: <SettingsIcon /> },
   { to: "/admin/audit-logs", label: "Audit Logs", icon: <HistoryIcon /> },

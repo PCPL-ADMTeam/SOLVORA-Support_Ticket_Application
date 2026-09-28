@@ -8,6 +8,13 @@ export const CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4
 // reused as a plain series color.
 export const STATUS_SCALE = { good: "#0ca30c", warning: "#fab219", serious: "#ec835a", critical: "#d03b3b" };
 
+// The single vertical gap (an MUI `spacing` unit, i.e. × 8px) between a
+// dashboard's KPI row and its charts below, used as the `spacing` prop on
+// the `Stack` wrapping that section on every dashboard (Admin, Manager,
+// Team Lead, Employee) so the gap reads as one consistent, intentional
+// rhythm across roles instead of each dashboard picking its own value.
+export const DASHBOARD_SECTION_SPACING = 3;
+
 // Ticket workflow stages are mapped onto the categorical palette by fixed
 // slot (identity, not severity) so badges/charts/legends all agree.
 export const statusColors = {

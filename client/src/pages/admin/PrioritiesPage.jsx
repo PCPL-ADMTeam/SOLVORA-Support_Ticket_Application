@@ -26,10 +26,14 @@ import { ignoreBackdropClick } from "../../utils/dialog";
 
 const emptyForm = { name: "", level: "", color: "#c81e2a" };
 
-// Response/resolution SLA minutes are edited inline per-row and saved with
-// PUT /priorities/:id/sla — this is the "SLA configuration per priority"
-// requirement (requirement #3.A).
-export default function SlaPage() {
+// Priority management only — SLA (response/resolution time) functionality
+// has been removed from the system entirely. Existing Priority records
+// (Low/Medium/High/Critical), their level, and their use everywhere else
+// (ticket creation/filtering/display, dashboard charts) are unaffected.
+// Level is edited inline per row and saved with PATCH /priorities/:id —
+// the same inline-edit-then-Save pattern this page already used for the
+// now-removed SLA minutes, just applied to Priority's own `level` field.
+export default function PrioritiesPage() {
   const { enqueueSnackbar } = useSnackbar();
   const [priorities, setPriorities] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -43,10 +47,7 @@ export default function SlaPage() {
     setPriorities(data.data);
     const nextEdits = {};
     for (const p of data.data) {
-      nextEdits[p.id] = {
-        responseTimeMinutes: p.slaPolicy?.responseTimeMinutes || "",
-        resolutionTimeMinutes: p.slaPolicy?.resolutionTimeMinutes || "",
-      };
+      nextEdits[p.id] = p.level;
     }
     setEdits(nextEdits);
     setLoading(false);
@@ -54,13 +55,10 @@ export default function SlaPage() {
 
   useEffect(() => { load(); }, [load]);
 
-  const handleSaveSla = async (priorityId) => {
+  const handleSaveLevel = async (priorityId) => {
     try {
-      await prioritiesApi.upsertSla(priorityId, {
-        responseTimeMinutes: Number(edits[priorityId].responseTimeMinutes),
-        resolutionTimeMinutes: Number(edits[priorityId].resolutionTimeMinutes),
-      });
-      enqueueSnackbar("SLA policy saved", { variant: "success" });
+      await prioritiesApi.update(priorityId, { level: Number(edits[priorityId]) });
+      enqueueSnackbar("Priority updated", { variant: "success" });
       load();
     } catch (err) {
       enqueueSnackbar(err.response?.data?.message || "Save failed", { variant: "error" });
@@ -84,7 +82,7 @@ export default function SlaPage() {
   return (
     <Box>
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 2 }}>
-        <Typography variant="h4">Priorities & SLA</Typography>
+        <Typography variant="h4">Priorities</Typography>
         <Button variant="contained" startIcon={<AddIcon />} onClick={() => setDialogOpen(true)}>New Priority</Button>
       </Box>
 
@@ -94,8 +92,6 @@ export default function SlaPage() {
             <TableRow>
               <TableCell>Priority</TableCell>
               <TableCell>Level</TableCell>
-              <TableCell>Response Time (min)</TableCell>
-              <TableCell>Resolution Time (min)</TableCell>
               <TableCell align="right">Actions</TableCell>
             </TableRow>
           </TableHead>
@@ -103,27 +99,17 @@ export default function SlaPage() {
             {priorities.map((p) => (
               <TableRow key={p.id}>
                 <TableCell><PriorityBadge name={p.name} color={p.color} /></TableCell>
-                <TableCell>{p.level}</TableCell>
                 <TableCell>
                   <TextField
                     size="small"
                     type="number"
-                    value={edits[p.id]?.responseTimeMinutes ?? ""}
-                    onChange={(e) => setEdits((prev) => ({ ...prev, [p.id]: { ...prev[p.id], responseTimeMinutes: e.target.value } }))}
-                    sx={{ width: 120 }}
-                  />
-                </TableCell>
-                <TableCell>
-                  <TextField
-                    size="small"
-                    type="number"
-                    value={edits[p.id]?.resolutionTimeMinutes ?? ""}
-                    onChange={(e) => setEdits((prev) => ({ ...prev, [p.id]: { ...prev[p.id], resolutionTimeMinutes: e.target.value } }))}
-                    sx={{ width: 120 }}
+                    value={edits[p.id] ?? ""}
+                    onChange={(e) => setEdits((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                    sx={{ width: 100 }}
                   />
                 </TableCell>
                 <TableCell align="right">
-                  <Button size="small" variant="outlined" onClick={() => handleSaveSla(p.id)}>Save</Button>
+                  <Button size="small" variant="outlined" onClick={() => handleSaveLevel(p.id)}>Save</Button>
                 </TableCell>
               </TableRow>
             ))}

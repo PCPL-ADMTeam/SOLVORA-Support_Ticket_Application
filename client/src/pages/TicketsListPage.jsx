@@ -58,10 +58,20 @@ export default function TicketsListPage({
     sortBy: "createdAt",
     sortOrder: "desc",
     status: searchParams.get("status") || "",
-    overdue: searchParams.get("overdue") || "",
     search: searchParams.get("search") || "",
     assigned: searchParams.get("assigned") || "",
     departmentId: searchParams.get("departmentId") || "",
+    // Both read from the URL for the exact same reason `status` above
+    // already was — the dashboard's BI cross-filter drill-down
+    // (AgentDashboardPage.jsx's priorityDrillDown*/DashboardPage.jsx's
+    // onPriorityDrillDown) navigates here with `?priorityId=`/`?assigneeId=`
+    // alongside `?status=`, and TicketFilters.jsx already renders both as
+    // normal, directly-editable filters keyed on these exact same names —
+    // this was the missing half of that handoff: the URL param existed,
+    // but nothing ever read it into `filters`, so it was silently dropped
+    // before a request was ever made.
+    priorityId: searchParams.get("priorityId") || "",
+    assigneeId: searchParams.get("assigneeId") || "",
     // "Raised by Me" ("created") / "Assigned to Me" ("assigned") — set only
     // when navigating in from a dashboard KPI/card (DashboardPage.jsx's
     // goToTickets); otherwise absent, preserving each page's own default
@@ -124,8 +134,6 @@ export default function TicketsListPage({
     setBulkValue("");
     load();
   };
-
-  const isOverdue = (t) => t.dueAt && new Date(t.dueAt) < new Date() && !["RESOLVED", "CLOSED"].includes(t.status);
 
   return (
     <Box>
@@ -207,7 +215,6 @@ export default function TicketsListPage({
                     Created
                   </TableSortLabel>
                 </TableCell>
-                <TableCell>Due</TableCell>
               </TableRow>
             </TableHead>
             <TableBody>
@@ -238,9 +245,6 @@ export default function TicketsListPage({
                   <TableCell><PriorityBadge name={t.priority.name} color={t.priority.color} /></TableCell>
                   <TableCell><StatusBadge status={t.status} /></TableCell>
                   <TableCell>{format(new Date(t.createdAt), "MMM d, yyyy")}</TableCell>
-                  <TableCell sx={{ color: isOverdue(t) ? "error.main" : undefined, fontWeight: isOverdue(t) ? 700 : 400 }}>
-                    {t.dueAt ? format(new Date(t.dueAt), "MMM d, yyyy") : "—"}
-                  </TableCell>
                 </TableRow>
               ))}
             </TableBody>

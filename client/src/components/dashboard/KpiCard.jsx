@@ -39,7 +39,25 @@ export default function KpiCard({ label, value, color = "#c81e2a", icon, onClick
         {icon}
       </Box>
       <Box>
-        <Typography variant="h6" sx={{ fontVariantNumeric: "tabular-nums", lineHeight: 1.2 }}>
+        {/* `key={value}` retriggers the fade-in keyframe whenever the KPI's
+            number itself changes (e.g. a dashboard cross-filter click) —
+            this only remounts the small text node below, never the KpiCard/
+            Paper itself, so the card never flashes or shifts layout; it
+            just gives the new number a brief, subtle entrance instead of
+            silently snapping to the new value. */}
+        <Typography
+          key={value}
+          variant="h6"
+          sx={{
+            fontVariantNumeric: "tabular-nums",
+            lineHeight: 1.2,
+            animation: "kpi-value-fade 300ms ease-out",
+            "@keyframes kpi-value-fade": {
+              from: { opacity: 0.4 },
+              to: { opacity: 1 },
+            },
+          }}
+        >
           {value}
         </Typography>
         <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25, display: "block" }}>

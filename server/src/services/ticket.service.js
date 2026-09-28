@@ -7,10 +7,16 @@ const { parsePagination, buildPagedResult } = require("../utils/pagination");
 const { buildTicketNumber } = require("../utils/ticketNumber");
 const { recordAudit } = require("../utils/audit");
 const notificationService = require("./notification.service");
-const { sanitizeRichText, sanitizePlainText } = require("../utils/sanitize");
+const { sanitizeRichText } = require("../utils/sanitize");
 const { countWords, MAX_PROBLEM_SUMMARY_WORDS } = require("../utils/wordCount");
 const userDepartmentAccessService = require("./userDepartmentAccess.service");
-const { buildCreatedRecipients, buildStandardRecipients, buildAssignedOrCommentRecipients } = require("../utils/recipientBuilder");
+const {
+  buildCreatedRecipients,
+  buildStandardRecipients,
+  buildAssignedOrCommentRecipients,
+  buildRequesterOnlyRecipients,
+  buildSelfAssignedRecipients,
+} = require("../utils/recipientBuilder");
 const blobStorageService = require("./blobStorage.service");
 const { uploadRoot } = require("../config/multer");
 
@@ -218,19 +224,42 @@ function scrubInternalComments(ticket, user, userDepartmentIds = []) {
 // own (to-)department — never an ADMIN, never a MANAGER, never a TEAMLEAD
 // (Managers/Team Leads manage tickets, they are never themselves a normal
 // assignee), never someone from an unrelated department.
+//
+// A TEAMLEAD caller may ADDITIONALLY assign to another active TEAMLEAD in
+// the ticket's CURRENT department — `actingUser` (optional; omitted at
+// ticket-creation time when the payload simply carries no assigneeId in
+// practice) gates this: only when the person doing the assigning is
+// themselves a TEAMLEAD, never a MANAGER (a Manager's assignment behavior/
+// options are unchanged — see the final role rules, "Manager cannot be
+// assigned tickets" applies to a Manager as a TARGET, and nothing here
+// changes who a Manager may assign TO). A TEAMLEAD target's department
+// comes from UserDepartmentAccess (hasAccess), never assignee.departmentId
+// — that legacy field is meaningless for this role. The acting Team Lead
+// themselves is excluded here; self-assignment is the separate, existing
+// `assignToMe` flag/flow, never this generic assigneeId path.
 // Returns the fetched assignee record (never previously returned — a
 // caller that only cares about validation can still just call this and
 // ignore the result) so callers that already need this exact row for
 // display purposes (e.g. a human-readable name for TicketHistory — see
 // updateTicket's ASSIGNED entries) don't have to issue a second, duplicate
 // lookup.
-async function assertValidAssignee(assigneeId, departmentId) {
+async function assertValidAssignee(assigneeId, departmentId, actingUser) {
   if (!assigneeId) return null;
   const assignee = await prisma.user.findUnique({ where: { id: assigneeId }, include: { role: true } });
-  if (!assignee || !assignee.isActive || assignee.role.name !== "EMPLOYEE" || assignee.departmentId !== departmentId) {
-    throw new ApiError(400, "Invalid assignee — must be an active employee in this ticket's department");
+  if (assignee && assignee.isActive && assignee.role.name === "EMPLOYEE" && assignee.departmentId === departmentId) {
+    return assignee;
   }
-  return assignee;
+  if (
+    assignee &&
+    assignee.isActive &&
+    assignee.role.name === "TEAMLEAD" &&
+    actingUser?.role.name === "TEAMLEAD" &&
+    assignee.id !== actingUser.id &&
+    (await userDepartmentAccessService.hasAccess(assignee.id, departmentId))
+  ) {
+    return assignee;
+  }
+  throw new ApiError(400, "Invalid assignee — must be an active employee, or (for a Team Lead) a fellow Team Lead, in this ticket's department");
 }
 
 // Resolves a new ticket's `fromDepartmentId` — an informational field
@@ -372,11 +401,6 @@ async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue
   });
 }
 
-async function computeDueAt(priorityId, from = new Date()) {
-  const policy = await prisma.slaPolicy.findUnique({ where: { priorityId } });
-  if (!policy) return null;
-  return new Date(from.getTime() + policy.resolutionTimeMinutes * 60000);
-}
 
 // "created"/"assigned" are self-sufficient authorization rules on their
 // own — requesterId/assigneeId always equals the authenticated caller's
@@ -446,7 +470,6 @@ async function listTickets(user, query) {
       // allows. Same reasoning applies to every filter in this array.
       query.departmentId ? { toDepartmentId: query.departmentId } : {},
       query.assigned === "true" ? { assigneeId: { not: null } } : query.assigned === "false" ? { assigneeId: null } : {},
-      query.overdue === "true" ? { dueAt: { lt: new Date() }, status: { notIn: ["RESOLVED", "CLOSED"] } } : {},
       query.dateFrom ? { createdAt: { gte: new Date(query.dateFrom) } } : {},
       // A date-only string (e.g. "2026-09-23") parses as that day's UTC
       // midnight — using `lte` on that instant would exclude every ticket
@@ -481,7 +504,7 @@ async function listTickets(user, query) {
     ],
   };
 
-  const sortableFields = ["createdAt", "updatedAt", "dueAt", "status"];
+  const sortableFields = ["createdAt", "updatedAt", "status"];
   const sortBy = sortableFields.includes(query.sortBy) ? query.sortBy : "createdAt";
   const sortOrder = query.sortOrder === "asc" ? "asc" : "desc";
 
@@ -561,9 +584,7 @@ async function createTicket(user, payload, files = []) {
   if (!priority) throw new ApiError(400, "Invalid priority");
   if (categoryId && !category) throw new ApiError(400, "Invalid category");
   if (!toDepartment) throw new ApiError(400, "Invalid department");
-  await assertValidAssignee(assigneeId, toDepartmentId);
-
-  const dueAt = await computeDueAt(priorityId);
+  await assertValidAssignee(assigneeId, toDepartmentId, user);
 
   const ticket = await prisma.$transaction(async (tx) => {
     const created = await tx.ticket.create({
@@ -574,7 +595,13 @@ async function createTicket(user, payload, files = []) {
         // this transaction.
         ticketNumber: crypto.randomUUID(),
         title,
-        problemSummary: sanitizePlainText(problemSummary),
+        // Rich text (bold/italic/underline/lists) from the Problem Summary
+        // editor — sanitizeRichText allow-lists exactly the same tags
+        // SafeHtml.jsx (client-side render) already allows, so nothing
+        // stored here can ever render as anything more than that. A plain
+        // string with no HTML tags (typed with no formatting, or an old
+        // pre-rich-text value on an update) passes through unchanged.
+        problemSummary: sanitizeRichText(problemSummary),
         categoryId: categoryId || null,
         priorityId,
         requesterId: user.id,
@@ -583,7 +610,6 @@ async function createTicket(user, payload, files = []) {
         fromDepartmentId,
         toDepartmentId,
         managerId: activeTeamLeads[0]?.id || activeManagers[0]?.id || null,
-        dueAt,
       },
     });
 
@@ -841,7 +867,7 @@ async function updateTicket(user, id, payload) {
       // assertValidAssignee already fetches this exact user to validate it —
       // reusing that return value here avoids a second, redundant lookup
       // just to get a display name for history.
-      const newAssignee = await assertValidAssignee(payload.assigneeId, targetDepartmentId);
+      const newAssignee = await assertValidAssignee(payload.assigneeId, targetDepartmentId, user);
       data.assigneeId = payload.assigneeId || null;
       historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assignee?.name || "Unassigned", newValue: newAssignee?.name || "Unassigned" });
       assignmentComment = (payload.assignmentComment || "").trim();
@@ -901,7 +927,6 @@ async function updateTicket(user, id, payload) {
   if (isAdmin || isManagement || canRequesterEditDetails) {
     if (payload.priorityId !== undefined && payload.priorityId !== ticket.priorityId) {
       data.priorityId = payload.priorityId;
-      data.dueAt = await computeDueAt(payload.priorityId, ticket.createdAt);
       const newPriority = await prisma.priority.findUnique({ where: { id: payload.priorityId }, select: { name: true } });
       historyEntries.push({ action: "PRIORITY_CHANGE", fieldName: "priorityId", oldValue: ticket.priority?.name || "—", newValue: newPriority?.name || "—" });
       if (isRequesterEditPath) requesterContentChanged = true;
@@ -914,7 +939,7 @@ async function updateTicket(user, id, payload) {
     }
     if (payload.problemSummary !== undefined) {
       assertProblemSummaryWordLimit(payload.problemSummary);
-      const cleanProblemSummary = sanitizePlainText(payload.problemSummary);
+      const cleanProblemSummary = sanitizeRichText(payload.problemSummary);
       if (cleanProblemSummary !== ticket.problemSummary) {
         data.problemSummary = cleanProblemSummary;
         if (isRequesterEditPath) requesterContentChanged = true;
@@ -973,33 +998,33 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
   // — purely to pick the right event key; who gets notified is unchanged.
   const wasAlreadyAssigned = Boolean(before.assigneeId);
 
-  // Every event below except TICKET_ASSIGNED shares the SAME standard
-  // recipient shape — TO requester + current assignee, CC the ticket's
-  // current department's active Team Leads/Managers + its Custom CC list
-  // (see utils/recipientBuilder.js). TICKET_ASSIGNED alone uses the
-  // different assigned-or-comment shape (TO the assignee ONLY, requester
-  // moved to CC) — see buildAssignedOrCommentRecipients, shared with
-  // TICKET_COMMENT_ADDED in addComment(). TICKET_REASSIGNED deliberately
-  // keeps the standard shape, unchanged. Both computed once per call (not
-  // per history entry) since `after` — the ticket's post-update state —
-  // doesn't change across entries in the same updateTicket() call.
-  const { userIds: standardUserIds, ccUserIds: standardCcUserIds } = await buildStandardRecipients(after);
+  // TICKET_STATUS_CHANGED/RESOLVED/CLOSED/REOPENED/UPDATED all share this
+  // SAME recipient shape — TO the requester ONLY, CC the current assignee
+  // (if any) + the ticket's current department's active Team Leads/
+  // Managers + its Custom CC list (see
+  // utils/recipientBuilder.js#buildRequesterOnlyRecipients). TICKET_ASSIGNED
+  // and TICKET_REASSIGNED share a DIFFERENT shape — TO the assignee ONLY,
+  // requester moved to CC (see buildAssignedOrCommentRecipients, also
+  // shared with TICKET_COMMENT_ADDED in addComment()). Both computed once
+  // per call (not per history entry) since `after` — the ticket's
+  // post-update state — doesn't change across entries in the same
+  // updateTicket() call.
+  const { userIds: requesterOnlyUserIds, ccUserIds: requesterOnlyCcUserIds } = await buildRequesterOnlyRecipients(after);
   const { userIds: assignedUserIds, ccUserIds: assignedCcUserIds } = await buildAssignedOrCommentRecipients(after);
 
   for (const entry of historyEntries) {
     // --- Status changes (OPEN/IN_PROGRESS/ON_HOLD/RESOLVED/CLOSED) -------
     // One consolidated email per transition, never one-per-recipient.
-    // REOPENED shares this exact same recipient rule too now — no more
-    // special-cased "TO the assignee, not the requester" shape.
-    if (entry.action === "STATUS_CHANGE" && standardUserIds.length) {
+    // REOPENED shares this exact same recipient rule too.
+    if (entry.action === "STATUS_CHANGE" && requesterOnlyUserIds.length) {
       await notificationService.notify({
         eventKey: statusEventKey(entry.newValue),
-        userIds: standardUserIds,
+        userIds: requesterOnlyUserIds,
         ticketId: after.id,
         type: "STATUS_CHANGED",
         ticket: after,
         statusChange: { oldValue: entry.oldValue, newValue: entry.newValue },
-        ccUserIds: standardCcUserIds,
+        ccUserIds: requesterOnlyCcUserIds,
       });
     }
 
@@ -1014,20 +1039,21 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
     // `after.assigneeId !== actor.id`.
     if (entry.action === "ASSIGNED" && after.assigneeId && after.assigneeId !== actor.id) {
       if (wasAlreadyAssigned) {
-        // TICKET_REASSIGNED — recipient shape unchanged, still the standard
-        // shape (TO requester + assignee). The optional assignment/
-        // reassignment comment is passed through here too (same "Assign
-        // Ticket" dialog/action) and renders via the SAME shared
-        // {{assignmentCommentSection}} placeholder TICKET_ASSIGNED uses —
-        // see emailTemplate.service.js#buildAssignmentCommentSection.
-        if (standardUserIds.length) {
+        // TICKET_REASSIGNED — TO the NEW assignee ONLY, requester moved to
+        // CC (same assigned-or-comment shape TICKET_ASSIGNED itself uses;
+        // the old assignee is never included at all, on either side). The
+        // optional assignment/reassignment comment is passed through here
+        // too (same "Assign Ticket" dialog/action) and renders via the SAME
+        // shared {{assignmentCommentSection}} placeholder TICKET_ASSIGNED
+        // uses — see emailTemplate.service.js#buildAssignmentCommentSection.
+        if (assignedUserIds.length) {
           await notificationService.notify({
             eventKey: "TICKET_REASSIGNED",
-            userIds: standardUserIds,
+            userIds: assignedUserIds,
             ticketId: after.id,
             type: "TICKET_ASSIGNED",
             ticket: after,
-            ccUserIds: standardCcUserIds,
+            ccUserIds: assignedCcUserIds,
             assignmentComment,
           });
         }
@@ -1050,30 +1076,36 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
       }
     }
 
-    // Self-assignment ("Assign to Me") — a narrow, dedicated event outside
-    // the standard 10-event recipient matrix, left exactly as it already
-    // was: TO the requester only (never the acting Team Lead themselves), no
-    // CC, skipped entirely if the requester happens to be the actor. Detected
-    // from the actual after.assigneeId, same reasoning as the block above.
+    // Self-assignment ("Assign to Me") — a narrow, dedicated event: TO the
+    // requester only, CC the department's active Team Leads/Managers +
+    // Custom CC EXCLUDING the self-assigning Team Lead themselves (see
+    // buildSelfAssignedRecipients) — never the acting Team Lead in TO or
+    // CC. Skipped entirely if the requester happens to be the actor.
+    // Detected from the actual after.assigneeId, same reasoning as the
+    // block above. No assignmentComment for this event.
     if (entry.action === "ASSIGNED" && after.assigneeId === actor.id && after.requesterId && after.requesterId !== actor.id) {
-      await notificationService.notify({
-        eventKey: "TICKET_SELF_ASSIGNED",
-        userIds: [after.requesterId],
-        ticketId: after.id,
-        type: "TICKET_ASSIGNED",
-        ticket: after,
-      });
+      const { userIds: selfAssignedUserIds, ccUserIds: selfAssignedCcUserIds } = await buildSelfAssignedRecipients(after, actor.id);
+      if (selfAssignedUserIds.length) {
+        await notificationService.notify({
+          eventKey: "TICKET_SELF_ASSIGNED",
+          userIds: selfAssignedUserIds,
+          ticketId: after.id,
+          type: "TICKET_ASSIGNED",
+          ticket: after,
+          ccUserIds: selfAssignedCcUserIds,
+        });
+      }
     }
 
     // --- Requester edited their own ticket's content --------------------
-    if (entry.action === "TICKET_DETAILS_UPDATED" && standardUserIds.length) {
+    if (entry.action === "TICKET_DETAILS_UPDATED" && requesterOnlyUserIds.length) {
       await notificationService.notify({
         eventKey: "TICKET_UPDATED",
-        userIds: standardUserIds,
+        userIds: requesterOnlyUserIds,
         ticketId: after.id,
         type: "TICKET_UPDATED",
         ticket: after,
-        ccUserIds: standardCcUserIds,
+        ccUserIds: requesterOnlyCcUserIds,
       });
     }
   }
@@ -1235,9 +1267,6 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
       data: { ticketId, authorId: user.id, body: cleanBody, isInternal: Boolean(isInternal) },
       include: { author: { select: { id: true, name: true, role: { select: { name: true } } } } },
     });
-    if (!ticket.firstResponseAt && isHandler) {
-      await tx.ticket.update({ where: { id: ticketId }, data: { firstResponseAt: new Date() } });
-    }
     await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENTED" });
     return created;
   });

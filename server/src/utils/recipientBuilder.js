@@ -25,11 +25,18 @@ async function getTicketCcUserIds(ticketId) {
 // TICKET_CREATED only:
 //   TO = every ACTIVE TEAMLEAD with UserDepartmentAccess to the ticket's
 //        selected department (never the old single derived manager)
-//   CC = every ACTIVE MANAGER with UserDepartmentAccess to the ticket's
-//        selected department, + the ticket's stored Custom CC users
-// The requester is deliberately never in TO/CC here — they already know
-// they just raised it; this is the notification TO the people who need to
-// act on it. Managers are explicitly NEVER in TO for this event.
+//   CC = the requester + every ACTIVE MANAGER with UserDepartmentAccess to
+//        the ticket's selected department + the ticket's stored Custom CC
+//        users
+// The requester is CC'd (not TO) so they get a confirmation copy of the
+// same notification the Team Leads receive, without being who the email is
+// actually addressed to act on it. Managers are explicitly NEVER in TO for
+// this event. Deduping is by user id here (a Set, same as every other
+// recipient-builder function in this file) — final TO-over-CC precedence
+// and address-level dedup happen downstream in
+// notification.service.js#notify/resolveCcEmails, so a requester who also
+// happens to be an active Team Lead of this department (already in TO)
+// never receives a second, duplicate copy.
 async function buildCreatedRecipients(ticket) {
   const [teamLeads, managers, ccUserIds] = await Promise.all([
     userDepartmentAccessService.getActiveDepartmentTeamLeads(ticket.toDepartmentId),
@@ -38,7 +45,7 @@ async function buildCreatedRecipients(ticket) {
   ]);
   return {
     userIds: teamLeads.map((u) => u.id),
-    ccUserIds: [...new Set([...managers.map((u) => u.id), ...ccUserIds])],
+    ccUserIds: [...new Set([ticket.requesterId, ...managers.map((u) => u.id), ...ccUserIds])],
   };
 }
 
@@ -101,4 +108,60 @@ async function buildAssignedOrCommentRecipients(ticket) {
   return { userIds, ccUserIds };
 }
 
-module.exports = { buildCreatedRecipients, buildStandardRecipients, buildAssignedOrCommentRecipients, getTicketCcUserIds };
+// TICKET_STATUS_CHANGED, TICKET_RESOLVED, TICKET_CLOSED, TICKET_REOPENED, and
+// TICKET_UPDATED only:
+//   TO = the requester ONLY
+//   CC = the current assignee (if any) + every ACTIVE TEAMLEAD + every
+//        ACTIVE MANAGER of the ticket's CURRENT department + the ticket's
+//        stored Custom CC users
+// Deliberately distinct from buildStandardRecipients above (still used
+// as-is by transferDepartment, where the assignee is always null right
+// after a transfer anyway, so the two shapes happen to coincide there) —
+// here the assignee is moved from TO into CC on purpose, so the requester
+// is always the sole TO recipient for these five events.
+async function buildRequesterOnlyRecipients(ticket) {
+  const [teamLeads, managers, ticketCcUserIds] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(ticket.toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(ticket.toDepartmentId),
+    getTicketCcUserIds(ticket.id),
+  ]);
+  const userIds = ticket.requesterId ? [ticket.requesterId] : [];
+  const ccUserIds = [
+    ...new Set(
+      [ticket.assigneeId, ...teamLeads.map((u) => u.id), ...managers.map((u) => u.id), ...ticketCcUserIds].filter(Boolean)
+    ),
+  ];
+  return { userIds, ccUserIds };
+}
+
+// TICKET_SELF_ASSIGNED only ("Assign to Me"):
+//   TO = the requester ONLY
+//   CC = every ACTIVE TEAMLEAD + every ACTIVE MANAGER of the ticket's
+//        CURRENT department + the ticket's stored Custom CC users —
+//        EXCLUDING the self-assigning Team Lead themselves, who would
+//        otherwise naturally be one of the department's own active Team
+//        Leads counted here. `actingUserId` is always the caller's own id
+//        (server-derived, never client-supplied — see
+//        ticket.service.js#updateTicket's assignToMe branch), so this can
+//        never be used to exclude anyone else.
+async function buildSelfAssignedRecipients(ticket, actingUserId) {
+  const [teamLeads, managers, ticketCcUserIds] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(ticket.toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(ticket.toDepartmentId),
+    getTicketCcUserIds(ticket.id),
+  ]);
+  const userIds = ticket.requesterId ? [ticket.requesterId] : [];
+  const ccUserIds = [
+    ...new Set([...teamLeads.map((u) => u.id), ...managers.map((u) => u.id), ...ticketCcUserIds]),
+  ].filter((id) => id !== actingUserId);
+  return { userIds, ccUserIds };
+}
+
+module.exports = {
+  buildCreatedRecipients,
+  buildStandardRecipients,
+  buildAssignedOrCommentRecipients,
+  buildRequesterOnlyRecipients,
+  buildSelfAssignedRecipients,
+  getTicketCcUserIds,
+};

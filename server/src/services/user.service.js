@@ -249,41 +249,82 @@ async function updateOwnProfile(userId, payload) {
   return prisma.user.update({ where: { id: userId }, data, select: userListSelect });
 }
 
+// The fields the ticket-assignment dropdown needs — `role` is additive
+// (previously unselected, since every result used to be an EMPLOYEE by
+// construction) so a caller can group by the ACTUAL User.role value rather
+// than inferring it from which branch below produced the row.
+const assignableSelect = {
+  id: true,
+  name: true,
+  email: true,
+  departmentId: true,
+  role: { select: { name: true } },
+};
+
 // Lightweight list for populating a ticket's "assignee" dropdown (and the
-// ticket-list "Assignee" filter). MANAGER/TEAMLEAD are department-management
-// roles and are never assigned a ticket themselves — the people who
-// actually work tickets are EMPLOYEEs. Two call shapes:
+// ticket-list "Assignee" filter). MANAGER is a department-management role
+// and is never assigned a ticket themselves — a MANAGER caller's results
+// here are (and always were) EMPLOYEE-only, completely unchanged by the
+// TEAMLEAD branch below. A TEAMLEAD, unlike a MANAGER, CAN be a ticket's
+// assignee (see ticket.service.js's final role rules — "Assign to Me" has
+// always relied on this), so a TEAMLEAD caller ALSO gets every other active
+// TEAMLEAD in the SAME department as selectable peers — never themselves
+// (that's the separate, existing "Assign to Me" flag/flow, not this list),
+// and never a TEAMLEAD from a different department. A TEAMLEAD's own
+// department comes from UserDepartmentAccess (`departmentAccess.some`),
+// NEVER User.departmentId — that legacy field is meaningless for this role
+// and is only ever the correct department source for an EMPLOYEE row.
+// Two call shapes:
 //  - an explicit departmentId is passed (the real assignment action always
-//    passes the TICKET's own toDepartmentId — see TicketDetailPage.jsx):
-//    scope to exactly that department, and for a MANAGER/TEAMLEAD caller,
-//    only after confirming UserDepartmentAccess to it — never
-//    actingUser.departmentId, which under the multi-department model no
-//    longer means "the one department this user manages."
+//    passes the TICKET's own CURRENT toDepartmentId — see
+//    TicketDetailPage.jsx — so a transferred ticket's stale department can
+//    never leave a stale assignee eligible): scope to exactly that
+//    department, and for a MANAGER/TEAMLEAD caller, only after confirming
+//    UserDepartmentAccess to it — never actingUser.departmentId, which
+//    under the multi-department model no longer means "the one department
+//    this user manages."
 //  - no departmentId (the ticket-list assignee FILTER dropdown, which isn't
 //    tied to one specific ticket): for a MANAGER/TEAMLEAD, scope to the
 //    union of every department they currently have access to, so the
 //    filter can still show everyone they could possibly filter by without
 //    leaking employees of departments they can't access. ADMIN sees every
-//    active employee, matching its existing full-system-access scope.
+//    active employee, matching its existing full-system-access scope. This
+//    shape stays EMPLOYEE-only even for a TEAMLEAD caller — it isn't the
+//    ticket-assignment action this task extends, only the unrelated list
+//    filter.
 async function listAssignableEmployees(actingUser, { departmentId } = {}) {
-  const where = { isActive: true, role: { name: "EMPLOYEE" } };
+  const isTeamLeadCaller = actingUser.role.name === "TEAMLEAD";
+  const isManagementCaller = actingUser.role.name === "MANAGER" || isTeamLeadCaller;
 
-  if (actingUser.role.name === "MANAGER" || actingUser.role.name === "TEAMLEAD") {
-    if (departmentId) {
-      if (!(await hasUserDepartmentAccess(actingUser.id, departmentId))) return [];
-      where.departmentId = departmentId;
-    } else {
-      const accessibleIds = await getUserDepartmentIds(actingUser.id);
-      if (!accessibleIds.length) return [];
-      where.departmentId = { in: accessibleIds };
-    }
-  } else if (departmentId) {
-    where.departmentId = departmentId;
+  if (isManagementCaller && departmentId) {
+    if (!(await hasUserDepartmentAccess(actingUser.id, departmentId))) return [];
+    const where = isTeamLeadCaller
+      ? {
+          isActive: true,
+          OR: [
+            { role: { name: "EMPLOYEE" }, departmentId },
+            { role: { name: "TEAMLEAD" }, id: { not: actingUser.id }, departmentAccess: { some: { departmentId } } },
+          ],
+        }
+      : { isActive: true, role: { name: "EMPLOYEE" }, departmentId };
+    return prisma.user.findMany({ where, select: assignableSelect, orderBy: { name: "asc" } });
   }
 
+  if (isManagementCaller) {
+    const accessibleIds = await getUserDepartmentIds(actingUser.id);
+    if (!accessibleIds.length) return [];
+    return prisma.user.findMany({
+      where: { isActive: true, role: { name: "EMPLOYEE" }, departmentId: { in: accessibleIds } },
+      select: assignableSelect,
+      orderBy: { name: "asc" },
+    });
+  }
+
+  // ADMIN — unrestricted (or narrowed to one department if given), exactly
+  // as before.
   return prisma.user.findMany({
-    where,
-    select: { id: true, name: true, email: true, departmentId: true },
+    where: { isActive: true, role: { name: "EMPLOYEE" }, ...(departmentId ? { departmentId } : {}) },
+    select: assignableSelect,
     orderBy: { name: "asc" },
   });
 }

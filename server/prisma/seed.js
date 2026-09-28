@@ -1,5 +1,5 @@
 // Idempotent seed script: safe to re-run. Creates the four system roles,
-// a default admin account, sample teams/categories/priorities/SLA policies,
+// a default admin account, sample teams/categories/priorities,
 // a few extra users, and a handful of sample tickets to populate the
 // dashboard on first run.
 require("dotenv").config();
@@ -67,10 +67,10 @@ async function main() {
   // (see client/src/theme/theme.js STATUS_SCALE) — Low/Medium/High/Critical
   // map naturally onto that fixed, accessibility-checked severity scale.
   const priorityDefs = [
-    { name: "Low", level: 1, color: "#0ca30c", responseTimeMinutes: 480, resolutionTimeMinutes: 4320 },
-    { name: "Medium", level: 2, color: "#fab219", responseTimeMinutes: 240, resolutionTimeMinutes: 1440 },
-    { name: "High", level: 3, color: "#ec835a", responseTimeMinutes: 60, resolutionTimeMinutes: 480 },
-    { name: "Critical", level: 4, color: "#d03b3b", responseTimeMinutes: 15, resolutionTimeMinutes: 120 },
+    { name: "Low", level: 1, color: "#0ca30c" },
+    { name: "Medium", level: 2, color: "#fab219" },
+    { name: "High", level: 3, color: "#ec835a" },
+    { name: "Critical", level: 4, color: "#d03b3b" },
   ];
 
   const priorities = {};
@@ -79,11 +79,6 @@ async function main() {
       where: { name: def.name },
       update: { level: def.level, color: def.color },
       create: { name: def.name, level: def.level, color: def.color },
-    });
-    await prisma.slaPolicy.upsert({
-      where: { priorityId: priority.id },
-      update: { responseTimeMinutes: def.responseTimeMinutes, resolutionTimeMinutes: def.resolutionTimeMinutes },
-      create: { priorityId: priority.id, responseTimeMinutes: def.responseTimeMinutes, resolutionTimeMinutes: def.resolutionTimeMinutes },
     });
     priorities[def.name] = priority;
   }

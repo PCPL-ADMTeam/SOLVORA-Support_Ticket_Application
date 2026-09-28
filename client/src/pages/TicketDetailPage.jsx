@@ -16,6 +16,8 @@ import {
   DialogContent,
   DialogActions,
   Autocomplete,
+  Tabs,
+  Tab,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
@@ -100,6 +102,12 @@ export default function TicketDetailPage() {
   const [ticket, setTicket] = useState(null);
   const [loading, setLoading] = useState(true);
   const [commentSubmitting, setCommentSubmitting] = useState(false);
+  // Comments vs Activity History — both already come from the SAME ticket
+  // fetch (ticket.comments/ticket.history), so switching tabs is a pure
+  // client-side render toggle, never a new request. "comments" is the
+  // default so existing comments are visible immediately without an extra
+  // click, matching the page's previous (always-visible) behavior.
+  const [activeTicketTab, setActiveTicketTab] = useState("comments");
 
   const [assignableEmployees, setAssignableEmployees] = useState([]);
   const [priorities, setPriorities] = useState([]);
@@ -274,18 +282,28 @@ export default function TicketDetailPage() {
   };
 
   // A searchable (type-to-filter) Autocomplete over the already-fetched,
-  // server-scoped `assignableEmployees` list (active EMPLOYEEs of this
-  // ticket's own department — see the effect above) rather than a plain
-  // static Select — that list is already small and correctly scoped, so
-  // this is a client-side filter over it, not a second network round trip
-  // (unlike SearchableUserSelector, which is for the larger, org-wide
-  // pickers on Department Details/Raise Ticket). "Unassigned" and
-  // "Assign to Me" are grouped separately from the real Team Members so the
-  // existing two-group layout (previously a ListSubheader) is preserved.
+  // server-scoped `assignableEmployees` list (active EMPLOYEEs — and, for a
+  // TEAMLEAD caller, active fellow TEAMLEADs too — of this ticket's own
+  // department; see user.service.js#listAssignableEmployees and the effect
+  // above) rather than a plain static Select — that list is already small
+  // and correctly scoped, so this is a client-side filter over it, not a
+  // second network round trip (unlike SearchableUserSelector, which is for
+  // the larger, org-wide pickers on Department Details/Raise Ticket).
+  // Grouped by the ACTUAL User.role value the backend returns (never
+  // inferred from name/department) — a Manager caller's results are never
+  // anything but EMPLOYEE (the backend only ever adds TEAMLEAD peers for a
+  // TEAMLEAD caller), so "Team Leads" simply never appears for them, and
+  // the acting Team Lead's own row is already excluded server-side ("Assign
+  // to Me" above is the one and only self-assignment path). Team Leads are
+  // placed before Team Members in the array so MUI's groupBy (which
+  // preserves array order, not alphabetical) renders "Team Leads" above
+  // "Team Members" — matching the target section order.
   const assigneeOptions = useMemo(() => {
     const actions = [{ id: "", name: "Unassigned", group: "Actions" }];
     if (isTeamLead) actions.push({ id: ASSIGN_TO_ME_VALUE, name: "Assign to Me", group: "Actions" });
-    return [...actions, ...assignableEmployees.map((a) => ({ ...a, group: "Team Members" }))];
+    const teamLeads = assignableEmployees.filter((a) => a.role?.name === "TEAMLEAD").map((a) => ({ ...a, group: "Team Leads" }));
+    const teamMembers = assignableEmployees.filter((a) => a.role?.name !== "TEAMLEAD").map((a) => ({ ...a, group: "Team Members" }));
+    return [...actions, ...teamLeads, ...teamMembers];
   }, [assignableEmployees, isTeamLead]);
 
   const handleSaveAssign = async () => {
@@ -423,15 +441,36 @@ export default function TicketDetailPage() {
 
             <AttachmentList ticketId={ticket.id} attachments={ticket.attachments} />
 
-            <CommentThread
-              ticketId={ticket.id}
-              comments={ticket.comments}
-              isStaff={isStaff}
-              onAddComment={handleAddComment}
-              submitting={commentSubmitting}
-            />
-
-            <ActivityTimeline history={ticket.history} />
+            {/* Comments and Activity History share this one card — only one
+                is ever mounted/visible at a time (a plain client-side toggle
+                over data the initial ticket fetch already loaded, so
+                switching tabs never re-fetches or navigates). Comments is
+                the default tab; the tab label itself is the only "Comments"/
+                "Activity History" heading now — each panel's own former
+                internal heading was removed to avoid showing it twice. */}
+            <Paper variant="outlined" sx={{ overflow: "hidden" }}>
+              <Tabs
+                value={activeTicketTab}
+                onChange={(_e, value) => setActiveTicketTab(value)}
+                sx={{ borderBottom: 1, borderColor: "divider", px: 1, minHeight: 40 }}
+              >
+                <Tab label="Comments" value="comments" sx={{ minHeight: 40 }} />
+                <Tab label="Activity History" value="activity" sx={{ minHeight: 40 }} />
+              </Tabs>
+              {activeTicketTab === "comments" ? (
+                <CommentThread
+                  ticketId={ticket.id}
+                  comments={ticket.comments}
+                  isStaff={isStaff}
+                  onAddComment={handleAddComment}
+                  submitting={commentSubmitting}
+                />
+              ) : (
+                <Box sx={{ p: 2 }}>
+                  <ActivityTimeline history={ticket.history} />
+                </Box>
+              )}
+            </Paper>
           </Stack>
         </Grid>
 

@@ -34,12 +34,14 @@ const ACTION_COLORS = {
   TRANSFER_REASON: "grey",
 };
 
+// No "Activity History" heading here — the parent page (TicketDetailPage.jsx)
+// now shows this inside its own "Activity History" tab, whose label already
+// serves as the section's title; repeating it here would just duplicate it.
 export default function ActivityTimeline({ history }) {
   if (!history.length) return null;
 
   return (
     <Box>
-      <Typography variant="subtitle1" fontWeight={700} gutterBottom>Activity History</Typography>
       <Timeline sx={{ p: 0, m: 0 }}>
         {history.map((h, idx) => (
           <TimelineItem key={h.id}>

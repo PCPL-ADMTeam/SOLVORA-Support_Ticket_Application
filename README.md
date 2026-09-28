@@ -1,7 +1,7 @@
 # Helpdesk — IT Ticketing / Support System
 
 A full-stack IT helpdesk / ticketing application (comparable in scope to Jira Service
-Management or GLPI): ticket lifecycle management, SLA tracking, role-based portals for
+Management or GLPI): ticket lifecycle management, role-based portals for
 Admins/Agents/End Users, a live analytics dashboard, email notifications, and file
 attachments.
 
@@ -28,7 +28,7 @@ helpdesk-app/
 
 See inline comments in `server/prisma/schema.prisma` for the full data model
 (users, roles, teams, tickets, comments, attachments, history, categories,
-priorities, SLA policies, notifications, audit logs).
+priorities, notifications, audit logs).
 
 ## Quick Start (Docker Compose — recommended)
 
@@ -76,7 +76,7 @@ npm run dev                 # starts on http://localhost:5173
 ## Default Login Credentials (from `prisma/seed.js`)
 
 | Role | Email | Password |
-|---|---|---|
+|---|---|---| 
 | Admin | `admin@helpdesk.local` | `Admin@12345` |
 | Agent (IT department manager) | `alex.agent@helpdesk.local` | `Agent@12345` |
 | Agent | `sam.support@helpdesk.local` | `Agent@12345` |
@@ -95,7 +95,7 @@ seeding a non-dev environment.
 ## Portals
 
 - **Admin** (`/admin`) — dashboard, all tickets, users, teams, categories,
-  priorities & SLA, audit logs, settings.
+  priorities, audit logs, settings.
 - **Agent** (`/agent`) — personal dashboard, assigned/team ticket queue.
 - **End User** (`/portal`) — personal dashboard, raise a ticket, my tickets, profile.
 - Ticket detail (`/tickets/:id`) is shared across all three portals; access
@@ -114,7 +114,7 @@ route files in `server/src/routes/v1/`.
 | Users | `GET/POST /users`, `GET/PATCH/DELETE /users/:id`, `PATCH /users/me/profile`, `GET /users/assignable-agents` (Admin, except self-service routes) |
 | Teams | `GET /teams`, `GET/POST/PATCH/DELETE /teams(/:id)` (write = Admin) |
 | Categories | `GET /categories`, `POST/PATCH/DELETE /categories(/:id)` (write = Admin) |
-| Priorities & SLA | `GET /priorities`, `POST/PATCH /priorities(/:id)`, `PUT /priorities/:id/sla` (write = Admin) |
+| Priorities | `GET /priorities`, `POST/PATCH /priorities(/:id)` (write = Admin) |
 | Tickets | `GET/POST /tickets`, `GET/PATCH /tickets/:id`, `POST /tickets/:id/comments`, `POST /tickets/:id/attachments`, `POST /tickets/bulk` (Admin) |
 | Dashboard | `GET /dashboard/stats?days=30&dateFrom=&dateTo=` |
 | Notifications | `GET /notifications`, `PATCH /notifications/:id/read`, `PATCH /notifications/read-all` |

@@ -26,7 +26,14 @@ router.get("/stats", async (req, res) => {
   // server-side and ANDs it in, so a client-supplied id outside that set
   // can only ever narrow results to zero, never expand visibility.
   const departmentId = req.query.departmentId || undefined;
-  const stats = await dashboardService.getStats(req.user, { dateFrom, dateTo, days, scope, departmentId });
+  // BI-style dashboard cross-filtering (Employee Workload row / Status pie
+  // slice) — both optional, additive narrowing filters; getStats() itself
+  // re-derives the caller's accessible scope server-side and ANDs it in, so
+  // neither can ever expand what a request would otherwise be authorized to
+  // see (same reasoning as departmentId above).
+  const assigneeId = req.query.assigneeId || undefined;
+  const status = dashboardService.STATUSES.includes(req.query.status) ? req.query.status : undefined;
+  const stats = await dashboardService.getStats(req.user, { dateFrom, dateTo, days, scope, departmentId, assigneeId, status });
   res.json({ success: true, data: stats });
 });
 

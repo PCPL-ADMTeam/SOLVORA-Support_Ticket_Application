@@ -1,11 +1,9 @@
 const app = require("./app");
 const env = require("./config/env");
 const prisma = require("./config/prisma");
-const { startSlaBreachJob } = require("./jobs/slaBreachCheck");
 
 const server = app.listen(env.port, () => {
   console.log(`Helpdesk API listening on port ${env.port} [${env.nodeEnv}]`);
-  startSlaBreachJob();
 });
 
 async function shutdown(signal) {

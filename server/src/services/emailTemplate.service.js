@@ -134,7 +134,15 @@ async function buildPlaceholders({ ticket, comment, recipientName, statusChange,
     ticketNumber: ticket?.ticketNumber || "",
     title: ticket?.title || "",
     department: ticket?.toDepartment?.name || "",
-    problemSummary: ticket?.problemSummary || "",
+    // Problem Summary is now rich-text HTML (bold/italic/underline/lists —
+    // see ticket.service.js's sanitizeRichText); rendered emails aren't rich
+    // text, so this reduces it to plain readable text via the SAME
+    // stripHtml() the {{comment}} placeholder above already uses for the
+    // identical HTML-in-a-plain-email problem — never the raw HTML (which
+    // would otherwise come out as escaped, literal "&lt;p&gt;" tag text
+    // once renderString's generic escaping below runs). An old plain-text
+    // Problem Summary has no tags to strip, so this is unchanged for it.
+    problemSummary: stripHtml(ticket?.problemSummary) || "",
     priority: ticket?.priority?.name || "",
     status: ticket?.status || "",
     requesterName: ticket?.requester?.name || "",

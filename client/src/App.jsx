@@ -23,7 +23,7 @@ import TeamsPage from "./pages/admin/TeamsPage";
 import DepartmentsPage from "./pages/admin/DepartmentsPage";
 import DepartmentDetailsPage from "./pages/admin/DepartmentDetailsPage";
 import EmailTemplatesPage from "./pages/admin/EmailTemplatesPage";
-import SlaPage from "./pages/admin/SlaPage";
+import PrioritiesPage from "./pages/admin/PrioritiesPage";
 import AuditLogsPage from "./pages/admin/AuditLogsPage";
 import SettingsPage from "./pages/admin/SettingsPage";
 
@@ -76,7 +76,7 @@ export default function App() {
                   <Route path="teams" element={<TeamsPage />} />
                   <Route path="departments" element={<DepartmentsPage />} />
                   <Route path="departments/:id" element={<DepartmentDetailsPage />} />
-                  <Route path="sla" element={<SlaPage />} />
+                  <Route path="priorities" element={<PrioritiesPage />} />
                   <Route path="email-templates" element={<EmailTemplatesPage />} />
                   <Route path="audit-logs" element={<AuditLogsPage />} />
                   <Route path="settings" element={<SettingsPage />} />

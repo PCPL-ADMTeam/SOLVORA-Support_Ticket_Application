@@ -6,9 +6,4 @@ const priorityValidator = [
   body("color").optional().isHexColor().withMessage("color must be a hex value, e.g. #FF0000"),
 ];
 
-const slaPolicyValidator = [
-  body("responseTimeMinutes").isInt({ min: 1 }).withMessage("responseTimeMinutes must be a positive integer"),
-  body("resolutionTimeMinutes").isInt({ min: 1 }).withMessage("resolutionTimeMinutes must be a positive integer"),
-];
-
-module.exports = { priorityValidator, slaPolicyValidator };
+module.exports = { priorityValidator };

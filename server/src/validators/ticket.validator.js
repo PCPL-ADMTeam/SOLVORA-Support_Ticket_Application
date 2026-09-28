@@ -11,12 +11,23 @@ function problemSummaryWordLimit(value) {
   return true;
 }
 
+// A rich-text editor's "empty" state isn't an empty STRING — Quill sends
+// "<p><br></p>" for a blank editor, which `.notEmpty()` would wrongly accept
+// as present content. Checking the (HTML-stripped) word count instead — the
+// same countWords() the limit check above already uses — catches both an
+// actually-empty value and a formatting-only one with no real text.
+function problemSummaryRequired(value) {
+  if (countWords(value) === 0) {
+    throw new Error("Problem Summary is required");
+  }
+  return true;
+}
+
 const createTicketValidator = [
   body("title").trim().notEmpty().withMessage("Title is required").isLength({ max: 200 }),
   body("problemSummary")
     .trim()
-    .notEmpty()
-    .withMessage("Problem Summary is required")
+    .custom(problemSummaryRequired)
     .custom(problemSummaryWordLimit),
   body("categoryId").optional({ nullable: true }).isString(),
   body("priorityId").notEmpty().withMessage("Priority is required"),
@@ -56,7 +67,7 @@ const updateTicketValidator = [
   // canRequesterEditDetails path) — title/Problem Summary of a ticket the
   // caller raised themselves.
   body("title").optional().trim().notEmpty().isLength({ max: 200 }),
-  body("problemSummary").optional().trim().notEmpty().custom(problemSummaryWordLimit),
+  body("problemSummary").optional().trim().custom(problemSummaryRequired).custom(problemSummaryWordLimit),
   // Type-checked here; the actual "required when status is
   // RESOLVED/ON_HOLD/CLOSED" cross-field rule lives in
   // ticket.service.js#updateTicket, alongside the other business rules

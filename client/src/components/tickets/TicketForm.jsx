@@ -6,15 +6,12 @@ import {
   Typography,
   Box,
   Autocomplete,
-  Chip,
   Paper,
   Divider,
   Alert,
 } from "@mui/material";
 
 import AttachFileIcon from "@mui/icons-material/AttachFile";
-import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
-import CloseIcon from "@mui/icons-material/Close";
 import FlagIcon from "@mui/icons-material/Flag";
 import PersonAddAlt1Icon from "@mui/icons-material/PersonAddAlt1";
 
@@ -22,24 +19,16 @@ import { useAuth } from "../../context/AuthContext";
 import { departmentsApi } from "../../api/departments";
 import { prioritiesApi } from "../../api/catalog";
 import AttachmentList from "./AttachmentList";
+import AttachmentPreview from "./AttachmentPreview";
+import RichTextField from "./RichTextField";
 import SearchableUserSelector from "../common/SearchableUserSelector";
-
-// Per-file size limit — separate from, and independent of, the combined
-// MAX_ATTACHMENTS_TOTAL_SIZE_MB cap below (a file can pass this check and
-// still be rejected by the combined cap, and vice versa is not possible
-// since the combined cap can only ever be stricter).
-const MAX_ATTACHMENT_MB = 10;
-
-// Mirrors ticket.service.js's MAX_ATTACHMENTS_PER_TICKET exactly — this is
-// a UX convenience only (rejects an obviously over-limit selection
-// immediately instead of round-tripping to the server first); the backend
-// remains the authoritative, unbypassable check.
-const MAX_ATTACHMENTS_PER_TICKET = 5;
-
-// Mirrors ticket.service.js's MAX_ATTACHMENTS_TOTAL_SIZE_MB exactly — the
-// COMBINED size of every attachment on the ticket (not per file).
-const MAX_ATTACHMENTS_TOTAL_SIZE_MB = 10;
-const MAX_ATTACHMENTS_TOTAL_SIZE_BYTES = MAX_ATTACHMENTS_TOTAL_SIZE_MB * 1024 * 1024;
+import {
+  MAX_ATTACHMENT_MB,
+  MAX_ATTACHMENTS_PER_TICKET,
+  MAX_ATTACHMENTS_TOTAL_SIZE_MB,
+  MAX_ATTACHMENTS_TOTAL_SIZE_BYTES,
+  validateNewAttachments,
+} from "../../utils/attachmentValidation";
 
 // Mirrors ticket.service.js's MAX_PROBLEM_SUMMARY_WORDS exactly.
 const MAX_PROBLEM_SUMMARY_WORDS = 50;
@@ -133,6 +122,16 @@ export default function TicketForm({
   const [attachments, setAttachments] = useState([]);
   const [errors, setErrors] = useState({});
 
+  // The rich-text Problem Summary editor's CURRENT VISIBLE TEXT ONLY (never
+  // its HTML) — kept in sync via RichTextField's onChange (Quill's own
+  // getText()) so the 50-word count/required-check below never has to parse
+  // HTML on this side either. Old plain-text tickets have no HTML tags to
+  // begin with, so this starts identical to `form.problemSummary` for both
+  // modes.
+  const [problemSummaryPlainText, setProblemSummaryPlainText] = useState(() =>
+    isEdit && initialTicket ? initialTicket.problemSummary || "" : ""
+  );
+
   /* =========================================================
      CUSTOM CC (create mode only — the ticket's CC list is fixed at
      creation time and there is no post-creation CC-editing UI, see
@@ -222,65 +221,41 @@ export default function TicketForm({
   const remainingAttachmentSlots = Math.max(MAX_ATTACHMENTS_PER_TICKET - existingAttachmentCount - attachments.length, 0);
   const remainingAttachmentBytes = Math.max(MAX_ATTACHMENTS_TOTAL_SIZE_BYTES - totalAttachmentSize, 0);
 
-  const handleAttachmentChange = (event) => {
-    const files = Array.from(event.target.files || []);
-
+  // Single reusable entry point for adding files, regardless of source —
+  // the "Upload File" input and a Ctrl+V clipboard image paste (see
+  // RichTextField's onImagePaste below) both funnel through this exact same
+  // validation, so a pasted screenshot counts toward, and can be rejected
+  // by, the exact same count/size caps as an uploaded file (see
+  // utils/attachmentValidation.js — shared with nothing duplicated here).
+  const addAttachmentFiles = (files) => {
     if (!files.length) return;
+    const { validFiles, error } = validateNewAttachments(files, {
+      remainingSlots: remainingAttachmentSlots,
+      remainingBytes: remainingAttachmentBytes,
+    });
+    if (validFiles.length) setAttachments((prev) => [...prev, ...validFiles]);
+    setErrors((prev) => ({ ...prev, attachments: error }));
+  };
 
-    // The limit is checked against the WHOLE selection first — a user
-    // picking more files than the remaining slots gets a clear rejection,
-    // never a silent truncation to "however many happened to fit."
-    if (files.length > remainingAttachmentSlots) {
-      setErrors((prev) => ({
-        ...prev,
-        attachments: `Maximum ${MAX_ATTACHMENTS_PER_TICKET} attachments are allowed per ticket. You can upload only ${remainingAttachmentSlots} more file(s).`,
-      }));
-      event.target.value = "";
-      return;
-    }
-
-    // Combined size — checked against the WHOLE selection at once (existing
-    // + already-staged + this batch), same "reject the whole thing, never
-    // silently drop files" philosophy as the count check above.
-    const incomingSize = files.reduce((sum, f) => sum + (f.size || 0), 0);
-    if (incomingSize > remainingAttachmentBytes) {
-      setErrors((prev) => ({
-        ...prev,
-        attachments: `Attachments cannot exceed ${MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB combined per ticket. Only ${(remainingAttachmentBytes / (1024 * 1024)).toFixed(1)} MB more can be uploaded.`,
-      }));
-      event.target.value = "";
-      return;
-    }
-
-    // General file types are allowed (images, documents, archives, etc.) —
-    // this is a UX convenience for the per-file size limit only, same as
-    // the checks above; the backend's multer fileFilter (see
-    // server/src/config/multer.js) is the authoritative, unbypassable
-    // check, and blocks only genuinely dangerous file types, not a fixed
-    // allowlist of "safe" ones.
-    const validFiles = [];
-    let rejectionMessage = "";
-
-    for (const file of files) {
-      if (file.size > MAX_ATTACHMENT_MB * 1024 * 1024) {
-        rejectionMessage = `Files must be under ${MAX_ATTACHMENT_MB} MB.`;
-        continue;
-      }
-
-      validFiles.push(file);
-    }
-
-    setAttachments((prev) => [
-      ...prev,
-      ...validFiles,
-    ]);
-
-    setErrors((prev) => ({
-      ...prev,
-      attachments: rejectionMessage,
-    }));
-
+  const handleAttachmentChange = (event) => {
+    addAttachmentFiles(Array.from(event.target.files || []));
     event.target.value = "";
+  };
+
+  // Feature 1 — a clipboard image pasted while the Problem Summary editor is
+  // focused never becomes inline content (see RichTextField's paste
+  // interception); it arrives here as a plain File and is added exactly as
+  // if it had been picked via "Upload File." `files` is always a plain array
+  // (RichTextField already filters/converts clipboard items itself), so a
+  // conversion failure there simply results in an empty array — nothing to
+  // add, nothing to error on, since there was nothing usable on the
+  // clipboard to begin with.
+  const handleImagePaste = (files) => {
+    if (!files.length) {
+      setErrors((prev) => ({ ...prev, attachments: "Could not read the pasted image. Try again or use Upload File instead." }));
+      return;
+    }
+    addAttachmentFiles(files);
   };
 
   const removeAttachment = (index) => {
@@ -295,7 +270,11 @@ export default function TicketForm({
      VALIDATION
   ========================================================= */
 
-  const problemSummaryWordCount = countWords(form.problemSummary);
+  // Word count/required-check run against the PLAIN TEXT RichTextField hands
+  // back (Quill's own getText()), never the stored HTML — so
+  // "<b>Unable</b> to access <i>Power BI</i>" counts as the 5 visible words
+  // it reads as ("Unable to access Power BI"), not those words plus markup.
+  const problemSummaryWordCount = countWords(problemSummaryPlainText);
 
   const validateForm = () => {
     const newErrors = {};
@@ -313,7 +292,7 @@ export default function TicketForm({
         "Department is required";
     }
 
-    if (!form.problemSummary.trim()) {
+    if (!problemSummaryPlainText.trim()) {
       newErrors.problemSummary = "Problem Summary is required";
     } else if (problemSummaryWordCount > MAX_PROBLEM_SUMMARY_WORDS) {
       newErrors.problemSummary = `Problem Summary must be ${MAX_PROBLEM_SUMMARY_WORDS} words or fewer (currently ${problemSummaryWordCount}).`;
@@ -759,16 +738,16 @@ export default function TicketForm({
                   </Typography>
                 </Stack>
 
-                <TextField
-                  fullWidth
-                  multiline
-                  minRows={4}
-                  name="problemSummary"
+                <RichTextField
                   value={form.problemSummary}
-                  onChange={handleChange}
+                  onChange={(html, plainText) => {
+                    setForm((prev) => ({ ...prev, problemSummary: html }));
+                    setProblemSummaryPlainText(plainText);
+                    setErrors((prev) => ({ ...prev, problemSummary: "" }));
+                  }}
+                  onImagePaste={handleImagePaste}
                   placeholder="Briefly describe the problem (50 words max)..."
-                  error={Boolean(errors.problemSummary)}
-                  helperText={errors.problemSummary}
+                  error={errors.problemSummary}
                 />
               </Box>
 
@@ -825,7 +804,7 @@ export default function TicketForm({
                     color: "text.secondary",
                   }}
                 >
-                  Any file type — up to {MAX_ATTACHMENT_MB} MB each.
+                  Any file type — up to {MAX_ATTACHMENT_MB} MB.
                   <br />
                   Attachments: {existingAttachmentCount + attachments.length} / {MAX_ATTACHMENTS_PER_TICKET}
                   {" "}&nbsp;•&nbsp; Size: {(totalAttachmentSize / (1024 * 1024)).toFixed(1)} MB / {MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB
@@ -843,69 +822,7 @@ export default function TicketForm({
                   </Typography>
                 )}
 
-                {attachments.length > 0 && (
-                  <Stack
-                    spacing={1}
-                    sx={{ mt: 1.5 }}
-                  >
-                    {attachments.map(
-                      (file, index) => (
-                        <Paper
-                          key={`${file.name}-${index}`}
-                          variant="outlined"
-                          sx={{
-                            display: "flex",
-                            alignItems:
-                              "center",
-                            gap: 1.5,
-                            p: 1,
-                            px: 1.5,
-                            borderRadius: 2,
-                            borderColor:
-                              "divider",
-                          }}
-                        >
-                          <InsertDriveFileIcon
-                            fontSize="small"
-                            sx={{
-                              color:
-                                "text.secondary",
-                            }}
-                          />
-
-                          <Typography
-                            variant="body2"
-                            noWrap
-                            sx={{
-                              flex: 1,
-                            }}
-                          >
-                            {file.name}
-                          </Typography>
-
-                          <Chip
-                            label={`${(
-                              file.size / 1024
-                            ).toFixed(1)} KB`}
-                            size="small"
-                            variant="outlined"
-                            onDelete={() =>
-                              removeAttachment(
-                                index
-                              )
-                            }
-                            deleteIcon={
-                              <CloseIcon />
-                            }
-                            sx={{
-                              borderRadius: 1.5,
-                            }}
-                          />
-                        </Paper>
-                      )
-                    )}
-                  </Stack>
-                )}
+                <AttachmentPreview files={attachments} onRemove={removeAttachment} />
               </Box>
 
               {/* =================================================

@@ -1,7 +1,7 @@
 // Controllers for Department + its per-department Issue list — the ticket
 // form's To Department / Manager / Issue dropdowns. Grouped together since
 // Issue only ever exists scoped to a Department, same pairing style as
-// catalog.controller.js (Priority + SLA policies).
+// catalog.controller.js (Priority).
 const departmentService = require("../services/department.service");
 const issueService = require("../services/issue.service");
 const userDepartmentAccessService = require("../services/userDepartmentAccess.service");

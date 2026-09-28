@@ -256,7 +256,11 @@ model Category {
   @@map("categories")
 }
 
-// Low / Medium / High / Critical — ordered by `level` (1 = lowest).
+// Low / Medium / High / Critical — ordered by `level` (1 = lowest). SLA
+// functionality (response/resolution time targets) has been removed from
+// the system entirely — Priority itself remains exactly as before, used
+// for ticket selection/filtering/display and the dashboard's Priority
+// breakdown chart.
 model Priority {
   id        String   @id @default(cuid())
   name      String   @unique
@@ -265,22 +269,8 @@ model Priority {
   createdAt DateTime @default(now())
 
   tickets    Ticket[]
-  slaPolicy  SlaPolicy?
 
   @@map("priorities")
-}
-
-model SlaPolicy {
-  id                   String   @id @default(cuid())
-  priorityId           String   @unique
-  responseTimeMinutes  Int // time within which first response/comment is due
-  resolutionTimeMinutes Int // time within which ticket must be resolved
-  createdAt            DateTime @default(now())
-  updatedAt            DateTime @updatedAt
-
-  priority Priority @relation(fields: [priorityId], references: [id], onDelete: Cascade)
-
-  @@map("sla_policies")
 }
 
 // ---------------------------------------------------------------------------
@@ -323,8 +313,6 @@ model Ticket {
   toDepartmentId   String?
   managerId        String?
 
-  dueAt          DateTime? // resolution deadline derived from SLA
-  firstResponseAt DateTime?
   resolvedAt     DateTime?
   closedAt       DateTime?
 
@@ -465,7 +453,7 @@ model Notification {
   id        String   @id @default(cuid())
   userId    String
   ticketId  String?
-  type      String // TICKET_CREATED | TICKET_ASSIGNED | STATUS_CHANGED | NEW_COMMENT | SLA_BREACH
+  type      String // TICKET_CREATED | TICKET_ASSIGNED | STATUS_CHANGED | NEW_COMMENT
   title     String
   message   String
   isRead    Boolean  @default(false)
@@ -502,8 +490,8 @@ model EmailTemplate {
 model AuditLog {
   id         String   @id @default(cuid())
   userId     String?
-  action     String // e.g. USER_CREATED, USER_DEACTIVATED, SLA_UPDATED, TICKET_BULK_ASSIGN
-  entityType String // e.g. User, Ticket, Category, SlaPolicy
+  action     String // e.g. USER_CREATED, USER_DEACTIVATED, PRIORITY_UPDATED, TICKET_BULK_ASSIGN
+  entityType String // e.g. User, Ticket, Category, Priority
   entityId   String?
   oldValues  Json?
   newValues  Json?

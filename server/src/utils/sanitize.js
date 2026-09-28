@@ -11,9 +11,11 @@ function sanitizeRichText(html) {
   });
 }
 
-// Applied to Ticket.problemSummary — a plain-text field (no rich-text
-// editor), so every tag is stripped entirely rather than allow-listed; only
-// whitespace is normalized (collapsed/trimmed) beyond that.
+// Strips HTML entirely rather than allow-listing it — every tag is removed;
+// only whitespace is normalized (collapsed/trimmed) beyond that. No longer
+// used for Ticket.problemSummary (see sanitizeRichText above, used there
+// since that field became a rich-text editor); kept as a general-purpose
+// plain-text sanitizer.
 function sanitizePlainText(value) {
   return sanitizeHtml(value || "", { allowedTags: [], allowedAttributes: {} }).replace(/\s+/g, " ").trim();
 }
