@@ -21,7 +21,7 @@ const userSelect = { id: true, name: true, email: true, isActive: true };
 async function getUserDepartments(userId) {
   const rows = await prisma.userDepartmentAccess.findMany({
     where: { userId },
-    select: { departmentId: true, department: { select: { id: true, name: true, ticketPrefix: true } } },
+    select: { departmentId: true, department: { select: { id: true, name: true } } },
     orderBy: { department: { name: "asc" } },
   });
   return rows.map((r) => r.department);

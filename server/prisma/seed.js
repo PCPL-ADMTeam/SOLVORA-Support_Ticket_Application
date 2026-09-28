@@ -93,7 +93,6 @@ async function main() {
   const departmentDefs = [
     {
       name: "Hardware",
-      ticketPrefix: "HW",
       issues: [
         "Laptop / Desktop Issue", "Hardware Failure", "Keyboard / Mouse Issue", "Monitor / Display Issue",
         "Printer Issue", "Peripherals Issue", "Software Installation", "Application Access",
@@ -102,7 +101,6 @@ async function main() {
     },
     {
       name: "HR",
-      ticketPrefix: "HR",
       issues: [
         "Leave Issue", "Attendance Issue", "Payroll Issue", "Employee Information Update",
         "Onboarding Issue", "Offboarding Issue", "Policy Clarification", "Document Request",
@@ -110,12 +108,10 @@ async function main() {
     },
     {
       name: "Administration",
-      ticketPrefix: "AD",
       issues: ["Facility Issue", "Office Equipment", "Access Card", "Transport Issue", "Housekeeping Issue", "Maintenance Issue"],
     },
     {
       name: "BI/Copilot",
-      ticketPrefix: "BIC",
       issues: [
         "Power BI Access Request", "Power BI Report Issue", "Dashboard Data Issue", "Data Refresh Issue",
         "Copilot License Request", "Copilot Access Issue", "Copilot Output Issue",
@@ -123,7 +119,6 @@ async function main() {
     },
     {
       name: "M365",
-      ticketPrefix: "M365",
       issues: [
         "Outlook / Email Issue", "Teams Issue", "OneDrive Issue", "SharePoint Issue",
         "Office License Issue", "Calendar / Scheduling Issue",
@@ -131,7 +126,6 @@ async function main() {
     },
     {
       name: "Security",
-      ticketPrefix: "SEC",
       issues: [
         "Password Reset", "Account Lockout", "Multi-Factor Authentication Issue", "VPN Issue",
         "Phishing / Suspicious Email", "Antivirus / Malware Alert", "Access / Permission Request",
@@ -139,7 +133,6 @@ async function main() {
     },
     {
       name: "Cloud",
-      ticketPrefix: "CLD",
       issues: [
         "Cloud VM / Instance Issue", "Cloud Storage Access", "Cloud Cost / Billing Query",
         "IAM / Access Issue", "Deployment Issue", "Cloud Backup Issue",
@@ -147,12 +140,10 @@ async function main() {
     },
     {
       name: "Sales",
-      ticketPrefix: "SAL",
       issues: ["CRM Issue", "Customer Data Issue", "Sales Application Access", "Report Issue", "Customer Support Issue"],
     },
     {
       name: "Operations",
-      ticketPrefix: "OPS",
       issues: [
         "Process Issue", "Vendor / Supplier Issue", "Inventory Issue", "Logistics Issue",
         "Compliance Issue", "Documentation Request",
@@ -168,7 +159,7 @@ async function main() {
     const department = await prisma.department.upsert({
       where: { name: def.name },
       update: {},
-      create: { name: def.name, ticketPrefix: def.ticketPrefix },
+      create: { name: def.name },
     });
     departments[def.name] = department;
 

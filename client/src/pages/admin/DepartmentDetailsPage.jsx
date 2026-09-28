@@ -63,13 +63,7 @@ export default function DepartmentDetailsPage() {
         Back to Departments
       </Button>
 
-      <Stack direction="row" spacing={1.5} alignItems="center" sx={{ mb: 1 }}>
-        <Typography variant="h4">{department.name}</Typography>
-        <Chip label={`Prefix: ${department.ticketPrefix}`} sx={{ fontFamily: "monospace" }} />
-      </Stack>
-      <Typography variant="caption" color="text.secondary" display="block" sx={{ mb: 2 }}>
-        Ticket numbers are now assigned globally and no longer depend on this department's prefix.
-      </Typography>
+      <Typography variant="h4" sx={{ mb: 2 }}>{department.name}</Typography>
 
       <Stack spacing={3} sx={{ mt: 2 }}>
         <DepartmentManagersSection department={department} onChanged={load} />

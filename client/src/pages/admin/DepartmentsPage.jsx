@@ -28,7 +28,7 @@ import ConfirmDialog from "../../components/common/ConfirmDialog";
 import DialogCloseButton from "../../components/common/DialogCloseButton";
 import { ignoreBackdropClick } from "../../utils/dialog";
 
-const emptyDeptForm = { id: null, name: "", ticketPrefix: "" };
+const emptyDeptForm = { id: null, name: "" };
 
 // Card-grid overview of every department — click through to
 // DepartmentDetailsPage for agent / team members / issue management.
@@ -52,14 +52,14 @@ export default function DepartmentsPage() {
   useEffect(() => { load(); }, [load]);
 
   const openCreateDept = () => { setDeptForm(emptyDeptForm); setDeptDialogOpen(true); };
-  const openEditDept = (d) => { setDeptForm({ id: d.id, name: d.name, ticketPrefix: d.ticketPrefix }); setDeptDialogOpen(true); };
+  const openEditDept = (d) => { setDeptForm({ id: d.id, name: d.name }); setDeptDialogOpen(true); };
 
   const handleSaveDept = async () => {
     try {
       if (deptForm.id) {
-        await departmentsApi.update(deptForm.id, { name: deptForm.name, ticketPrefix: deptForm.ticketPrefix });
+        await departmentsApi.update(deptForm.id, { name: deptForm.name });
       } else {
-        await departmentsApi.create({ name: deptForm.name, ticketPrefix: deptForm.ticketPrefix });
+        await departmentsApi.create({ name: deptForm.name });
       }
       setDeptDialogOpen(false);
       load();
@@ -98,10 +98,7 @@ export default function DepartmentsPage() {
               <Card variant="outlined" sx={{ height: "100%", display: "flex", flexDirection: "column" }}>
                 <CardActionArea onClick={() => navigate(`/admin/departments/${d.id}`)} sx={{ flexGrow: 1, alignItems: "stretch" }}>
                   <CardContent>
-                    <Stack direction="row" spacing={1} alignItems="center">
-                      <Typography variant="h6" fontWeight={700}>{d.name}</Typography>
-                      <Chip size="small" label={d.ticketPrefix} variant="outlined" sx={{ fontFamily: "monospace" }} />
-                    </Stack>
+                    <Typography variant="h6" fontWeight={700}>{d.name}</Typography>
                     <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
                       {teamLeads.length
                         ? `Team Leads: ${teamLeads.map((a) => a.name).join(", ")}`
@@ -114,7 +111,6 @@ export default function DepartmentsPage() {
                     </Typography>
                     <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
                       <Chip size="small" label={`${d.employees.length} Employee${d.employees.length === 1 ? "" : "s"}`} />
-                      <Chip size="small" label={`${d.issues.length} Issue${d.issues.length === 1 ? "" : "s"}`} />
                     </Stack>
                   </CardContent>
                 </CardActionArea>
@@ -141,18 +137,6 @@ export default function DepartmentsPage() {
               value={deptForm.name}
               onChange={(e) => setDeptForm((f) => ({ ...f, name: e.target.value }))}
               fullWidth
-            />
-            <TextField
-              label="Ticket Prefix"
-              value={deptForm.ticketPrefix}
-              onChange={(e) => setDeptForm((f) => ({ ...f, ticketPrefix: e.target.value.toUpperCase() }))}
-              fullWidth
-              inputProps={{ style: { fontFamily: "monospace" }, maxLength: 10 }}
-              helperText={
-                deptForm.ticketPrefix
-                  ? `New tickets for this department will be numbered ${deptForm.ticketPrefix}-0001, ${deptForm.ticketPrefix}-0002, ...`
-                  : "Letters/numbers only, e.g. HW, BIC, M365 — used to number this department's tickets"
-              }
             />
           </Stack>
         </DialogContent>

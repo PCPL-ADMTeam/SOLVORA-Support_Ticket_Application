@@ -195,14 +195,6 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Department identity fields only — NOT used to generate Ticket.ticketNumber
-  // (that's now a global numeric sequence derived from Ticket.seq; see
-  // ticket.service.js#buildTicketNumber). Kept for department-identity
-  // display (e.g. DepartmentDetailsPage's "Prefix" chip) and left untouched
-  // by ticket creation. Not exposed as directly editable in the Admin UI.
-  ticketPrefix   String @unique
-  ticketSequence Int    @default(0)
-
   users   User[]
   issues  Issue[]
 
