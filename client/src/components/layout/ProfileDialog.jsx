@@ -21,6 +21,7 @@ import { useAuth } from "../../context/AuthContext";
 import { authApi } from "../../api/auth";
 import { usersApi } from "../../api/users";
 import { ignoreBackdropClick } from "../../utils/dialog";
+import FormField from "../common/FormField";
 
 // A single "label / value" row used to lay out the real, existing profile
 // fields returned by GET /auth/me — never fabricated placeholders. A field
@@ -187,9 +188,20 @@ export default function ProfileDialog({ open, mode = "view", onClose }) {
             <Typography variant="subtitle2" fontWeight={700} gutterBottom>Change Password</Typography>
             <Box component="form" onSubmit={handlePasswordChange}>
               <Stack spacing={2}>
-                <TextField label="Current Password" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required fullWidth />
-                <TextField label="New Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required fullWidth helperText="At least 8 characters" />
-                <TextField label="Confirm New Password" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required fullWidth />
+                <FormField label="Current Password" type="password" value={currentPassword} onChange={(e) => setCurrentPassword(e.target.value)} required />
+
+                {/* Separates the verification step (current password) from the new-password group. */}
+                <Divider sx={{ my: 1 }} />
+
+                <Box>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: "block", mb: 1.5 }}>
+                    Enter at least 8 characters
+                  </Typography>
+                  <Stack spacing={2}>
+                    <FormField label="New Password" type="password" value={newPassword} onChange={(e) => setNewPassword(e.target.value)} required />
+                    <FormField label="Confirm New Password" type="password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required />
+                  </Stack>
+                </Box>
                 <Button type="submit" variant="contained" disabled={savingPassword} sx={{ alignSelf: "flex-start" }}>
                   Update Password
                 </Button>
