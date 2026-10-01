@@ -185,6 +185,12 @@ async function markRead(userId, id) {
   return prisma.notification.updateMany({ where: { id, userId }, data: { isRead: true } });
 }
 
+// Counted separately from listForUser (capped at 50 rows) so the bell badge
+// reflects the user's true unread total, not just the visible page.
+async function countUnread(userId) {
+  return prisma.notification.count({ where: { userId, isRead: false } });
+}
+
 async function markAllRead(userId) {
   return prisma.notification.updateMany({ where: { userId, isRead: false }, data: { isRead: true } });
 }
@@ -200,4 +206,4 @@ async function clearAll(userId) {
   return prisma.notification.deleteMany({ where: { userId } });
 }
 
-module.exports = { notify, listForUser, markRead, markAllRead, clearAll };
+module.exports = { notify, listForUser, countUnread, markRead, markAllRead, clearAll };

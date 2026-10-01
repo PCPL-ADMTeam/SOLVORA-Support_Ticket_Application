@@ -1,8 +1,11 @@
 const notificationService = require("../services/notification.service");
 
 async function list(req, res) {
-  const data = await notificationService.listForUser(req.user.id, { unreadOnly: req.query.unreadOnly === "true" });
-  res.json({ success: true, data });
+  const [data, unreadCount] = await Promise.all([
+    notificationService.listForUser(req.user.id, { unreadOnly: req.query.unreadOnly === "true" }),
+    notificationService.countUnread(req.user.id),
+  ]);
+  res.json({ success: true, data, unreadCount });
 }
 
 async function markRead(req, res) {
