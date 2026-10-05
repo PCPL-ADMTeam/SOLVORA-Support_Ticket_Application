@@ -73,14 +73,29 @@ async function listUsers(query) {
   const where = {
     ...(query.role ? { role: { name: query.role } } : {}),
     ...(query.isActive !== undefined ? { isActive: query.isActive === "true" } : {}),
-    ...(query.search
-      ? {
-          OR: [
-            { name: { contains: query.search, mode: "insensitive" } },
-            { email: { contains: query.search, mode: "insensitive" } },
-          ],
-        }
-      : {}),
+    // Both the search and department filters need an OR, so they are combined
+    // under AND rather than competing for the same top-level `OR` key.
+    AND: [
+      ...(query.search
+        ? [{
+            OR: [
+              { name: { contains: query.search, mode: "insensitive" } },
+              { email: { contains: query.search, mode: "insensitive" } },
+            ],
+          }]
+        : []),
+      // Same role-resolved source of truth as attachDepartmentInfo above:
+      // MANAGER/TEAMLEAD belong to a department via UserDepartmentAccess,
+      // everyone else via the direct User.departmentId.
+      ...(query.department
+        ? [{
+            OR: [
+              { role: { name: { in: ["MANAGER", "TEAMLEAD"] } }, departmentAccess: { some: { departmentId: query.department } } },
+              { role: { name: { notIn: ["MANAGER", "TEAMLEAD"] } }, departmentId: query.department },
+            ],
+          }]
+        : []),
+    ],
   };
 
   const [rows, total] = await Promise.all([

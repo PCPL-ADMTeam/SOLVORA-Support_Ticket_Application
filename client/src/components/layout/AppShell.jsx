@@ -25,11 +25,13 @@ import MenuIcon from "@mui/icons-material/Menu";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
 import SearchIcon from "@mui/icons-material/Search";
 import AddIcon from "@mui/icons-material/Add";
+import LogoutIcon from "@mui/icons-material/Logout";
 
 import { useTheme } from "@mui/material/styles";
 import { useAuth } from "../../context/AuthContext";
 import NotificationBell from "./NotificationBell";
 import ProfileDialog from "./ProfileDialog";
+import ConfirmDialog from "../common/ConfirmDialog";
 import AppFooter from "./AppFooter";
 import logo from "../../assets/logo.png";
 
@@ -51,6 +53,7 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
   const [userMenuAnchor, setUserMenuAnchor] = useState(null);
   const [ticketSearch, setTicketSearch] = useState("");
   const [profileDialog, setProfileDialog] = useState(null); // "view" | "edit" | null
+  const [logoutConfirmOpen, setLogoutConfirmOpen] = useState(false);
 
   const { user, logout } = useAuth();
 
@@ -177,6 +180,46 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
             </ListItemButton>
           </Tooltip>
         ))}
+
+        {/* Logout is an action, not a route, so it's a button rather than a
+            NavLink. Same handler as the user menu's "Logout" entry. */}
+        <Tooltip
+          title={showLabels ? "" : "Logout"}
+          placement="right"
+          arrow
+          disableHoverListener={showLabels}
+        >
+          <ListItemButton
+            onClick={() => {
+              setMobileOpen(false);
+              setLogoutConfirmOpen(true);
+            }}
+            className="sidebar-nav-item"
+            sx={{
+              justifyContent: showLabels ? "flex-start" : "center",
+              px: showLabels ? 2 : 1,
+
+              "&:hover": {
+                bgcolor: "action.hover",
+              },
+            }}
+          >
+            <ListItemIcon
+              sx={{
+                minWidth: showLabels ? 40 : 0,
+                justifyContent: "center",
+                transition: "min-width 0.25s ease-in-out",
+              }}
+            >
+              <LogoutIcon />
+            </ListItemIcon>
+
+            <ListItemText
+              primary="Logout"
+              className={`sidebar-label ${showLabels ? "" : "collapsed"}`}
+            />
+          </ListItemButton>
+        </Tooltip>
       </List>
     </Box>
   );
@@ -342,6 +385,18 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
         open={Boolean(profileDialog)}
         mode={profileDialog || "view"}
         onClose={() => setProfileDialog(null)}
+      />
+
+      <ConfirmDialog
+        open={logoutConfirmOpen}
+        title="Log out?"
+        message="Are you sure you want to log out?"
+        confirmLabel="Logout"
+        onClose={() => setLogoutConfirmOpen(false)}
+        onConfirm={() => {
+          setLogoutConfirmOpen(false);
+          handleLogout();
+        }}
       />
 
       {/* ================= SIDEBAR ================= */}

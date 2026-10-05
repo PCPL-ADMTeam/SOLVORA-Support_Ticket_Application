@@ -46,7 +46,7 @@ const emptyForm = { id: null, name: "", email: "", password: "", roleName: "EMPL
 export default function UsersPage() {
   const { enqueueSnackbar } = useSnackbar();
   const { user: currentUser } = useAuth();
-  const [filters, setFilters] = useState({ page: 1, limit: 20, search: "", role: "" });
+  const [filters, setFilters] = useState({ page: 1, limit: 20, search: "", role: "", department: "" });
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(true);
   const [departments, setDepartments] = useState([]);
@@ -200,6 +200,10 @@ export default function UsersPage() {
         <TextField size="small" select label="Role" value={filters.role} onChange={(e) => setFilters((f) => ({ ...f, role: e.target.value, page: 1 }))} sx={{ minWidth: 140 }}>
           <MenuItem value="">All</MenuItem>
           {ROLES.map((r) => <MenuItem key={r} value={r}>{r}</MenuItem>)}
+        </TextField>
+        <TextField size="small" select label="Department" value={filters.department} onChange={(e) => setFilters((f) => ({ ...f, department: e.target.value, page: 1 }))} sx={{ minWidth: 200 }}>
+          <MenuItem value="">All Departments</MenuItem>
+          {departments.map((d) => <MenuItem key={d.id} value={d.id}>{d.name}</MenuItem>)}
         </TextField>
       </Stack>
 
