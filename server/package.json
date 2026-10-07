@@ -12,7 +12,9 @@
     "prisma:generate": "prisma generate",
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "ai:check": "node scripts/ai-check.js",
+    "chat:misses": "node scripts/chat-misses.js"
   },
   "dependencies": {
     "@azure/msal-node": "^6.0.1",

@@ -3,6 +3,12 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.js"],
+    css: false,
+  },
   server: {
     port: 5173,
     // Docker Desktop on Windows doesn't forward host filesystem change

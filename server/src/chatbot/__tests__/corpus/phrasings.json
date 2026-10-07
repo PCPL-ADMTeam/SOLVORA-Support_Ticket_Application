@@ -1,0 +1,230 @@
+[
+  {
+    "role": "ADMIN",
+    "text": "find the hardware department ticket",
+    "expect": {
+      "intent": "list_tickets",
+      "params": {
+        "department": "hardware"
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "show me the hardware department ticket",
+    "expect": {
+      "intent": "list_tickets",
+      "params": {
+        "department": "hardware"
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "tickets in hardware department",
+    "expect": {
+      "intent": "list_tickets",
+      "params": {
+        "department": "hardware"
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "hardware tickets",
+    "expect": {
+      "intent": "list_tickets",
+      "params": {
+        "departmentOrText": "hardware"
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "show high priority tickets in finance",
+    "expect": {
+      "intent": "list_tickets",
+      "params": {
+        "priority": "high",
+        "subject": "finance"
+      }
+    }
+  },
+  {
+    "role": "MANAGER",
+    "text": "who raised the ticket 2600007",
+    "expect": {
+      "intent": "find_ticket",
+      "params": {
+        "ticketNumber": "2600007",
+        "focus": "raisedBy"
+      }
+    }
+  },
+  {
+    "role": "MANAGER",
+    "text": "who is assigned to ticket 2600007",
+    "expect": {
+      "intent": "find_ticket",
+      "params": {
+        "ticketNumber": "2600007",
+        "focus": "assignedTo"
+      }
+    }
+  },
+  {
+    "role": "MANAGER",
+    "text": "add a comment \"I am working on it\" in the ticket 2600007",
+    "expect": {
+      "intent": "admin_action",
+      "params": {
+        "parsed": {
+          "action": "add_ticket_comment",
+          "args": {
+            "ticket": "2600007",
+            "comment": "I am working on it"
+          }
+        }
+      }
+    }
+  },
+  {
+    "role": "MANAGER",
+    "text": "add a comment on ticket 2600007: checking the printer",
+    "expect": {
+      "intent": "admin_action",
+      "params": {
+        "parsed": {
+          "action": "add_ticket_comment",
+          "args": {
+            "ticket": "2600007",
+            "comment": "checking the printer"
+          }
+        }
+      }
+    }
+  },
+  {
+    "role": "TEAMLEAD",
+    "text": "assign ticket 2600007 to Poojasri S",
+    "expect": {
+      "intent": "admin_action",
+      "params": {
+        "parsed": {
+          "action": "assign_ticket",
+          "args": {
+            "ticket": "2600007",
+            "assignee": "Poojasri S"
+          }
+        }
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "who works in IT",
+    "expect": {
+      "intent": "people_directory",
+      "params": {}
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "show overall ticket summary",
+    "expect": {
+      "intent": "ticket_statistics",
+      "params": {}
+    }
+  },
+  {
+    "role": "EMPLOYEE",
+    "text": "show my open tickets",
+    "expect": {
+      "intent": "list_tickets",
+      "params": {
+        "scope": "mine",
+        "filter": "open"
+      }
+    }
+  },
+  {
+    "role": "EMPLOYEE",
+    "text": "how do i change my password",
+    "expect": {
+      "intent": "change_password",
+      "params": {}
+    }
+  },
+  {
+    "role": "MANAGER",
+    "text": "Create a ticket for Demo laptop to hardware team",
+    "expect": {
+      "intent": "ticket_draft",
+      "params": {}
+    }
+  },
+  {
+    "role": "MANAGER",
+    "text": "Raise a new ticket to hardware department that I need a demo laptop",
+    "expect": {
+      "intent": "ticket_draft",
+      "params": {}
+    }
+  },
+  {
+    "role": "EMPLOYEE",
+    "text": "raise a ticket for printer not working to Finance department: it jams every page",
+    "expect": {
+      "intent": "ticket_draft",
+      "params": {}
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "change department for pavithran to cloud",
+    "expect": {
+      "intent": "admin_action",
+      "params": {
+        "parsed": {
+          "action": "move_user_department",
+          "args": {
+            "user": "pavithran",
+            "department": "cloud"
+          }
+        }
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "change pavithran's department to cloud",
+    "expect": {
+      "intent": "admin_action",
+      "params": {
+        "parsed": {
+          "action": "move_user_department",
+          "args": {
+            "user": "pavithran",
+            "department": "cloud"
+          }
+        }
+      }
+    }
+  },
+  {
+    "role": "ADMIN",
+    "text": "rename department Sales to Revenue",
+    "expect": {
+      "intent": "admin_action",
+      "params": {
+        "parsed": {
+          "action": "rename_department",
+          "args": {
+            "department": "Sales",
+            "newName": "Revenue"
+          }
+        }
+      }
+    }
+  }
+]

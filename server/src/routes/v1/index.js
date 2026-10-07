@@ -10,6 +10,7 @@ const dashboardRoutes = require("./dashboard.routes");
 const notificationRoutes = require("./notification.routes");
 const auditLogRoutes = require("./auditLog.routes");
 const emailTemplateRoutes = require("./emailTemplate.routes");
+const chatbotRoutes = require("../../chatbot/chatbot.routes");
 
 const router = Router();
 
@@ -24,5 +25,6 @@ router.use("/dashboard", dashboardRoutes);
 router.use("/notifications", notificationRoutes);
 router.use("/audit-logs", auditLogRoutes);
 router.use("/email-templates", emailTemplateRoutes);
+router.use("/chatbot", chatbotRoutes);
 
 module.exports = router;

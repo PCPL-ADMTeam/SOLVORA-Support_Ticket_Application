@@ -119,10 +119,33 @@ route files in `server/src/routes/v1/`.
 | Dashboard | `GET /dashboard/stats?days=30&dateFrom=&dateTo=` |
 | Notifications | `GET /notifications`, `PATCH /notifications/:id/read`, `PATCH /notifications/read-all` |
 | Audit Logs | `GET /audit-logs` (Admin) |
+| Chatbot | `POST /chatbot/messages`, `GET /chatbot/conversations/:id`, `POST /chatbot/conversations/:id/reset`, `GET /chatbot/suggestions`, `POST /chatbot/messages/:messageId/feedback`, `POST /chatbot/actions/:id/confirm`, `POST /chatbot/actions/:id/cancel` (Admin) — see [docs/chatbot-api.md](docs/chatbot-api.md) |
 
 Ticket list/dashboard query params: `status`, `priorityId`, `categoryId`,
 `assigneeId`, `teamId`, `overdue=true`, `search`, `dateFrom`, `dateTo`,
 `sortBy`, `sortOrder`, `page`, `limit`.
+
+## Assistant (Chatbot)
+
+A role-aware assistant is available in every portal (round chat button, bottom
+right). It answers "how do I…" questions from a role-filtered knowledge base and
+answers ticket questions only from data the signed-in user is already authorized
+to see (it reuses `ticket.service.js`'s scope rules). Ticket text is treated as
+untrusted data. **Every role** can ask it to make a limited set of changes allowed for that role
+(for example an Employee raises or comments on their own tickets, a Team Lead or
+Manager assigns and closes tickets in their departments, an Admin manages
+departments and users); every change is shown as a preview and only made after
+the user presses **Confirm**, through the application's existing services and
+rules. See [tools and permissions](docs/chatbot-tool-registry.md).
+
+- Setup: apply the new migrations (`cd server && npx prisma migrate deploy`), then
+  optionally set the `CHATBOT_*` variables in `server/.env` (see `server/.env.example`).
+  The default `CHATBOT_PROVIDER=mock` needs no key and sends nothing off the server.
+- AI: an OpenRouter model can interpret free-form wording when no reliable rule matches (optional; off until configured); it only picks a registered intent and never reads data or executes anything. See [AI interpretation](docs/chatbot-ai-interpretation.md) and `npm run ai:check`.
+- Docs: [analysis](docs/chatbot-repository-analysis.md) · [OpenRouter analysis](docs/openrouter-chatbot-analysis.md) · [AI interpretation](docs/chatbot-ai-interpretation.md) · [tools and permissions](docs/chatbot-tool-registry.md) ·
+  [architecture](docs/chatbot-architecture.md) · [API](docs/chatbot-api.md) ·
+  [security](docs/chatbot-security.md) · [knowledge base](docs/chatbot-knowledge-base.md) ·
+  [testing](docs/chatbot-testing.md) · [deployment](docs/chatbot-deployment.md)
 
 ## Security Notes
 
@@ -143,6 +166,7 @@ Ticket list/dashboard query params: `status`, `priorityId`, `categoryId`,
 ## Running Tests / Linting
 
 ```bash
-cd server && npm test         # jest + supertest scaffold
-cd client && npm run lint
+cd server && npm test         # jest + supertest (includes the chatbot suites)
+cd client && npm test         # vitest + React Testing Library (chatbot widget)
+cd client && npm run lint     # NOTE: the repo has no ESLint config file yet, so this errors
 ```

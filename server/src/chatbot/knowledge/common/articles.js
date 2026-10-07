@@ -1,0 +1,153 @@
+const { article, dialog } = require("../schema");
+
+// Available to every role. Profile/password live in the header avatar menu
+// (AppShell.jsx) and the Profile dialog (ProfileDialog.jsx) — there is no
+// profile route, so navigation targets are dialogs, not paths.
+module.exports = [
+  article({
+    id: "common.view-profile",
+    title: "How to view your profile",
+    roles: ["ALL"],
+    feature: "Profile",
+    route: dialog("profile", "Open profile"),
+    steps: [
+      "Select your avatar (the circle with your initial) at the top right of the header.",
+      "Choose Profile.",
+      "A dialog shows your name, email, role and department details.",
+    ],
+    keywords: ["profile", "my profile", "my details", "my account", "view profile", "account info"],
+  }),
+  article({
+    id: "common.update-profile",
+    title: "How to update your profile",
+    roles: ["ALL"],
+    feature: "Edit Profile",
+    route: dialog("edit-profile", "Open Edit Profile"),
+    steps: [
+      "Select your avatar at the top right of the header.",
+      "Choose Edit Profile.",
+      "Change your Full Name.",
+      "Select Save Changes and confirm the success message appears.",
+    ],
+    warning: "The Edit Profile dialog only lets you change your name. Your email, role and department are managed by an administrator.",
+    keywords: ["update profile", "update my profile", "edit profile", "edit my profile", "change my profile", "change name", "change my name", "edit my details"],
+  }),
+  article({
+    id: "common.change-password",
+    title: "How to change your password",
+    roles: ["ALL"],
+    feature: "Change Password",
+    route: dialog("edit-profile", "Open password settings"),
+    steps: [
+      "Select your avatar at the top right of the header.",
+      "Choose Edit Profile.",
+      "Scroll to the Change Password section.",
+      "Enter your Current Password, then your New Password and Confirm New Password.",
+      "Select Update Password and confirm the \"Password updated\" message appears.",
+    ],
+    warning: "Your new password must be at least 8 characters. If you have forgotten your password, use the Forgot Password link on the sign-in page instead.",
+    keywords: ["password", "change password", "reset password", "new password", "security", "forgot password"],
+  }),
+  article({
+    id: "common.ticket-status",
+    title: "Understanding ticket status",
+    roles: ["ALL"],
+    feature: "Ticket status",
+    steps: [
+      "Open — the ticket has been raised and work has not started.",
+      "In Progress — someone is actively working on it.",
+      "On Hold — work is paused; the ticket records a reason for the hold.",
+      "Resolved — a fix was recorded (with resolution notes). It can then be Closed or Reopened.",
+      "Closed — the ticket is finished (a closing reason is recorded). It can be Reopened.",
+      "Reopened — a Resolved or Closed ticket was reopened and is active again.",
+    ],
+    keywords: ["status", "statuses", "ticket status", "what does open mean", "on hold", "in progress", "resolved", "closed", "reopened"],
+  }),
+  article({
+    id: "common.ticket-priority",
+    title: "Understanding ticket priority",
+    roles: ["ALL"],
+    feature: "Ticket priority",
+    steps: [
+      "Every ticket has exactly one priority, chosen when it is raised.",
+      "Priorities are ordered by level; the configured list is shown with this answer.",
+      "Priority is used for filtering, display and the dashboard Priority chart. It does not start a countdown timer.",
+    ],
+    keywords: ["priority", "priorities", "urgent", "critical", "high priority", "ticket priority"],
+  }),
+  article({
+    id: "common.sla",
+    title: "Understanding SLA",
+    roles: ["ALL"],
+    feature: "SLA",
+    steps: [
+      "This application does not currently track SLA targets, due dates or breaches.",
+      "Because of that, I cannot show overdue, escalated or approaching-SLA tickets.",
+      "Priority levels are still recorded on every ticket and can be used to decide what to work on first.",
+    ],
+    keywords: ["sla", "service level", "overdue", "due date", "breach", "deadline", "approaching sla", "sla exceptions"],
+  }),
+  article({
+    id: "common.escalation",
+    title: "How escalation works",
+    roles: ["ALL"],
+    feature: "Escalation",
+    steps: [
+      "There is no separate escalation feature or escalated flag in this application.",
+      "Related actions that do exist: the priority of a ticket can be changed, a ticket can be transferred to another department, and a Manager or Team Lead can assign or reassign it.",
+      "Which of those you can use depends on your role; see the assignment article for your portal.",
+    ],
+    keywords: ["escalate", "escalation", "escalated", "escalations"],
+  }),
+  article({
+    id: "common.notifications",
+    title: "How notifications work",
+    roles: ["ALL"],
+    feature: "Notifications",
+    steps: [
+      "The bell icon in the header shows your in-app notifications, with an unread count.",
+      "Notifications are created for ticket events such as creation, assignment, status changes and new comments.",
+      "You can mark notifications as read or clear them from the bell panel.",
+      "Ticket emails are also sent for these events when email is configured.",
+    ],
+    keywords: ["notification", "notifications", "bell", "alerts", "emails", "unread"],
+  }),
+  article({
+    id: "common.ticket-history",
+    title: "How to review ticket history",
+    roles: ["ALL"],
+    feature: "Activity history",
+    steps: [
+      "Open the ticket from your tickets list (or ask me for a ticket number).",
+      "Scroll to the activity history/timeline on the ticket page.",
+      "It lists recorded events such as creation, status changes, assignment and priority changes, newest first.",
+    ],
+    keywords: ["history", "timeline", "activity", "ticket history", "audit trail", "what changed"],
+  }),
+  article({
+    id: "common.attachments",
+    title: "How to attach a file",
+    roles: ["ALL"],
+    feature: "Attachments",
+    steps: [
+      "When raising a ticket, add files in the attachments area of the form.",
+      "On an existing ticket, use the attach-files (paperclip) button next to the reply box in the comments section.",
+      "A ticket can have at most 5 attachments and 10 MB combined.",
+    ],
+    warning: "I can't upload files for you; attach them from the ticket page.",
+    keywords: ["attach", "attachment", "attachments", "upload", "paperclip", "attach a file"],
+  }),
+  article({
+    id: "common.add-comment",
+    title: "How to add a comment",
+    roles: ["ALL"],
+    feature: "Comments",
+    steps: [
+      "Open the ticket.",
+      "Go to the comments section and type in the reply box (\"Write a reply, or attach a file...\").",
+      "Select the Send button.",
+    ],
+    warning: "I can't post comments for you; add them from the ticket page.",
+    keywords: ["comment", "comments", "reply", "add comment", "respond"],
+  }),
+];

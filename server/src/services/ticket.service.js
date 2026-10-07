@@ -791,6 +791,9 @@ async function updateTicket(user, id, payload) {
     if (payload.status === "ON_HOLD" && !payload.onHoldReason?.trim()) {
       throw new ApiError(400, "On-hold reason is required.");
     }
+    if (payload.status === "REOPENED" && !payload.reopenedReason?.trim()) {
+      throw new ApiError(400, "Reopened reason is required.");
+    }
     if (payload.status === "CLOSED" && !payload.closedReason?.trim()) {
       throw new ApiError(400, "Closed reason is required.");
     }
@@ -810,6 +813,7 @@ async function updateTicket(user, id, payload) {
     if (payload.status === "REOPENED") {
       data.resolvedAt = null;
       data.closedAt = null;
+      data.reopenedReason = payload.reopenedReason.trim();
     }
     historyEntries.push({ action: "STATUS_CHANGE", fieldName: "status", oldValue: ticket.status, newValue: payload.status });
 
@@ -825,6 +829,9 @@ async function updateTicket(user, id, payload) {
     }
     if (payload.status === "ON_HOLD") {
       historyEntries.push({ action: "ON_HOLD_REASON", fieldName: "onHoldReason", newValue: data.onHoldReason });
+    }
+    if (payload.status === "REOPENED") {
+      historyEntries.push({ action: "REOPENED_REASON", fieldName: "reopenedReason", newValue: data.reopenedReason });
     }
     if (payload.status === "CLOSED") {
       historyEntries.push({ action: "CLOSED_REASON", fieldName: "closedReason", newValue: data.closedReason });
@@ -1511,6 +1518,10 @@ async function deleteAttachment(user, ticketId, attachmentId) {
 }
 
 module.exports = {
+  MAX_ATTACHMENTS_PER_TICKET,
+  MAX_ATTACHMENTS_TOTAL_SIZE_BYTES,
+  MAX_ATTACHMENTS_TOTAL_SIZE_MB,
+  resolveFromDepartmentId,
   listTickets,
   getTicketById,
   createTicket,
@@ -1525,4 +1536,5 @@ module.exports = {
   scopeWhereForTab,
   resolveUserDepartmentIds,
   isManagementRole,
+  VALID_TRANSITIONS,
 };

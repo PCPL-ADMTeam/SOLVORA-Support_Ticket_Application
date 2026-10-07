@@ -27,10 +27,11 @@ import SearchIcon from "@mui/icons-material/Search";
 import AddIcon from "@mui/icons-material/Add";
 import LogoutIcon from "@mui/icons-material/Logout";
 
-import { useTheme } from "@mui/material/styles";
+import { alpha, useTheme } from "@mui/material/styles";
 import { useAuth } from "../../context/AuthContext";
 import NotificationBell from "./NotificationBell";
 import ProfileDialog from "./ProfileDialog";
+import ChatWidget from "../chatbot/ChatWidget";
 import ConfirmDialog from "../common/ConfirmDialog";
 import AppFooter from "./AppFooter";
 import logo from "../../assets/logo.png";
@@ -80,6 +81,19 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
     const search = ticketSearch.trim();
     navigate(search ? `${ticketSearchPath}?search=${encodeURIComponent(search)}` : ticketSearchPath);
   };
+
+  // Shared look of a sidebar row: rounded, themed on hover, accent bar on the active one.
+  const navItemSx = (labels) => ({
+    position: "relative",
+    justifyContent: labels ? "flex-start" : "center",
+    px: labels ? 2 : 1,
+    mx: 1,
+    my: 0.25,
+    borderRadius: "10px",
+    color: "text.primary",
+    "& .MuiListItemIcon-root": { color: "text.secondary" },
+    "&:hover": { bgcolor: alpha(theme.palette.primary.main, 0.08), "& .MuiListItemIcon-root": { color: "primary.main" } },
+  });
 
   const drawerContent = (
     <Box
@@ -148,16 +162,13 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
               onClick={() => setMobileOpen(false)}
               className="sidebar-nav-item"
               sx={{
-                justifyContent: showLabels ? "flex-start" : "center",
-                px: showLabels ? 2 : 1,
-
+                ...navItemSx(showLabels),
                 "&.active": {
-                  bgcolor: "action.selected",
-                  borderRight: `3px solid ${theme.palette.primary.main}`,
-                },
-
-                "&:hover": {
-                  bgcolor: "action.hover",
+                  bgcolor: alpha(theme.palette.primary.main, 0.12),
+                  color: "primary.main",
+                  "& .MuiListItemIcon-root": { color: "primary.main" },
+                  "& .MuiListItemText-primary": { fontWeight: 700 },
+                  "&::before": { content: '""', position: "absolute", left: 0, top: 8, bottom: 8, width: 4, borderRadius: "0 4px 4px 0", bgcolor: "primary.main" },
                 },
               }}
             >
@@ -180,15 +191,13 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
             </ListItemButton>
           </Tooltip>
         ))}
+      </List>
 
-        {/* Logout is an action, not a route, so it's a button rather than a
-            NavLink. Same handler as the user menu's "Logout" entry. */}
-        <Tooltip
-          title={showLabels ? "" : "Logout"}
-          placement="right"
-          arrow
-          disableHoverListener={showLabels}
-        >
+      {/* Logout is an action, not a route, so it's a button rather than a NavLink. Same handler
+          as the user menu's "Logout" entry; pinned to the bottom-left of the sidebar. */}
+      <Divider />
+      <Box sx={{ p: 1 }}>
+        <Tooltip title={showLabels ? "" : "Logout"} placement="right" arrow disableHoverListener={showLabels}>
           <ListItemButton
             onClick={() => {
               setMobileOpen(false);
@@ -196,31 +205,20 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
             }}
             className="sidebar-nav-item"
             sx={{
-              justifyContent: showLabels ? "flex-start" : "center",
-              px: showLabels ? 2 : 1,
-
-              "&:hover": {
-                bgcolor: "action.hover",
-              },
+              ...navItemSx(showLabels),
+              mx: 0,
+              color: "primary.main",
+              "& .MuiListItemIcon-root": { color: "primary.main" },
+              "&:hover": { bgcolor: alpha(theme.palette.primary.main, 0.12) },
             }}
           >
-            <ListItemIcon
-              sx={{
-                minWidth: showLabels ? 40 : 0,
-                justifyContent: "center",
-                transition: "min-width 0.25s ease-in-out",
-              }}
-            >
+            <ListItemIcon sx={{ minWidth: showLabels ? 40 : 0, justifyContent: "center", transition: "min-width 0.25s ease-in-out" }}>
               <LogoutIcon />
             </ListItemIcon>
-
-            <ListItemText
-              primary="Logout"
-              className={`sidebar-label ${showLabels ? "" : "collapsed"}`}
-            />
+            <ListItemText primary="Logout" className={`sidebar-label ${showLabels ? "" : "collapsed"}`} />
           </ListItemButton>
         </Tooltip>
-      </List>
+      </Box>
     </Box>
   );
 
@@ -387,6 +385,12 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
         onClose={() => setProfileDialog(null)}
       />
 
+      {/* Role-aware assistant — one widget for all four portals (this shell
+          is shared by AdminLayout, AgentLayout and PortalLayout). The profile
+          and password screens are dialogs, not routes, so the assistant opens
+          them through this callback. */}
+      <ChatWidget role={user?.role} firstName={String(user?.name || "").split(" ")[0]} onOpenDialog={(dialog) => setProfileDialog(dialog === "edit-profile" ? "edit" : "view")} />
+
       <ConfirmDialog
         open={logoutConfirmOpen}
         title="Log out?"
@@ -428,7 +432,10 @@ export default function AppShell({ navItems, ticketSearchPath, raiseTicketPath }
               boxSizing: "border-box",
               borderRight: 1,
               borderColor: "divider",
-              background: (t) => t.palette.mode === "dark" ? "#2a1b1f" : "linear-gradient(180deg, #ffffff 0%, #fff7f7 100%)",
+              background: (t) =>
+                t.palette.mode === "dark"
+                  ? "linear-gradient(180deg, #2a1b1f 0%, #1f1417 100%)"
+                  : `linear-gradient(180deg, #ffffff 0%, ${alpha(t.palette.primary.main, 0.07)} 100%)`,
               transition:
                 "width 0.25s ease-in-out",
               top: { md: `${HEADER_HEIGHT}px` },

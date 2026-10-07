@@ -32,18 +32,18 @@ model Role {
 }
 
 model User {
-  id           String    @id @default(cuid())
+  id           String   @id @default(cuid())
   name         String
-  email        String    @unique
+  email        String   @unique
   passwordHash String
   roleId       String
-  isActive     Boolean   @default(true)
+  isActive     Boolean  @default(true)
   avatarUrl    String?
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   departmentId String?
-  isManager    Boolean   @default(false)
+  isManager    Boolean @default(false)
 
   // Stable link to this user's CloudReady Microsoft Entra ID account (the
   // Entra object id, a GUID) — set by an Admin via the entra-directory
@@ -56,21 +56,21 @@ model User {
   role       Role        @relation(fields: [roleId], references: [id])
   department Department? @relation(fields: [departmentId], references: [id])
 
-  teamMemberships   TeamMember[]
-  requestedTickets  Ticket[]          @relation("TicketRequester")
-  assignedTickets   Ticket[]          @relation("TicketAssignee")
+  teamMemberships         TeamMember[]
+  requestedTickets        Ticket[]               @relation("TicketRequester")
+  assignedTickets         Ticket[]               @relation("TicketAssignee")
   // Kept for backward compatibility/history only — Ticket.managerId is no
   // longer the source of truth for department-management authorization (see
   // UserDepartmentAccess below); it still records which TEAMLEAD/MANAGER a
   // ticket was originally routed under at creation/transfer time.
-  managedTickets    Ticket[]          @relation("TicketManager")
-  comments          TicketComment[]
-  attachmentsUploaded TicketAttachment[]
-  historyEntries    TicketHistory[]
-  notifications     Notification[]
-  auditLogs         AuditLog[]
-  refreshTokens     RefreshToken[]
-  passwordResetTokens PasswordResetToken[]
+  managedTickets          Ticket[]               @relation("TicketManager")
+  comments                TicketComment[]
+  attachmentsUploaded     TicketAttachment[]
+  historyEntries          TicketHistory[]
+  notifications           Notification[]
+  auditLogs               AuditLog[]
+  refreshTokens           RefreshToken[]
+  passwordResetTokens     PasswordResetToken[]
   // Department-management access — the source of truth for "which
   // departments can this MANAGER/TEAMLEAD manage." A MANAGER may hold
   // several of these rows (multi-department); a TEAMLEAD holds exactly one
@@ -80,8 +80,13 @@ model User {
   // departmentId remain on this model unchanged for backward compatibility.
   departmentAccess        UserDepartmentAccess[] @relation("UserDepartmentAccessUser")
   grantedDepartmentAccess UserDepartmentAccess[] @relation("UserDepartmentAccessGrantedBy")
-  ticketCCs               TicketCC[]              @relation("TicketCCUser")
-  addedTicketCCs          TicketCC[]              @relation("TicketCCAddedBy")
+  ticketCCs               TicketCC[]             @relation("TicketCCUser")
+  addedTicketCCs          TicketCC[]             @relation("TicketCCAddedBy")
+  chatConversations       ChatConversation[]     @relation("ChatConversationUser")
+  chatFeedback            ChatFeedback[]         @relation("ChatFeedbackUser")
+  chatAuditEvents         ChatAuditEvent[]       @relation("ChatAuditUser")
+  chatPendingActions      ChatPendingAction[]    @relation("ChatPendingActionUser")
+  chatTicketDrafts        ChatTicketDraft[]      @relation("ChatTicketDraftUser")
 
   @@index([roleId])
   @@index([departmentId])
@@ -120,12 +125,12 @@ model UserDepartmentAccess {
 }
 
 model RefreshToken {
-  id         String    @id @default(cuid())
-  userId     String
-  tokenHash  String    @unique
-  expiresAt  DateTime
-  revokedAt  DateTime?
-  createdAt  DateTime  @default(now())
+  id        String    @id @default(cuid())
+  userId    String
+  tokenHash String    @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
@@ -195,11 +200,11 @@ model Department {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  users   User[]
-  issues  Issue[]
+  users  User[]
+  issues Issue[]
 
-  ticketsFrom Ticket[] @relation("TicketFromDepartment")
-  ticketsTo   Ticket[] @relation("TicketToDepartment")
+  ticketsFrom Ticket[]               @relation("TicketFromDepartment")
+  ticketsTo   Ticket[]               @relation("TicketToDepartment")
   userAccess  UserDepartmentAccess[]
 
   @@map("departments")
@@ -260,7 +265,7 @@ model Priority {
   color     String   @default("#757575")
   createdAt DateTime @default(now())
 
-  tickets    Ticket[]
+  tickets Ticket[]
 
   @@map("priorities")
 }
@@ -279,24 +284,24 @@ enum TicketStatus {
 }
 
 model Ticket {
-  id           String       @id @default(cuid())
+  id             String       @id @default(cuid())
   // Human-facing, globally unique, purely numeric sequence powering
   // ticketNumber, e.g. seq=27001 -> ticketNumber "2627001" (see
   // ticket.service.js#buildTicketNumber). Postgres-native autoincrement —
   // inherently collision-safe, no manual locking/increment needed.
-  seq          Int          @default(autoincrement())
-  ticketNumber String       @unique
-  title        String
+  seq            Int          @default(autoincrement())
+  ticketNumber   String       @unique
+  title          String
   // Free-text "Problem Summary" (<=50 words, enforced in
   // ticket.validator.js / ticket.service.js) — replaces the old predefined
   // Issue dropdown + rich-text Description. Column kept (renamed from the
   // former `description`) so existing tickets' content is preserved rather
   // than dropped.
-  problemSummary String     @db.Text
-  status       TicketStatus @default(OPEN)
+  problemSummary String       @db.Text
+  status         TicketStatus @default(OPEN)
 
-  categoryId String?
-  priorityId String
+  categoryId  String?
+  priorityId  String
   requesterId String
   assigneeId  String?
   teamId      String?
@@ -305,8 +310,8 @@ model Ticket {
   toDepartmentId   String?
   managerId        String?
 
-  resolvedAt     DateTime?
-  closedAt       DateTime?
+  resolvedAt DateTime?
+  closedAt   DateTime?
 
   // Required, persisted reason text for the three status transitions that
   // need an explanation (see ticket.service.js#updateTicket). Nullable
@@ -318,28 +323,31 @@ model Ticket {
   resolutionNotes String? @db.Text
   onHoldReason    String? @db.Text
   closedReason    String? @db.Text
+  // Why the ticket was last reopened (required when status moves to REOPENED); every occurrence is also kept
+  // in TicketHistory as a REOPENED_REASON entry.
+  reopenedReason  String? @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   category  Category? @relation(fields: [categoryId], references: [id])
-  priority  Priority @relation(fields: [priorityId], references: [id])
-  requester User     @relation("TicketRequester", fields: [requesterId], references: [id])
-  assignee  User?    @relation("TicketAssignee", fields: [assigneeId], references: [id])
-  team      Team?    @relation(fields: [teamId], references: [id])
+  priority  Priority  @relation(fields: [priorityId], references: [id])
+  requester User      @relation("TicketRequester", fields: [requesterId], references: [id])
+  assignee  User?     @relation("TicketAssignee", fields: [assigneeId], references: [id])
+  team      Team?     @relation(fields: [teamId], references: [id])
 
   fromDepartment Department? @relation("TicketFromDepartment", fields: [fromDepartmentId], references: [id])
   toDepartment   Department? @relation("TicketToDepartment", fields: [toDepartmentId], references: [id])
   manager        User?       @relation("TicketManager", fields: [managerId], references: [id])
 
-  comments    TicketComment[]
-  attachments TicketAttachment[]
-  history     TicketHistory[]
+  comments      TicketComment[]
+  attachments   TicketAttachment[]
+  history       TicketHistory[]
   notifications Notification[]
   // Custom CC users selected by the requester at ticket-creation time.
   // Fixed for the life of the ticket — a later department transfer does NOT
   // change this list (see ticket.service.js#transferDepartment).
-  ccUsers     TicketCC[]
+  ccUsers       TicketCC[]
 
   @@index([status])
   @@index([priorityId])
@@ -371,11 +379,11 @@ model TicketComment {
 }
 
 model TicketAttachment {
-  id           String   @id @default(cuid())
-  ticketId     String
-  commentId    String?
-  uploadedById String
-  fileName     String
+  id              String   @id @default(cuid())
+  ticketId        String
+  commentId       String?
+  uploadedById    String
+  fileName        String
   // "local" (legacy, pre-Azure-migration): filePath is the random filename
   // multer wrote under server/uploads/. "azure" (current): filePath is the
   // full blob name (attachments/<ticketId>/<unique-id>-<name>) inside the
@@ -384,7 +392,7 @@ model TicketAttachment {
   // ticket.service.js#streamAttachment, which branch on this field to know
   // where to actually read the bytes from.
   filePath        String
-  storageProvider String @default("local")
+  storageProvider String   @default("local")
   fileSize        Int
   mimeType        String
   createdAt       DateTime @default(now())
@@ -495,4 +503,151 @@ model AuditLog {
   @@index([entityType, entityId])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Chatbot (see docs/chatbot-architecture.md). Stores only the filtered,
+// user-visible transcript — never tokens, API keys, auth headers, or the raw
+// ticket context handed to the AI provider.
+// ---------------------------------------------------------------------------
+
+model ChatConversation {
+  id            String   @id @default(cuid())
+  userId        String
+  // Role the conversation was opened under — informational only. The
+  // effective role is ALWAYS re-derived from the authenticated user on every
+  // request; this column is never read for an authorization decision.
+  portalRole    String
+  status        String   @default("ACTIVE") // ACTIVE | ARCHIVED
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  lastMessageAt DateTime @default(now())
+
+  user     User          @relation("ChatConversationUser", fields: [userId], references: [id], onDelete: Cascade)
+  messages ChatMessage[]
+
+  @@index([userId, status])
+  @@map("chat_conversations")
+}
+
+model ChatMessage {
+  id                String   @id @default(cuid())
+  conversationId    String
+  senderType        String // USER | ASSISTANT
+  messageText       String   @db.Text
+  intent            String?
+  // Restricted response DTO shown to the user (ticket cards etc.), already
+  // field-filtered for the caller's role. Never raw rows.
+  structuredPayload Json?
+  errorCode         String?
+  createdAt         DateTime @default(now())
+
+  conversation ChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  feedback     ChatFeedback[]
+
+  @@index([conversationId, createdAt])
+  @@map("chat_messages")
+}
+
+model ChatFeedback {
+  id        String   @id @default(cuid())
+  messageId String
+  userId    String
+  rating    String // helpful | not_helpful | incorrect | unauthorized_information | other
+  reason    String?  @db.Text
+  createdAt DateTime @default(now())
+
+  message ChatMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User        @relation("ChatFeedbackUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("chat_feedback")
+}
+
+model ChatAuditEvent {
+  id             String   @id @default(cuid())
+  userId         String?
+  conversationId String?
+  action         String // e.g. TOOL_SEARCH_TICKETS, TICKET_ACCESS_DENIED, RATE_LIMITED
+  resourceType   String?
+  resourceId     String?
+  result         String // SUCCESS | DENIED | ERROR
+  createdAt      DateTime @default(now())
+
+  user User? @relation("ChatAuditUser", fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt])
+  @@index([action, createdAt])
+  @@map("chat_audit_events")
+}
+
+// An admin change the chatbot has PREPARED but not performed. The proposal is
+// held server-side (the browser only ever holds this row's id), is bound to
+// the admin who asked, expires, and executes at most once — only when that
+// same admin confirms through POST /chatbot/actions/:id/confirm. `params`
+// holds resolved ids and display names for the preview; never secrets.
+model ChatPendingAction {
+  id               String    @id @default(cuid())
+  userId           String
+  conversationId   String?
+  action           String
+  params           Json
+  summary          String    @db.Text
+  // Registered intent / how it was understood ("rule" | "openrouter" | "conversation_context"), for audit.
+  intent           String?
+  interpretation   String?
+  // sha256 of the secret confirmation token (the raw token is never stored) and the
+  // fingerprint of the records involved, re-checked immediately before execution.
+  tokenHash        String?
+  resourceVersions Json?
+  status           String    @default("PENDING") // PENDING | CONFIRMING | EXECUTED | FAILED | CANCELLED | EXPIRED
+  resultMessage    String?   @db.Text
+  expiresAt        DateTime
+  createdAt        DateTime  @default(now())
+  resolvedAt       DateTime?
+
+  user User @relation("ChatPendingActionUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("chat_pending_actions")
+}
+
+// A ticket the user is raising through the assistant, collected over several messages.
+// Nothing here is a ticket yet: the real ticket is created by ticket.service.createTicket
+// (the same function the Raise a Ticket page calls) only after the user confirms the review.
+// Server-side so the browser holds no ticket data between messages; bound to one user and
+// one conversation; expires; attachments live in the child table until the ticket exists.
+model ChatTicketDraft {
+  id             String   @id @default(cuid())
+  userId         String
+  conversationId String
+  status         String   @default("ACTIVE") // ACTIVE | CREATED | CANCELLED | EXPIRED
+  step           String   @default("TITLE")
+  // title, priorityId/priorityName, toDepartmentId/toDepartmentName, ccUsers [{id,name}],
+  // problemSummary, ccDone, attachDone, asked, choice
+  fields         Json
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  expiresAt      DateTime
+
+  user        User                  @relation("ChatTicketDraftUser", fields: [userId], references: [id], onDelete: Cascade)
+  attachments ChatDraftAttachment[]
+
+  @@index([userId, conversationId, status])
+  @@map("chat_ticket_drafts")
+}
+
+model ChatDraftAttachment {
+  id        String   @id @default(cuid())
+  draftId   String
+  fileName  String
+  mimeType  String
+  size      Int
+  data      Bytes
+  createdAt DateTime @default(now())
+
+  draft ChatTicketDraft @relation(fields: [draftId], references: [id], onDelete: Cascade)
+
+  @@index([draftId])
+  @@map("chat_draft_attachments")
 }
