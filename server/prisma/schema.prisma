@@ -318,6 +318,9 @@ model Ticket {
   resolutionNotes String? @db.Text
   onHoldReason    String? @db.Text
   closedReason    String? @db.Text
+  // Why the ticket was last reopened (required when status moves to REOPENED); every occurrence is also kept
+  // in TicketHistory as a REOPENED_REASON entry.
+  reopenedReason  String? @db.Text
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt

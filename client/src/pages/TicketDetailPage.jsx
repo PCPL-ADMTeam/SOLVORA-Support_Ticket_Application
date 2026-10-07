@@ -77,6 +77,13 @@ const REASON_CONFIG = {
     requiredMessage: "On-hold reason is required.",
     confirmLabel: "Put on Hold",
   },
+  REOPENED: {
+    field: "reopenedReason",
+    label: "Reopened Reason",
+    placeholder: "Explain why this ticket is being reopened...",
+    requiredMessage: "Reopened reason is required.",
+    confirmLabel: "Reopen Ticket",
+  },
   CLOSED: {
     field: "closedReason",
     label: "Closed Reason",
@@ -113,6 +120,10 @@ export default function TicketDetailPage() {
   const [priorities, setPriorities] = useState([]);
 
   const [editOpen, setEditOpen] = useState(false);
+  // The requester's Reopen Ticket button: a reason is required, as for resolving, holding or closing.
+  const [reopenOpen, setReopenOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
+  const [reopenError, setReopenError] = useState("");
   const [draftStatus, setDraftStatus] = useState("");
   const [draftPriorityId, setDraftPriorityId] = useState("");
   const [draftReason, setDraftReason] = useState("");
@@ -179,6 +190,21 @@ export default function TicketDetailPage() {
   // includes them, and only the ticket's current ASSIGNEE (never merely the
   // requester) may transfer as an EMPLOYEE.
   const canTransferDepartment = (isManagement && hasDeptAccess) || isAssignedToMe;
+
+  // Under the status, only when it is Resolved, Closed, On Hold or Reopened: the reason recorded for it.
+  // (Tickets reopened before reasons were stored may carry a "Reopened: ..." comment instead.)
+  const statusReason = useMemo(() => {
+    if (!ticket) return null;
+    if (ticket.status === "RESOLVED") return { label: "Resolution Notes", text: ticket.resolutionNotes || "No notes were recorded." };
+    if (ticket.status === "CLOSED") return { label: "Closed Reason", text: ticket.closedReason || "No reason was recorded." };
+    if (ticket.status === "ON_HOLD") return { label: "On-Hold Reason", text: ticket.onHoldReason || "No reason was recorded." };
+    if (ticket.status === "REOPENED") {
+      if (ticket.reopenedReason) return { label: "Reopened Reason", text: ticket.reopenedReason };
+      const note = (ticket.comments || []).filter((c) => /^Reopened:/i.test(c.body || "")).sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+      return { label: "Reopened Reason", text: note ? note.body.replace(/^Reopened:\s*/i, "") : "No reason was recorded." };
+    }
+    return null;
+  }, [ticket]);
 
   const load = useCallback(async () => {
     const { data } = await ticketsApi.getById(id);
@@ -407,7 +433,7 @@ export default function TicketDetailPage() {
           )}
         </Stack>
         {canReopen && (
-          <Button variant="outlined" onClick={() => applyUpdate({ status: "REOPENED" })} sx={{ flexShrink: 0 }}>
+          <Button variant="outlined" onClick={() => { setReopenReason(""); setReopenError(""); setReopenOpen(true); }} sx={{ flexShrink: 0 }}>
             Reopen Ticket
           </Button>
         )}
@@ -520,6 +546,7 @@ export default function TicketDetailPage() {
 
             <Stack spacing={2}>
               <InfoRow label="Status" value={<StatusBadge status={ticket.status} />} />
+              {statusReason && <InfoRow label={statusReason.label} value={<Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{statusReason.text}</Typography>} />}
               <InfoRow label="Priority" value={<PriorityBadge name={ticket.priority.name} color={ticket.priority.color} />} />
               <InfoRow label="Department" value={ticket.toDepartment?.name || "—"} />
               <InfoRow
@@ -606,6 +633,43 @@ export default function TicketDetailPage() {
           <Button onClick={() => setEditOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleSaveEdit} disabled={savingEdit}>
             {draftStatus !== ticket.status && REASON_CONFIG[draftStatus] ? REASON_CONFIG[draftStatus].confirmLabel : "Save"}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      <Dialog open={reopenOpen} onClose={() => setReopenOpen(false)} fullWidth maxWidth="xs">
+        <DialogTitle>{`Reopen ${ticket.ticketNumber}`}</DialogTitle>
+        <DialogContent>
+          <TextField
+            autoFocus
+            required
+            multiline
+            minRows={3}
+            fullWidth
+            size="small"
+            sx={{ mt: 1 }}
+            label={REASON_CONFIG.REOPENED.label}
+            placeholder={REASON_CONFIG.REOPENED.placeholder}
+            value={reopenReason}
+            onChange={(e) => { setReopenReason(e.target.value); setReopenError(""); }}
+            error={Boolean(reopenError)}
+            helperText={reopenError}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setReopenOpen(false)}>Cancel</Button>
+          <Button
+            variant="contained"
+            onClick={async () => {
+              if (!reopenReason.trim()) {
+                setReopenError(REASON_CONFIG.REOPENED.requiredMessage);
+                return;
+              }
+              await applyUpdate({ status: "REOPENED", reopenedReason: reopenReason.trim() });
+              setReopenOpen(false);
+            }}
+          >
+            {REASON_CONFIG.REOPENED.confirmLabel}
           </Button>
         </DialogActions>
       </Dialog>

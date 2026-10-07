@@ -75,6 +75,7 @@ const updateTicketValidator = [
   body("resolutionNotes").optional().isString(),
   body("onHoldReason").optional().isString(),
   body("closedReason").optional().isString(),
+  body("reopenedReason").optional().isString(),
 ];
 
 const transferDepartmentValidator = [
