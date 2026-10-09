@@ -100,6 +100,8 @@ const searchAuthorizedTickets = {
     page: { type: "int", min: 1, max: 1000 },
     staleDays: { type: "int", min: 1, max: 365 },
     updatedDays: { type: "int", min: 1, max: 90 },
+    // "latest ticket" / "recently created": newest first by creation date instead of last update.
+    sort: { type: "enum", values: ["created"] },
     withReasons: { type: "enum", values: ["yes"] },
     limit: { type: "int", min: 1, max: 10 },
     pageSize: { type: "int", min: 1, max: 100 },
@@ -142,7 +144,7 @@ const searchAuthorizedTickets = {
     const where = { AND: clauses };
 
     const [rows, total] = await Promise.all([
-      prisma.ticket.findMany({ where, select: input.withReasons ? { ...TICKET_CARD_SELECT, ...REASON_SELECT } : TICKET_CARD_SELECT, orderBy: { updatedAt: "desc" }, skip, take: limit }),
+      prisma.ticket.findMany({ where, select: input.withReasons ? { ...TICKET_CARD_SELECT, ...REASON_SELECT } : TICKET_CARD_SELECT, orderBy: input.sort === "created" ? { createdAt: "desc" } : { updatedAt: "desc" }, skip, take: limit }),
       prisma.ticket.count({ where }),
     ]);
     await ctx.audit("TOOL_SEARCH_TICKETS", "Ticket", null, "SUCCESS");

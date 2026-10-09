@@ -147,7 +147,7 @@ describe("Admin", () => {
     for (const text of ["raise a ticket", "assign ticket 2600269 to Manoj Kumar R", "transfer ticket 2600269 to Hardware because it is theirs"]) {
       const r = await service.sendMessage(users.admin, { message: text });
       expect(r.pendingAction).toBeFalsy();
-      expect(r.message).toMatch(/Administrators can't|Admins can't|permission|doesn't have access/i);
+      expect(r.message).toMatch(/Administrators can't|Admins can't|permission|doesn't have access|don't have access/i);
     }
   });
 });

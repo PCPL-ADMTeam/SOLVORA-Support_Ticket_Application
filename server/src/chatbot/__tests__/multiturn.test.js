@@ -88,7 +88,7 @@ describe("the conversation from the request", () => {
     expect(r.pendingAction.summary).toMatch(/2600269/); // an Employee may comment on their own ticket
     r = await ask(P.empBI, "Change it to low priority.", cid);
     expect(r.pendingAction).toBeFalsy();
-    expect(r.message).toMatch(/permission|doesn't have access|can't/i);
+    expect(r.message).toMatch(/permission|doesn't have access|don't have access|can't/i);
     expect(spies.updateTicket).not.toHaveBeenCalled();
   });
 
@@ -182,5 +182,39 @@ describe("an answer to 'why?' is an answer, even when it names another ticket", 
     const a = await service.sendMessage(P.mgrBI, { message: "close the status of the ticket", pageTicketId: "id_2600270" });
     const b = await service.sendMessage(P.mgrBI, { message: "show ticket 2600269", conversationId: a.conversationId });
     expect(b.message).toMatch(/^Ticket 2600269 details:/);
+  });
+});
+
+describe("adding a comment from chat, in the phrasings people type", () => {
+  test("the exact phrasings: a ticket in view + quoted text, an explicit number + quoted text", async () => {
+    let r = await ask(P.mgrBI, "show ticket 2600269");
+    const cid = r.conversationId;
+    r = await ask(P.mgrBI, 'add a comment in the ticket "copilot is working now"', cid);
+    expect(r.responseType).toBe("preview");
+    expect(spies.addComment).not.toHaveBeenCalled();
+    await confirm(P.mgrBI, r.pendingAction.id);
+    expect(spies.addComment).toHaveBeenLastCalledWith(P.mgrBI, "id_2600269", { body: "copilot is working now", isInternal: false });
+
+    r = await ask(P.mgrBI, 'add a comment in the ticket 2600270 "copilot is working now"');
+    expect(r.responseType).toBe("preview");
+    await confirm(P.mgrBI, r.pendingAction.id);
+    expect(spies.addComment).toHaveBeenLastCalledWith(P.mgrBI, "id_2600270", { body: "copilot is working now", isInternal: false });
+  });
+
+  test("'add a comment' alone asks which ticket, then what to say; with a ticket in view it asks only what to say", async () => {
+    let r = await ask(P.mgrBI, "add a comment");
+    expect(r.message).toMatch(/Which ticket number\?/);
+    r = await ask(P.mgrBI, "2600269", r.conversationId);
+    expect(r.message).toMatch(/What should the comment say\?/);
+    r = await ask(P.mgrBI, "checking now", r.conversationId);
+    expect(r.responseType).toBe("preview");
+
+    const first = await ask(P.mgrBI, "show ticket 2600270");
+    const again = await ask(P.mgrBI, "add a comment in ticket", first.conversationId);
+    expect(again.message).toMatch(/What should the comment say\?/);
+    const done = await ask(P.mgrBI, "all good now", again.conversationId);
+    expect(done.responseType).toBe("preview");
+    await confirm(P.mgrBI, done.pendingAction.id);
+    expect(spies.addComment).toHaveBeenLastCalledWith(P.mgrBI, "id_2600270", { body: "all good now", isInternal: false });
   });
 });

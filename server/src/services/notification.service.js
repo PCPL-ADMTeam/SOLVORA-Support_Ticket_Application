@@ -104,11 +104,15 @@ async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comme
       seen.add(key);
       toEmails.push(email);
     }
-    if (!toEmails.length) return;
+    if (!toEmails.length) {
+      console.log(`[notifications] ${eventKey} for ticket ${ticket?.ticketNumber}: no email sent because no TO address could be resolved (the recipient is inactive or has no email).`);
+      return;
+    }
 
     const cc = await resolveCcEmails(ccUserIds, seen);
     const fileAttachments = await buildEmailFileAttachments(attachments);
 
+    console.log(`[notifications] ${eventKey} for ticket ${ticket?.ticketNumber}: sending to ${toEmails.join(", ")}${cc.length ? ` (cc ${cc.length})` : ""}`);
     await emailService.sendMail({ to: toEmails, cc: cc.length ? cc : undefined, subject, html: body, attachments: fileAttachments });
   } catch (err) {
     console.error(`[notifications] Failed to email ${primaryIds.join(", ")}:`, err.message);

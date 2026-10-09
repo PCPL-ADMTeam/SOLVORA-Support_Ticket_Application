@@ -1326,6 +1326,9 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
         comment: finalComment,
         ccUserIds,
       });
+    } else {
+      // The comment itself is saved either way; this only explains why no email followed.
+      console.log(`[notifications] TICKET_COMMENT_ADDED for ticket ${ticket.ticketNumber}: no email sent because the ticket has no assigned employee (the email goes TO the assignee; nobody else is promoted into TO).`);
     }
   }
 

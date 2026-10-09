@@ -11,3 +11,6 @@ server/uploads/
 test-email.js
 .postman/
 postman/
+
+# Generated chatbot regression reports
+server/reports/

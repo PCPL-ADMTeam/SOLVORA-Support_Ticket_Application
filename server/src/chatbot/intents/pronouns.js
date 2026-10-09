@@ -15,13 +15,16 @@ const PRIORITY_WORD = "(low|medium|normal|high|critical|urgent)";
 function resolveLastTicket(message, lastShown, page) {
   const text = String(message || "").trim();
   // "this ticket" / "the ticket": the ticket page that is open, else the last one shown. "it" / "that": the reverse.
-  const wantsPage = /(?:this|the) ticket/i.test(text);
+  const wantsPage = /\b(?:this|the) ticket\b/i.test(text);
   const last = wantsPage ? page || lastShown : lastShown || page;
   if (!last || HAS_NUMBER.test(text)) return message;
   // Questions about how to do something are guidance, not about the ticket in view.
   if (/^(?:how (?:do|can|to|does|should|would)|explain|steps|can i)\b/i.test(text)) return message;
   const n = `ticket ${last}`;
   let m;
+
+  // "Add a comment" / "add a comment in the ticket": the ticket in view; the assistant then asks what to say.
+  if (/^(?:please\s+)?(?:add|post|write|leave|put)\s+(?:a\s+|the\s+)?(?:new\s+)?comment(?:\s+(?:on|to|in|for)\s+(?:the\s+|this\s+|that\s+)?ticket)?\s*[.!?]*$/i.test(text)) return `add a comment on ${n}`;
 
   // "Add a comment saying X" / "add comment: X" (no ticket named).
   m = text.match(/^(?:please\s+)?(?:add|post|write|leave|put)\s+(?:a\s+|the\s+)?(?:new\s+)?comment(?:\s*[:\-]\s*|\s+(?:saying|that says|which says|says)\s*[:\-]?\s*|\s+)(.+)$/is);

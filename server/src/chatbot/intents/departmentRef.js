@@ -14,6 +14,8 @@ const STOP = new Set([
   "low", "medium", "high", "critical", "priority", "with", "and", "or", "by", "on", "is", "are", "there", "what", "which", "who", "whose",
 ]);
 
+const GENERIC_TOPIC = new Set(["support", "help", "helpdesk", "service", "services", "request", "requests", "issue", "issues"]);
+
 const WORD = "[a-z0-9][a-z0-9&/\\-]*";
 
 // A date or a time word is never a department ("tickets from 2026-09-30 to 2026-10-07", "tickets of last week").
@@ -46,7 +48,9 @@ function departmentRef(m) {
 // before "tickets". Could be a department or a topic, so the handler decides.
 function topicBeforeTickets(m) {
   const hit = m.match(new RegExp(`^(?:(?:show|list|find|get|display|give|see|view)\\s+)?(?:me\\s+)?(?:all\\s+)?(?:the\\s+)?((?:${WORD}\\s+)?${WORD})\\s+tickets?\\s*[?.!]*$`));
-  return hit ? clean(hit[1]) : null;
+  const topic = hit ? clean(hit[1]) : null;
+  // "support tickets" / "open helpdesk tickets" describe the kind of ticket, not the "IT Support" department.
+  return topic && GENERIC_TOPIC.has(topic) ? null : topic;
 }
 
 module.exports = { departmentRef, topicBeforeTickets, STOP };

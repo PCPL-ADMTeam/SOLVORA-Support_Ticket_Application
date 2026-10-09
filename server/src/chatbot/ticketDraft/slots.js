@@ -62,6 +62,11 @@ function description(text) {
 
 async function parseSlots(message, { requirePriorityWord = true } = {}) {
   const text = String(message || "").trim();
+  // The Raise a Ticket form sends exactly these four labelled fields, separated by " | " (no wording to interpret).
+  const form = text.match(/^Title: (.+?) \| Priority: (.+?) \| Department: (.+?) \| Problem Summary: (.+)$/);
+  if (form) {
+    return { title: form[1].trim(), priority: form[2].trim(), departmentText: form[3].trim(), description: form[4].trim(), ccAdd: [], ccRemove: [], noCc: false, noFiles: false };
+  }
   const out = { title: null, priority: null, departmentText: null, ccAdd: [], ccRemove: [], noCc: false, noFiles: false, description: null };
 
   // Phrasings the action parser already understands ("for Demo laptop to hardware team", "to hardware dept that ...").

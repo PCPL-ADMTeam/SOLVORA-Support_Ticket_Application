@@ -13,6 +13,12 @@
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
     "test": "jest --runInBand",
+    "test:chatbot": "jest --config jest.regression.config.js --runInBand",
+    "test:chatbot:employee": "jest --config jest.regression.config.js --runInBand -t \"^EMPLOYEE\"",
+    "test:chatbot:teamlead": "jest --config jest.regression.config.js --runInBand -t \"^TEAMLEAD\"",
+    "test:chatbot:manager": "jest --config jest.regression.config.js --runInBand -t \"^MANAGER\"",
+    "test:chatbot:admin": "jest --config jest.regression.config.js --runInBand -t \"^ADMIN\"",
+    "test:chatbot:report": "node scripts/chatbot-regression-report.js",
     "ai:check": "node scripts/ai-check.js",
     "chat:misses": "node scripts/chat-misses.js"
   },

@@ -3,7 +3,8 @@ const { runTool } = require("../tools");
 const { ChatError, CODES } = require("../chatbot.errors");
 const { statusLabel } = require("../dto");
 const { portalFor } = require("../roleScope");
-const { proposeAction } = require("../actions/actionService");
+const { proposeAction, precheckAction } = require("../actions/actionService");
+const { dashboardOverview, askPerson } = require("./overviewHandlers");
 const { REDIRECTS } = require("../actions/registry");
 const { resolveDepartment, resolvePriority, resolveUserArg, invalid } = require("../actions/resolvers");
 const { matchDepartments } = require("../departmentMatch");
@@ -192,6 +193,25 @@ async function listTickets(ctx, params0, question) {
     if (r.department) base.department = r.department;
     else (person = r.person), (relation = r.relation);
   }
+  // "Jamie tickets": one word before "tickets" is a department, then a person, and only then a topic to search for.
+  if (base.departmentOrText && !base.department && !person && ctx.scope.role !== "EMPLOYEE") {
+    let isDepartment = true;
+    try {
+      await resolveDepartment(base.departmentOrText, await visibleDepartmentNames(ctx));
+    } catch {
+      isDepartment = false;
+    }
+    if (!isDepartment) {
+      try {
+        person = await resolvePerson(ctx, base.departmentOrText, base);
+        relation = "either";
+        delete base.departmentOrText;
+      } catch (err) {
+        // Several people match: the user chooses. Nobody matches: it stays a topic to search for.
+        if (err instanceof ChatError && err.choices?.length) throw err;
+      }
+    }
+  }
   if (!person && (base.personText || base.userId)) {
     try {
       person = await resolvePerson(ctx, base.personText, base);
@@ -239,7 +259,8 @@ async function listTickets(ctx, params0, question) {
     page: params.page,
     ...(params.withReasons ? { withReasons: "yes" } : {}),
     ...filters,
-    limit: params.mode === "count" ? 1 : PAGE_SIZE,
+    limit: params.mode === "count" || params.latest ? 1 : PAGE_SIZE,
+    ...(params.latest || params.recentCreated ? { sort: "created" } : {}),
   };
   const result = await runTool("search_authorized_tickets", ctx, toolInput);
 
@@ -275,6 +296,10 @@ async function listTickets(ctx, params0, question) {
     const suggestions = [];
     if (filters.department) suggestions.push({ label: `All tickets in ${filters.department}`, prompt: `Show tickets in ${filters.department}` });
     if (filters.priority) suggestions.push({ label: `All ${filters.priority} priority tickets`, prompt: `Show ${filters.priority} priority tickets` });
+    // A word that matched no department or person was searched in the ticket text: offer the likelier meanings.
+    if (filters.text && ctx.scope.role !== "EMPLOYEE") {
+      suggestions.push({ label: `Assigned to ${filters.text}`, prompt: `Show tickets assigned to ${filters.text}` }, { label: `Raised by ${filters.text}`, prompt: `Show tickets raised by ${filters.text}` });
+    }
     suggestions.push({ label: "Recently updated tickets", prompt: "Show recently updated tickets" });
     const target = [person ? who : null, filters.department ? filters.department : null].filter(Boolean).join(" in ");
     throw new ChatError(CODES.NO_RESULTS, {
@@ -296,10 +321,21 @@ async function listTickets(ctx, params0, question) {
     (params.withReasons ? " The recorded reason is shown on each ticket." : "") +
     (params.filter === "stale" ? " This is based on the last update time only; this application does not track SLAs or due dates." : "");
   return {
-    message,
-    data: { tickets: result.tickets, total: result.total, page, pageSize: PAGE_SIZE },
+    message: params.latest ? (params.scope === "mine" ? "Your latest ticket:" : "The latest ticket:") : message,
+    data: { tickets: result.tickets, total: params.latest ? result.tickets.length : result.total, page, pageSize: PAGE_SIZE },
     navigationTarget: null,
-    suggestedActions: last < result.total ? [{ label: "Show more", prompt: "Show more" }] : [],
+    suggestedActions: params.latest ? [] : [
+      ...(last < result.total ? [{ label: "Show more", prompt: "Show more" }] : []),
+      // "You can also try": narrowing steps that fit what was just shown (each goes through the normal follow-up rules).
+      ...(result.total > 1
+        ? [
+            ...(!params.status && params.filter !== "open" ? [{ label: "Only Open", prompt: "Only open" }] : []),
+            ...(!params.status ? [{ label: "Only Resolved", prompt: "Only resolved" }] : []),
+            ...(!filters.priority ? [{ label: "High Priority", prompt: "Only high priority" }] : []),
+            ...(!person && params.mine !== "assignee" ? [{ label: "Assigned to Me", prompt: "Only assigned to me" }] : []),
+          ]
+        : []),
+    ],
     state: { frame: { ...frame, results: result.tickets.map((t) => t.ticketNumber) } },
     useModel: true,
     ticketNumbers: result.tickets.map((t) => t.ticketNumber),
@@ -307,6 +343,38 @@ async function listTickets(ctx, params0, question) {
 }
 
 // "Show tickets": ask which tickets, the way the portal's own tabs differ per role.
+// "Who is looking after my laptop issue?": no ticket number was given. Look for the user's own
+// tickets about that topic (inside their scope) and answer when there is exactly one; otherwise
+// ask which one, with each candidate as a one-click question.
+async function whichTicket(ctx, params) {
+  const scope = ctx.scope.role === "EMPLOYEE" ? "mine" : "staff";
+  const topic = String(params.topic || "").replace(/\b(issue|problem|ticket|request)s?\b/gi, "").trim();
+  const found = topic ? await runTool("search_authorized_tickets", ctx, { scope, text: topic.slice(0, 100), limit: 4 }) : { total: 0, tickets: [] };
+  const none = { data: {}, navigationTarget: null, useModel: false, ticketNumbers: [] };
+  if (found.total === 1) {
+    const t = found.tickets[0];
+    return { ...none, message: t.assignedTo ? `Ticket ${t.ticketNumber} is assigned to ${t.assignedTo}.` : `Ticket ${t.ticketNumber} has not been assigned to anyone yet.`, data: { tickets: found.tickets }, suggestedActions: [{ label: `Show ticket ${t.ticketNumber}`, prompt: `Show ticket ${t.ticketNumber}` }] };
+  }
+  if (found.total > 1) {
+    return { ...none, message: `I found ${found.total} tickets about "${topic}". Which one do you mean?`, suggestedActions: found.tickets.map((t) => ({ label: `${t.ticketNumber}: ${String(t.title).slice(0, 40)}`, prompt: `Who is handling ticket ${t.ticketNumber}` })) };
+  }
+  return { ...none, message: `I couldn't find a ticket about "${topic || "that"}". Tell me the ticket number, for example "Who is handling ticket 2600007?", or look at your tickets first.`, suggestedActions: [{ label: "Show my tickets", prompt: ctx.scope.role === "EMPLOYEE" ? "Show my tickets" : "Show tickets raised by me" }, { label: "Show my open tickets", prompt: "Show my open tickets" }] };
+}
+
+// "What are resolved tickets?" could mean the tickets or the meaning of the status.
+async function statusOrListQuestion(ctx, params) {
+  const s = params.status;
+  const own = ctx.scope.role === "EMPLOYEE" ? "my " : "";
+  return {
+    message: `Do you want to see ${s} tickets, or learn what "${s}" means?`,
+    data: {},
+    navigationTarget: null,
+    suggestedActions: [{ label: `Show ${own}${s} tickets`, prompt: `Show ${own}${s} tickets` }, { label: `What does ${s} mean?`, prompt: `What does ${s} mean?` }],
+    useModel: false,
+    ticketNumbers: [],
+  };
+}
+
 async function ticketScopeQuestion(ctx) {
   const role = ctx.scope.role;
   const depts = (await visibleDepartmentNames(ctx)) || [];
@@ -333,7 +401,8 @@ async function personLookup(ctx, params) {
   try {
     person = await resolvePerson(ctx, params.personText, params);
   } catch (err) {
-    // A bare word that is not a person is just a message we did not understand.
+    // "Show employee Nobody" named a person who does not exist: say so. A bare word that is not a person is just a message we did not understand.
+    if (params.explicit && err instanceof ChatError && !err.choices?.length && err.code !== CODES.ACCESS_DENIED) throw invalid("I couldn't find a person called \"" + params.personText + "\".");
     if (err instanceof ChatError && !err.choices?.length && err.code !== CODES.ACCESS_DENIED) throw new ChatError(CODES.UNSUPPORTED_INTENT, { internal: "bare text is not a known person" });
     throw err;
   }
@@ -516,9 +585,18 @@ async function ticketStatistics(ctx, params) {
   };
 }
 
-async function listDepartments(ctx) {
+async function listDepartments(ctx, params, question = "") {
   const { departments, scope } = await runTool("list_departments", ctx);
   const role = ctx.scope.role;
+  // "Show Jamie's department": looking another person up is not offered to an Employee.
+  if (role === "EMPLOYEE" && /\b[a-z][a-z.\-]*'s (?:department|dept)\b/i.test(question) && !/\bmy\b/i.test(question)) throw new ChatError(CODES.ACCESS_DENIED);
+  // "Show department XYZ": a name was given, so say whether that department exists for this user.
+  const asked = String(question).match(/\b(?:department|dept)\s+(?!names?\b|list\b|are\b|is\b|there\b|available\b|all\b|for\b|stat\w*|summary\b|overview\b|report\b|tickets?\b|people\b|members?\b|employees?\b|dashboard\b|details?\b|info\w*)([a-z0-9][a-z0-9&/\- ]*?)\s*[?.!]*$/i);
+  if (asked && departments.length) {
+    const found = matchDepartments(asked[1], departments);
+    if (!found.length) throw invalid(`I couldn't find a department called "${asked[1].trim()}". ${role === "EMPLOYEE" ? `Your department is ${departments[0]}.` : `You can ask about: ${departments.join(", ")}.`}`);
+    return report(`${found.join(", ")} ${found.length === 1 ? "is a department" : "are departments"} you can ask about.`, { departments: found });
+  }
   if (!departments.length) {
     if (role === "EMPLOYEE") return report("No department is recorded on your profile.", { departments: [] });
     throw new ChatError(CODES.NO_RESULTS);
@@ -619,12 +697,15 @@ async function dashboardSummary(ctx, params, question) {
 
   const got = {};
   for (const rel of rels) got[rel] = await runTool("get_my_dashboard", ctx, { scope: rel, ...range });
-  const pick = (d) => (status ? d.byStatus.find((s) => s.status === status)?.count ?? 0 : priority ? d.byPriority.find((p) => p.priority.toLowerCase() === priority.toLowerCase())?.count ?? 0 : d.total);
+  // "How many of my tickets are open?": "open" is the application's open group (Open, In Progress, On Hold, Reopened).
+  const openGroup = !status && /\bopen\b/i.test(String(question || ""));
+  const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD", "REOPENED"];
+  const pick = (d) => (status ? d.byStatus.find((s) => s.status === status)?.count ?? 0 : openGroup ? d.byStatus.filter((s) => OPEN_STATUSES.includes(s.status)).reduce((a, s) => a + s.count, 0) : priority ? d.byPriority.find((p) => p.priority.toLowerCase() === priority.toLowerCase())?.count ?? 0 : d.total);
   const dashboardTarget = { type: "route", path: ctx.scope.role === "EMPLOYEE" ? "/portal" : ctx.scope.role === "ADMIN" ? "/admin" : "/agent", label: "View Dashboard" };
 
   // "How many resolved tickets do I have?": one answer per dashboard tab, never a guess about which.
   if (params.view === "count") {
-    const what = [status ? DASH_STATUS_LABEL[status].toLowerCase() : null, priority ? `${priority} priority` : null].filter(Boolean).join(" ");
+    const what = [status ? DASH_STATUS_LABEL[status].toLowerCase() : openGroup ? "open" : null, priority ? `${priority} priority` : null].filter(Boolean).join(" ");
     const noun = what ? `${what} ticket` : "ticket";
     const lines = rels.map((rel) => `• ${names[rel]}: ${pick(got[rel])}`);
     return {
@@ -852,6 +933,7 @@ async function adminAction(ctx, params) {
   // A required detail is missing: ask for it. The next message answers it
   // (conversation state lives in the saved assistant message, server side).
   if (parsed.missing?.length) {
+    await precheckAction(ctx, parsed);
     const field = parsed.missing[0];
     return {
       message: (MISSING_QUESTION[field] || (() => "I need one more detail."))(parsed.args, parsed),
@@ -1002,6 +1084,10 @@ const HANDLERS = {
   list_tickets: listTickets,
   person_lookup: personLookup,
   ticket_scope_question: ticketScopeQuestion,
+  which_ticket_question: whichTicket,
+  dashboard_overview: dashboardOverview,
+  ask_person: askPerson,
+  status_or_list_question: statusOrListQuestion,
   ticket_draft: (ctx, _params, question) => require("../ticketDraft/flow").start(ctx, question),
   dashboard_summary: dashboardSummary,
   notifications: notificationsList,

@@ -10,7 +10,7 @@ const ghost = { color: "var(--sv-muted)", ...focusRing };
 
 // Sticky pill-shaped composer. Attachment and voice are visible but disabled
 // placeholders (not implemented yet); sending behavior is unchanged.
-export default function ChatInput({ value, onChange, onSubmit, inputRef, loading, canAttach = false, onFiles }) {
+export default function ChatInput({ placeholder = "Ask about tickets...", value, onChange, onSubmit, inputRef, loading, canAttach = false, onFiles }) {
   const canSend = !loading && Boolean(value.trim());
   const picker = useRef(null);
 
@@ -71,7 +71,7 @@ export default function ChatInput({ value, onChange, onSubmit, inputRef, loading
           inputRef={inputRef}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          placeholder="Ask about tickets..."
+          placeholder={placeholder}
           fullWidth
           multiline
           maxRows={4}

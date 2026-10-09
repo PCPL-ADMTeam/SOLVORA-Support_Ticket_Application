@@ -61,6 +61,8 @@ async function view(ctx, draft) {
     maxWords: MAX_PROBLEM_SUMMARY_WORDS,
     attachments: (draft.attachments || []).map((a) => ({ id: a.id, name: a.fileName, size: a.size, mimeType: a.mimeType })),
     limits: { maxFiles: ticketService.MAX_ATTACHMENTS_PER_TICKET, maxMb: ticketService.MAX_ATTACHMENTS_TOTAL_SIZE_MB },
+    // The first question can be answered with the form: the real priorities and departments to pick from.
+    ...(draft.step === "TITLE" && !f.title ? { options: { priorities: await priorityNames(), departments: await departmentNames() } } : {}),
   };
 }
 

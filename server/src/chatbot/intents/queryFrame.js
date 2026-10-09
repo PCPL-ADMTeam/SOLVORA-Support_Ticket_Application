@@ -93,7 +93,9 @@ function ticketFrame(m, role) {
   const tx = m.match(/\b(?:about|regarding|containing|mentioning|matching|with the word|named)\s+["']?([^"'?.!]+?)["']?\s*[?.!]*$/);
   const claims = Boolean(hasDate || tx || mine || person || department || subject || mode === "count" || STATUS_OR_PRIORITY.test(m) || DATE_WORD.test(m));
   if (!claims) return null;
-  if (!ASK.test(m) && !/^(?:my\s+)?tickets?\b/.test(m) && !/^my\b/.test(m)) return null;
+  // A short noun phrase ("resolved tickets", "critical tickets", "Jamie tickets") is a request for that list.
+  const nounPhrase = /\btickets?[?.!]*$/.test(m) && m.split(/\s+/).length <= 8 && Boolean(STATUS_OR_PRIORITY.test(m) || mine || person || department);
+  if (!ASK.test(m) && !nounPhrase && !/^(?:my\s+)?tickets?\b/.test(m) && !/^my\b/.test(m)) return null;
 
   let filter = "any";
   if (/\bpending\b/.test(m)) filter = "pending";
@@ -115,6 +117,8 @@ function ticketFrame(m, role) {
 }
 
 function peopleFrame(m) {
+  // "Show employee Nobody": one named person, not a directory listing (the person lookup handles it).
+  if (/^(?:show|find|get|look up|who is)(?: me)?(?: the)? (?:employee|user|person|colleague|member) (?!in\b|of\b|for\b|each\b|every\b|all\b|list\b|names?\b|count\b|details\b)[a-z][a-z.'-]*(?: [a-z][a-z.'-]*){0,2}\s*[?.!]*$/.test(m)) return null;
   const whoManages = /\bwho\s+(?:manages|runs|heads|looks after)\b/.test(m);
   if ((!PEOPLE_WORD.test(m) && !whoManages) || TICKET_WORD.test(m) || !ASK.test(m) || OTHER_OWNER.test(m)) return null;
   let roles = rolesIn(m);
@@ -158,7 +162,9 @@ function personRef(m) {
 // The bell: list / unread / count / today / for one ticket. (Marking read and clearing are actions.)
 function notificationFrame(m) {
   if (!/\bnotifications?\b/.test(m) || /(settings?|templates?|e-?mail|configure|preferences?)/.test(m)) return null;
-  if (!/\b(show|list|see|view|get|give|any|unread|latest|new|recent|how many|count|number|do i have|have i|what|which)\b/.test(m)) return null;
+  // "my notifications" / "unread notifications" on their own are a request for the list.
+  const shortForm = /^(?:my |the |all )?(?:unread |new |recent |latest |today's )?notifications?[?.!]*$/.test(m);
+  if (!shortForm && !/\b(show|list|see|view|get|give|any|unread|latest|new|recent|how many|count|number|do i have|have i|what|which)\b/.test(m)) return null;
   const ticket = m.match(/\b(\d{5,12})\b/);
   const count = /\b(how many|count|number of)\b|\b(do|did) i have (any|unread)\b|\bhave i (any|got)\b/.test(m);
   return { intent: "notifications", params: { mode: count ? "count" : "list", unreadOnly: /\bunread|\bnew\b/.test(m), today: /\btoday\b/.test(m), ...(ticket ? { ticketNumber: ticket[1] } : {}) } };
@@ -176,6 +182,11 @@ function parseFrame(message, role) {
   // "What's new", "anything new", "catch me up", "what did I miss", "what changed": the digest.
   // (Checked before the guidance guard below, which also begins with "what's".)
   if (/^(?:what(?:'s| is)? new|whats new|anything new|any news|any updates?|updates?|what(?:'s| is) (?:been )?(?:happening|going on|changed|up)|what changed|what did i miss|catch me up|news)(?: (?:today|this week|since yesterday|lately|recently|for me|here))?[?.!]*$/.test(m)) return { intent: "whats_new", params: {} };
+  // "Show my latest ticket" / "what is the status of my latest ticket": the newest one, shown as a card.
+  if (/\b(?:latest|most recent|newest|last)(?: raised| created)? ticket\b/.test(m) && !/\b\d{5,}\b/.test(m)) {
+    const mine = role === "EMPLOYEE" || /\bmy\b/.test(m);
+    return { intent: "list_tickets", params: { scope: mine ? "mine" : "staff", filter: "any", mode: "list", latest: true, title: mine ? "Your latest ticket" : "Latest ticket" } };
+  }
   if (GUIDANCE.test(m)) return null;
   // "Show tickets" with nothing else: which tickets? (Admins just get the list.)
   if (role !== "ADMIN" && /^(?:(?:show|list|display|give|get|see|view)(?: me)?(?: all| the)? )?tickets?[?.!]*$/.test(m)) return { intent: "ticket_scope_question", params: {} };

@@ -201,7 +201,7 @@ const RULES = [
   },
   {
     action: "add_ticket_comment",
-    re: new RegExp(`^(?:please\\s+)?(?:add|post|write|leave|put)\\s+(?:a\\s+|the\\s+)?(?:new\\s+)?comment\\s+(?:on|to|in|for)\\s+(?:the\\s+)?ticket\\s+#?([^\\s:]+)\\s*(?:[:\\-]|(?:saying|that\\s+says|says))\\s*(.+)$`, "i"),
+    re: new RegExp(`^(?:please\\s+)?(?:add|post|write|leave|put)\\s+(?:a\\s+|the\\s+)?(?:new\\s+)?comment\\s+(?:on|to|in|for)\\s+(?:the\\s+)?ticket\\s+#?([^\\s:"“]+)(?:\\s*(?:[:\\-]|(?:saying|that\\s+says|says))\\s*|\\s+(?=["“]))(.+)$`, "i"),
     args: (m) => ({ ticket: clean(m[1]), comment: unquote(m[2]) }),
   },
   {
@@ -256,6 +256,11 @@ function parseAction(message) {
     return { action: "add_employee", args: { name: clean(emp[1]), email: clean(emp[2]), department: clean(emp[3]) }, required: ACTION_REQUIRED.add_employee };
   }
   for (const r of REDIRECTS) if (r.re.test(text)) return { redirect: r.key };
+
+  // "add a comment" with nothing else: ask which ticket and what to say.
+  if (/^(?:please\s+)?(?:add|post|write|leave|put)\s+(?:a\s+|the\s+)?(?:new\s+)?comment(?:\s+(?:on|to|in|for)\s+(?:the\s+|this\s+|that\s+)?ticket)?\s*[.!?]*$/i.test(text)) {
+    return { action: "add_ticket_comment", args: {}, required: ACTION_REQUIRED.add_ticket_comment, missing: ["ticket", "comment"] };
+  }
 
   const mentionsTicket = /\bticket\b/i.test(text);
   for (const rule of RULES) {

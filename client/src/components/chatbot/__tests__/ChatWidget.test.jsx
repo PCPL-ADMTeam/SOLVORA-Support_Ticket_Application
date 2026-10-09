@@ -28,6 +28,17 @@ const INTRO = {
   role: "EMPLOYEE",
   welcomeMessage: "Hi Alice! I'm your Employee Portal assistant.",
   suggestions: ["Show my open tickets", "How do I change my password?"],
+  welcomeSubtitle: "How can I help you manage your departments and tickets today?",
+  quickActions: [
+    { label: "My Tickets", prompt: "Show my tickets", icon: "tickets" },
+    { label: "Open Tickets", prompt: "Show open tickets", icon: "open" },
+    { label: "Department Tickets", prompt: "Show my department tickets", icon: "department" },
+    { label: "Notifications", prompt: "Show my notifications", icon: "notifications" },
+  ],
+  capabilities: [
+    { title: "Tickets", items: ["View tickets in your authorized departments", "Assign and reassign tickets (you confirm first)"] },
+    { title: "Notifications", items: ["View your notifications"] },
+  ],
 };
 
 const reply = (over = {}) => ({
@@ -81,9 +92,9 @@ describe("open and close", () => {
     await openPanel(user);
     expect(dialog()).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Close assistant chat" })).toHaveAttribute("aria-expanded", "true");
-    expect(await screen.findByText(INTRO.welcomeMessage)).toBeInTheDocument();
-    expect(screen.getByRole("group", { name: "Suggested questions" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Show my open tickets" })).toBeInTheDocument();
+    expect(await screen.findByText("How can I help you manage your departments and tickets today?")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Quick actions" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open Tickets" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Close assistant" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -142,11 +153,11 @@ describe("sending messages", () => {
     chatbotApi.sendMessage.mockResolvedValue(reply());
     const { user } = setup();
     await openPanel(user);
-    await user.click(await screen.findByRole("button", { name: "Show my open tickets" }));
-    expect(chatbotApi.sendMessage).toHaveBeenCalledWith("Show my open tickets", null, null);
+    await user.click(await screen.findByRole("button", { name: "Open Tickets" }));
+    expect(chatbotApi.sendMessage).toHaveBeenCalledWith("Show open tickets", null, null);
     // Suggestions give way to the conversation.
     await screen.findByText("Here you go.");
-    expect(screen.queryByRole("group", { name: "Suggested questions" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Quick actions" })).not.toBeInTheDocument();
   });
 
   test("empty input cannot be sent", async () => {
@@ -200,7 +211,7 @@ describe("errors", () => {
     await openPanel(user);
     const alert = await screen.findByRole("alert");
     await user.click(within(alert).getByRole("button", { name: "Retry" }));
-    expect(await screen.findByText(INTRO.welcomeMessage)).toBeInTheDocument();
+    expect(await screen.findByText("How can I help you manage your departments and tickets today?")).toBeInTheDocument();
   });
 });
 
@@ -270,7 +281,7 @@ describe("cards and navigation", () => {
     await openPanel(user);
     await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "hi{Enter}");
     expect(await screen.findByText(/<img src=x/)).toBeInTheDocument();
-    expect(dialog().querySelector("img")).toBeNull();
+    expect(dialog().querySelector("img[src=\"x\"]")).toBeNull();
     expect(dialog().querySelector("b")).toBeNull();
   });
 
@@ -344,7 +355,7 @@ describe("feedback, copy and reset", () => {
     await user.click(screen.getByRole("button", { name: "Reset conversation" }));
     expect(screen.queryByText("Here you go.")).not.toBeInTheDocument();
     expect(chatbotApi.resetConversation).toHaveBeenCalledWith("conv-1");
-    expect(await screen.findByText(INTRO.welcomeMessage)).toBeInTheDocument();
+    expect(await screen.findByText("How can I help you manage your departments and tickets today?")).toBeInTheDocument();
 
     // The next message starts a brand-new conversation.
     await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "again{Enter}");
@@ -374,10 +385,10 @@ describe("accessibility", () => {
     expect(dialog()).toBeInTheDocument();
 
     // Tab through: input is focused; reaching a suggestion chip and pressing Enter sends it.
-    const chip = await screen.findByRole("button", { name: "Show my open tickets" });
+    const chip = await screen.findByRole("button", { name: "Open Tickets" });
     act(() => chip.focus());
     await user.keyboard("{Enter}");
-    expect(chatbotApi.sendMessage).toHaveBeenCalledWith("Show my open tickets", null, null);
+    expect(chatbotApi.sendMessage).toHaveBeenCalledWith("Show open tickets", null, null);
   });
 });
 
@@ -713,5 +724,105 @@ describe("recorded reasons", () => {
     }));
     await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "why was ticket 2600007 closed{Enter}");
     expect(await screen.findByLabelText("Recorded reasons")).toHaveTextContent("Older close: wrong queue");
+  });
+});
+
+describe("the reference design", () => {
+  const tk = (n, over = {}) => ({ ticketNumber: n, ticketRouteId: `r${n}`, title: `Title ${n}`, status: "OPEN", priority: { name: "Medium", color: "#ff0" }, department: "Hardware", assignedTo: "Jamie User", ...over });
+
+  test("the welcome shows the greeting, four quick actions and the unread badge", async () => {
+    chatbotApi.suggestions.mockResolvedValue({ data: { data: { ...INTRO, unreadNotifications: 3 } } });
+    const { user } = setup();
+    await openPanel(user);
+    expect(await screen.findByText("Welcome back,")).toBeInTheDocument();
+    const group = screen.getByRole("group", { name: "Quick actions" });
+    for (const name of ["My Tickets", "Open Tickets", "Department Tickets", "Notifications"]) expect(within(group).getByRole("button", { name })).toBeInTheDocument();
+    expect(within(group).getByLabelText("3 unread")).toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "Message to the assistant" })).toHaveAttribute("placeholder", "Ask about tickets, people or departments...");
+  });
+
+  test("several tickets are compact rows with a View all row; one ticket is a detail card", async () => {
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "Your open tickets: found 8 tickets.", data: { tickets: [tk("2600007"), tk("2600005")], total: 8 } }));
+    const { user } = setup();
+    await openPanel(user);
+    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "show open tickets{Enter}");
+    const list = await screen.findByRole("list", { name: "Matching tickets" });
+    expect(within(list).getAllByRole("button", { name: /^Open ticket / })).toHaveLength(2);
+    await user.click(within(list).getByRole("button", { name: /View all 8 tickets/ }));
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Show more", "conv-1", null);
+
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "Your resolved tickets: found 1 ticket.", data: { tickets: [tk("2600003", { status: "RESOLVED", priority: { name: "Low", color: "#0f0" }, createdAt: "2026-09-18T10:00:00.000Z" })], total: 1 } }));
+    await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "resolved tickets{Enter}");
+    expect(await screen.findByText("Open Ticket")).toBeInTheDocument();
+    expect(screen.getByText("Sep 18, 2026")).toBeInTheDocument();
+    expect(screen.getByText("Resolved")).toBeInTheDocument();
+  });
+
+  test("a message that was not understood shows its suggestions as buttons, and the replies are signed Solvy", async () => {
+    chatbotApi.sendMessage.mockResolvedValueOnce(
+      reply({
+        message: "I couldn't understand that request.\n\nTry:\n• Show my open tickets\n• Show my resolved tickets\n• Show tickets assigned to me",
+        suggestedActions: [{ label: "Show my open tickets", prompt: "Show my open tickets" }, { label: "Show my resolved tickets", prompt: "Show my resolved tickets" }, { label: "Show tickets assigned to me", prompt: "Show tickets assigned to me" }],
+        error: { code: "CHAT_UNSUPPORTED_INTENT", message: "x", retryable: false },
+      })
+    );
+    const { user } = setup();
+    await openPanel(user);
+    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "asdf{Enter}");
+    expect(await screen.findByText("I couldn't understand that request.")).toBeInTheDocument();
+    expect(screen.getAllByText("Solvy").length).toBeGreaterThan(1); // the header title and the reply label
+    expect(screen.queryByText(/^• Show my open tickets/)).not.toBeInTheDocument();
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply());
+    await user.click(screen.getByRole("button", { name: "Show my resolved tickets" }));
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Show my resolved tickets", "conv-1", null);
+  });
+
+  test("Raise a ticket opens a form; Create Ticket sends its fields in one message", async () => {
+    const d = { id: "d1", status: "ACTIVE", step: "TITLE", title: null, priority: null, fromDepartment: null, department: null, cc: [], summary: null, words: 0, maxWords: 50, attachments: [], limits: { maxFiles: 5, maxMb: 10 }, options: { priorities: ["Low", "High"], departments: ["Hardware", "BI/Copilot"] } };
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ intent: "ticket_draft", message: "What is the issue title?", data: { ticketDraft: d } }));
+    const { user } = setup();
+    await openPanel(user);
+    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
+    const form = await screen.findByRole("form", { name: "Raise a ticket form" });
+    const create = within(form).getByRole("button", { name: "Create Ticket" });
+    expect(create).toBeDisabled();
+    await user.type(within(form).getByLabelText(/Title/), "VPN down");
+    await user.selectOptions(within(form).getByLabelText(/Priority/), "High");
+    await user.selectOptions(within(form).getByLabelText(/Department/), "Hardware");
+    await user.type(within(form).getByLabelText(/Problem Summary/), "Cannot connect | at all");
+    expect(create).toBeEnabled();
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "Please describe the problem." }));
+    await user.click(create);
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Title: VPN down | Priority: High | Department: Hardware | Problem Summary: Cannot connect / at all", "conv-1", null);
+  });
+});
+
+describe("the role-based home and the info panel", () => {
+  test("the quick actions, greeting and 'What I can do' come from the server for the role", async () => {
+    chatbotApi.suggestions.mockResolvedValue({
+      data: { data: { portal: "Employee Portal", role: "EMPLOYEE", welcomeMessage: "x", suggestions: [], welcomeSubtitle: "How can I help you with your tickets today?", quickActions: [{ label: "My Tickets", prompt: "Show my tickets", icon: "tickets" }, { label: "Raise Ticket", prompt: "Raise a ticket", icon: "raise" }], capabilities: [{ title: "Tickets", items: ["View your tickets"] }, { title: "Guidance", items: ["Ask how to use Solvora"] }] } },
+    });
+    const { user } = setup();
+    await openPanel(user);
+    expect(await screen.findByText("How can I help you with your tickets today?")).toBeInTheDocument();
+    const group = screen.getByRole("group", { name: "Quick actions" });
+    expect(within(group).getAllByRole("button")).toHaveLength(2);
+    expect(within(group).getByRole("button", { name: "Raise Ticket" })).toBeInTheDocument();
+    expect(within(group).queryByRole("button", { name: "Department Tickets" })).not.toBeInTheDocument();
+
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply());
+    await user.click(within(group).getByRole("button", { name: "Raise Ticket" }));
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Raise a ticket", null, null);
+  });
+
+  test("the Info button opens 'What I can do' with this role's capabilities", async () => {
+    const { user } = setup();
+    await openPanel(user);
+    await screen.findByText("How can I help you manage your departments and tickets today?");
+    await user.click(screen.getByRole("button", { name: "What I can do" }));
+    const panel = await screen.findByRole("dialog", { name: "What I can do" });
+    expect(within(panel).getByText("What I can do")).toBeInTheDocument();
+    expect(within(panel).getByText("View tickets in your authorized departments")).toBeInTheDocument();
+    expect(within(panel).getByText("View your notifications")).toBeInTheDocument();
   });
 });

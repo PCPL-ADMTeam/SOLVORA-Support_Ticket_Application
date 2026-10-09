@@ -188,7 +188,7 @@ describe("MANAGER (Finance only)", () => {
       expect(r.pendingAction).toBeNull();
     }
     expect((await ask(users.mgrD2, "Summarize ticket 9999999")).message).toBe(neutral);
-    expect((await ask(users.mgrD2, "show high priority tickets for IT Support")).message).toMatch(/that you have access to/);
+    expect((await ask(users.mgrD2, "show high priority tickets for IT Support")).message).toMatch(/can only access ticket data for your authorized departments/);
     noWrites();
   });
 

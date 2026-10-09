@@ -1,84 +1,92 @@
-import { Box, CircularProgress, Typography } from "@mui/material";
-import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import { Badge, Box, CircularProgress, Typography } from "@mui/material";
 import ConfirmationNumberOutlinedIcon from "@mui/icons-material/ConfirmationNumberOutlined";
-import ManageSearchIcon from "@mui/icons-material/ManageSearch";
-import ExploreOutlinedIcon from "@mui/icons-material/ExploreOutlined";
-import AdminPanelSettingsOutlinedIcon from "@mui/icons-material/AdminPanelSettingsOutlined";
-import SuggestedPrompts from "./SuggestedPrompts";
+import HistoryToggleOffIcon from "@mui/icons-material/HistoryToggleOff";
+import AddCircleOutlineIcon from "@mui/icons-material/AddCircleOutline";
+import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
+import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import PersonOffOutlinedIcon from "@mui/icons-material/PersonOffOutlined";
+import AssignmentIndOutlinedIcon from "@mui/icons-material/AssignmentIndOutlined";
+import BarChartOutlinedIcon from "@mui/icons-material/BarChartOutlined";
+import PeopleAltOutlinedIcon from "@mui/icons-material/PeopleAltOutlined";
+import ApartmentOutlinedIcon from "@mui/icons-material/ApartmentOutlined";
+import TrendingUpIcon from "@mui/icons-material/TrendingUp";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import RobotAvatar from "./RobotAvatar";
 import ChatErrorState from "./ChatErrorState";
-import { card, rise, reducedMotion } from "./theme/chatStyles";
+import { interactiveCard, rise, reducedMotion } from "./theme/chatStyles";
 
-// What the assistant can really do, per role. Descriptive only; the server
-// still decides what any request is allowed to return or change.
-const CAPABILITIES = {
-  base: [
-    { icon: ManageSearchIcon, title: "Find tickets", text: "Look up tickets you can access by number, status or topic." },
-    { icon: ConfirmationNumberOutlinedIcon, title: "Summaries", text: "Get a ticket's latest update and what is pending." },
-    { icon: ExploreOutlinedIcon, title: "Guidance", text: "Ask how to use any page and jump straight to it." },
-  ],
-  ADMIN: { icon: AdminPanelSettingsOutlinedIcon, title: "Manage with approval", text: "Departments, users and tickets. You always confirm first." },
+const ICONS = {
+  tickets: ConfirmationNumberOutlinedIcon,
+  open: HistoryToggleOffIcon,
+  raise: AddCircleOutlineIcon,
+  notifications: NotificationsNoneIcon,
+  department: GroupsOutlinedIcon,
+  unassigned: PersonOffOutlinedIcon,
+  assigned: AssignmentIndOutlinedIcon,
+  summary: BarChartOutlinedIcon,
+  workload: PeopleAltOutlinedIcon,
+  users: PeopleAltOutlinedIcon,
+  departments: ApartmentOutlinedIcon,
+  trends: TrendingUpIcon,
 };
 
-function Capabilities({ role }) {
-  const items = [...CAPABILITIES.base, ...(role === "ADMIN" ? [CAPABILITIES.ADMIN] : [])];
-  return (
-    <Box component="ul" aria-label="What I can help with" sx={{ listStyle: "none", m: 0, p: 0, display: "grid", gap: 1 }}>
-      {items.map(({ icon: Icon, title, text }) => (
-        <Box component="li" key={title} sx={{ display: "flex", gap: 1.25, alignItems: "flex-start", px: 0.5 }}>
-          <Icon fontSize="small" aria-hidden sx={{ color: "var(--sv-accent-ink)", mt: "2px" }} />
-          <Typography variant="body2" sx={{ color: "var(--sv-muted)" }}>
-            <Box component="strong" sx={{ color: "var(--sv-text)", fontWeight: 600 }}>
-              {title}
-            </Box>
-            {" · "}
-            {text}
-          </Typography>
-        </Box>
-      ))}
-    </Box>
-  );
-}
-
-function SectionLabel({ children }) {
-  return (
-    <Typography variant="overline" component="h3" sx={{ display: "block", color: "var(--sv-muted)", fontWeight: 700, letterSpacing: "0.08em", lineHeight: 1.5, mb: 1 }}>
-      {children}
-    </Typography>
-  );
-}
-
-// Empty state: hero + quick-action cards + capabilities, so a new chat never
-// looks blank. All text comes from the server (welcome, suggestions); only the
-// greeting name and role theme come from the signed-in profile.
-export default function ChatWelcome({ intro, introError, onRetry, onSelect, disabled, firstName, role }) {
+// Empty state: the greeting and the role's own quick actions, so a new chat never looks blank.
+// The quick actions, the greeting line and the badge count all come from the server for the signed-in
+// role (the browser never decides what a role is offered); each one is sent as an ordinary question.
+export default function ChatWelcome({ intro, introError, onRetry, onSelect, disabled, firstName }) {
   if (introError && !intro) {
     return <ChatErrorState error={{ message: "I could not load the assistant. Please try again.", retryable: true }} onRetry={onRetry} />;
   }
   if (!intro) return <CircularProgress size={20} aria-label="Loading assistant" sx={{ color: "var(--sv-accent-ink)" }} />;
 
+  const actions = intro.quickActions || [];
+  const unread = intro.unreadNotifications || 0;
   return (
-    <Box sx={{ display: "grid", gap: 2.5, animation: `${rise} var(--sv-slow) ease both`, ...reducedMotion }}>
-      <Box sx={{ ...card, p: 2, background: "var(--sv-accent-soft)", borderColor: "transparent" }}>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 1, mb: 0.75 }}>
-          <AutoAwesomeIcon fontSize="small" aria-hidden sx={{ color: "var(--sv-accent-ink)" }} />
-          <Typography variant="subtitle1" component="p" fontWeight={700} sx={{ color: "var(--sv-text)" }}>
-            {firstName ? `Welcome back, ${firstName}` : "Welcome back"}
-          </Typography>
+    <Box sx={{ display: "grid", gap: 2.5, justifyItems: "center", textAlign: "center", pt: 2, animation: `${rise} var(--sv-slow) ease both`, ...reducedMotion }}>
+      <Box>
+        <Box sx={{ display: "grid", placeItems: "center", mb: 1.5 }}>
+          <RobotAvatar size={96} sx={{ boxShadow: "0 6px 20px rgba(10,30,74,0.28)" }} />
         </Box>
-        <Typography variant="body2" sx={{ color: "var(--sv-text)" }}>
-          {intro.welcomeMessage}
+        <Typography component="p" sx={{ fontSize: 24, fontWeight: 700, color: "var(--sv-text)", lineHeight: 1.2 }}>
+          Welcome back,
         </Typography>
+        <Typography component="p" sx={{ fontSize: 24, fontWeight: 700, color: "var(--sv-accent-ink)", lineHeight: 1.25 }}>
+          {firstName || "there"}{" "}
+          <span role="img" aria-label="waving hand">
+            👋
+          </span>
+        </Typography>
+        <Typography sx={{ mt: 1.5, fontSize: 16, color: "var(--sv-text)" }}>{intro.welcomeSubtitle || "How can I help you today?"}</Typography>
       </Box>
 
-      <Box>
-        <SectionLabel>Try asking</SectionLabel>
-        <SuggestedPrompts prompts={intro.suggestions} onSelect={onSelect} disabled={disabled} />
-      </Box>
-
-      <Box>
-        <SectionLabel>What I can do</SectionLabel>
-        <Capabilities role={role} />
-      </Box>
+      {actions.length > 0 && (
+        <Box role="group" aria-label="Quick actions" sx={{ width: "100%", display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 1.25, textAlign: "left" }}>
+          {actions.map(({ label, prompt, icon }) => {
+            const Icon = ICONS[icon] || ConfirmationNumberOutlinedIcon;
+            const badge = icon === "notifications" ? unread : 0;
+            return (
+              <Box
+                key={label}
+                component="button"
+                type="button"
+                aria-label={label}
+                onClick={() => onSelect(prompt)}
+                disabled={disabled}
+                sx={{ ...interactiveCard, display: "flex", alignItems: "center", gap: 1.25, p: 1.5, minHeight: 64, borderRadius: "14px" }}
+              >
+                <Box aria-hidden sx={{ width: 36, height: 36, flexShrink: 0, borderRadius: "10px", display: "grid", placeItems: "center", bgcolor: "var(--sv-accent-soft)", color: "var(--sv-accent-ink)" }}>
+                  <Icon fontSize="small" />
+                </Box>
+                <Typography variant="body2" fontWeight={600} sx={{ flex: 1, color: "var(--sv-text)", lineHeight: 1.25 }}>
+                  {label}
+                </Typography>
+                {badge > 0 && <Badge badgeContent={badge} max={99} color="error" sx={{ mr: 1.25 }} aria-label={`${badge} unread`} />}
+                <ChevronRightIcon aria-hidden sx={{ color: "var(--sv-muted)", fontSize: 20 }} />
+              </Box>
+            );
+          })}
+        </Box>
+      )}
     </Box>
   );
 }

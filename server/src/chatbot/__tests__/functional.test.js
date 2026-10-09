@@ -359,9 +359,9 @@ describe("department members (scoped)", () => {
     expect(JSON.stringify(all)).not.toMatch(/Dan Finance|Mark Manager/);
     // Naming another department gets the neutral "which department" answer, listing only their own.
     const other = await ask(users.tlD1, "who works in Finance");
-    expect(other.message).toMatch(/Which department/);
-    expect(other.message).toContain("IT Support");
-    expect(other.message).not.toMatch(/Finance|Dan/);
+    expect(other.message).toMatch(/can only access tickets for your assigned department/);
+    expect(other.message).toContain("Show my department tickets");
+    expect(other.message).not.toMatch(/Dan/);
     const mgr = await ask(users.mgrD2, "list the people in Finance");
     expect(mgr.message).toContain("Dan Finance — Employee");
     expect(JSON.stringify(await ask(users.mgrD2, "list the people in IT Support"))).not.toMatch(/Alice|Bob|Tina/);

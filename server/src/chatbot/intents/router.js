@@ -63,7 +63,7 @@ function ticketSubIntent(m) {
   if (/\battach|\bfiles?\b|\bdocuments?\b/.test(m)) return "ticket_attachments";
   if (/\b(managers?|team ?leads?)\b/.test(m)) return "ticket_people";
   if (/summar|tl;?dr|overview|brief me/.test(m)) return "summarize_ticket";
-  if (/histor|timeline|activity log|what changed|audit trail/.test(m)) return "ticket_history";
+  if (/histor|timeline|activity|what changed|audit trail/.test(m)) return "ticket_history";
   if (/\blatest\b|last update|recent update|newest update|what happened|most recent/.test(m)) return "latest_update";
   if (/pending|next step|what.*(need|required)|action|to do|blocked|waiting/.test(m)) return "pending_actions";
   return null;
@@ -171,6 +171,44 @@ function classifyRules(message, role) {
   // Lower-cased, typo- and synonym-normalized copy for the keyword rules.
   const m = normalizeMessage(message);
 
+  // "Show open", "show high priority", "list resolved": a bare status or priority is a ticket list.
+  // The short forms people really type: "resolved", "on hold", "high priority", "critical tickets" are lists.
+  const bare = m.match(/^(?:(?:show|list|get|see|display|give)(?: me)?(?: all)?(?: the)? )?(my )?(open|closed|resolved|solved|reopened|on hold|in progress|pending|waiting|(?:high|low|medium) priority|critical|urgent|high)(?: tickets?| ones| items)?[.?!]*$/);
+  if (bare) {
+    const what = bare[2] === "solved" ? "resolved" : bare[2] === "high" ? "high priority" : bare[2];
+    const rewritten = `show ${role === "EMPLOYEE" || bare[1] ? "my " : ""}${what} tickets`;
+    if (rewritten !== m) return classifyRules(rewritten, role);
+  }
+
+  // "What are resolved tickets?": the data or the meaning? Ask, do not guess.
+  const meaning = m.match(/^(?:what (?:are|is)|define)(?: the)? (open|closed|resolved|reopened|on hold|in progress|pending)(?: tickets?)?[?.!]*$/);
+  if (meaning) return { intent: "status_or_list_question", params: { status: meaning[1] } };
+
+  // Dashboard-style questions: priority and status summaries, trends and workload (the dashboard's own numbers).
+  if (!/\bdashboard\b/.test(m) && !/\bmy\b/.test(m)) {
+    if (/\b(?:priority|priorities)\s+(?:summary|breakdown|distribution)\b|\btickets?\s+by\s+priority\b/.test(m)) return { intent: "dashboard_overview", params: { view: "priority" } };
+    if (/\bstatus\s+(?:summary|breakdown|distribution)\b|\btickets?\s+by\s+status\b/.test(m)) return { intent: "dashboard_overview", params: { view: "status" } };
+  }
+  if (/\b(?:employee|agents?|staff)\s+workload\b|\bdepartment\s+workload\b/.test(m)) {
+    const dep = m.match(/\b(?:in|of|for)\s+(?:the\s+)?(.+?)(?:\s+department)?\s*[?.!]*$/);
+    const named = dep && !/\b(?:my|each|every|all)\b/.test(dep[1]) ? dep[1].trim() : null;
+    return { intent: "dashboard_overview", params: { view: "workload", ...(named ? { department: named } : {}) } };
+  }
+  if (/\bdepartments?\s+summary\b|\bsummary\s+by\s+department\b/.test(m) && !/\bticket\b/.test(m.replace(/\bsummary by department\b/, ""))) return { intent: "tickets_by_department", params: {} };
+
+  // "Search employee" / "tickets assigned to an employee": nobody was named, so ask who.
+  if (/^(?:search|find|look up)(?: for)?(?: an?| the)? (?:employee|user|person|colleague)[?.!]*$/.test(m) || /\b(?:assigned to|raised by|handled by)\s+(?:an?|any|some)\s+(?:employee|person|user|member)\b/.test(m)) return { intent: "ask_person", params: {} };
+
+  // "Explain ticket workflow": the ticket lifecycle is the list of statuses and what each means.
+  if (/^(?:explain|describe|show|what is)(?: me)?(?: the)? ticket (?:workflow|lifecycle|process)\b/.test(m)) return { intent: intentForArticle("common.ticket-status"), params: { articleId: "common.ticket-status" } };
+
+  // "Show recently created tickets": newest first by creation date.
+  if (/^(?:show|list|get|see)(?: me)?(?: the)? (?:recently|newly) (?:created|raised|added|opened) tickets?[?.!]*$/.test(m)) return { intent: "list_tickets", params: { scope: role === "EMPLOYEE" ? "mine" : "staff", filter: "any", recentCreated: true, title: "Recently created tickets" } };
+
+  // "Who is looking after my laptop issue?": a question about a ticket the user describes, not numbers.
+  const lookingAfter = m.match(/^who(?:'s| is| are)? (?:looking after|taking care of|dealing with|working on|handling|responsible for) (?:my|the|our) (.+?)\s*[?.!]*$/);
+  if (lookingAfter && !/\b\d{5,12}\b/.test(m)) return { intent: "which_ticket_question", params: { topic: lookingAfter[1] } };
+
   // "Do something" requests come first. They are recognized from the user's own
   // words only, and only ADMIN may use them (everyone else is refused here and
   // again in the action service). Recognition does not execute anything: it
@@ -264,7 +302,11 @@ function classifyRules(message, role) {
 
   // Questions about PEOPLE (employees, users, managers, team leads, members, staff).
   // Answered only for ADMIN (tool-enforced); everyone else is refused.
-  const PEOPLE = /\b(employees?|users?|staff|members?|managers?|team ?leads?|people|who)\b/;
+  // A bare "who" is not a people question ("who won the match"): it needs a people word or a directory phrasing.
+  const PEOPLE = /\b(employees?|users?|staff|members?|managers?|team ?leads?|people)\b|\bwho (?:works?|are|belongs?|manages|leads|handles?|runs|heads|is the)\b/;
+  // "Show employee Nobody" / "find user Jamie": one named person, not a department listing.
+  const named = m.match(/^(?:show|find|get|look up|search(?: for)?|who is)(?: me)?(?: the)? (?:employee|user|person|colleague|member) ([a-z][a-z.' -]*?)\s*[?.!]*$/);
+  if (named && !/\b(?:in|of|for)\b/.test(named[1]) && !/^(?:in|of|for|each|every|all|list|names?|count|details)\b/.test(named[1])) return { intent: "person_lookup", params: { personText: named[1].trim(), explicit: true } };
   const ASKING = /\b(names?|list|show|tell|which|who|give|see)\b|\bdepartments?\b/;
   if (PEOPLE.test(m) && ASKING.test(m) && !/ticket|\bhow\b|dashboard|portal|profile|password/.test(m)) {
     return { intent: "people_directory", params: { all: /\b(each|every|all)\b/.test(m) && /\bdepartments?\b/.test(m) } };

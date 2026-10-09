@@ -2,6 +2,7 @@ import { Box, IconButton, Paper, Tooltip, Typography } from "@mui/material";
 import CloseIcon from "@mui/icons-material/Close";
 import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
 import PictureAsPdfOutlinedIcon from "@mui/icons-material/PictureAsPdfOutlined";
+import TicketDraftForm from "./TicketDraftForm";
 
 const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 
@@ -56,8 +57,17 @@ function AttachmentChip({ file, previewUrl, onRemove, disabled }) {
 // The ticket being raised: what has been collected so far, or (at the review) just the files, since
 // the review text already lists the fields. `active` is true only for the latest draft message, so
 // older cards stay read-only.
-export default function TicketDraftCard({ draft, previews = {}, onRemove, active = false, disabled = false, compact = false }) {
+export default function TicketDraftCard({ draft, previews = {}, onRemove, onSend, active = false, disabled = false, compact = false }) {
   if (!draft) return null;
+  // The first question: a form to fill in (only on the latest message; older ones stay read-only).
+  if (draft.options && active && onSend) {
+    return (
+      <Paper variant="outlined" aria-label="Ticket being raised" sx={{ p: 1.5, mt: 1, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: "14px", color: "var(--sv-text)" }}>
+        <TicketDraftForm options={draft.options} maxWords={draft.maxWords} onSend={onSend} disabled={disabled} />
+      </Paper>
+    );
+  }
+  if (draft.options && !active) return null;
   const files = draft.attachments || [];
   // Only what has been given is listed; what is still missing is named in one line.
   const given = [

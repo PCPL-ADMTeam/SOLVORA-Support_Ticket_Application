@@ -100,7 +100,7 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
         ...reducedMotion,
       }}
     >
-      <ChatHeader portal={intro?.portal} role={role} online={online} canReset={!loading && messages.length > 0} onReset={newChat} onClose={onClose} expanded={expanded} onToggleExpand={onToggleExpand} historyOpen={showHistory} onToggleHistory={() => setShowHistory((v) => !v)} />
+      <ChatHeader portal={intro?.portal} capabilities={intro?.capabilities || []} online={online} canReset={!loading && messages.length > 0} onReset={newChat} onClose={onClose} expanded={expanded} onToggleExpand={onToggleExpand} historyOpen={showHistory} onToggleHistory={() => setShowHistory((v) => !v)} />
 
       <Box
         role="log"
@@ -127,7 +127,7 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
         {!showHistory && !messages.length && <ChatWelcome intro={intro} introError={introError} onRetry={loadIntro} onSelect={send} disabled={loading} firstName={firstName} role={role} />}
 
         {!showHistory && messages.map((m, i) => (
-          <ChatMessage key={m.key} message={m} onNavigate={onNavigate} onSend={send} onFeedback={sendFeedback} disabled={loading} actionState={actionState} onConfirmAction={confirmAction} onCancelAction={cancelAction} onEditAction={(a) => editAction(a, i)} previews={previews} onRemoveAttachment={removeAttachment} activeDraftId={draftView?.id} />
+          <ChatMessage key={m.key} message={m} onNavigate={onNavigate} onSend={send} onFeedback={sendFeedback} disabled={loading} actionState={actionState} onConfirmAction={confirmAction} onCancelAction={cancelAction} onEditAction={(a) => editAction(a, i)} previews={previews} onRemoveAttachment={removeAttachment} activeDraftId={draftView?.id} firstName={firstName} />
         ))}
 
         {!showHistory && loading && <TypingIndicator />}
@@ -140,7 +140,7 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
         {status}
       </Box>
 
-      <ChatInput value={draft} onChange={setDraft} onSubmit={submit} inputRef={inputRef} loading={loading} canAttach={Boolean(draftView)} onFiles={uploadFiles} />
+      <ChatInput placeholder={messages.length ? "Ask about tickets..." : "Ask about tickets, people or departments..."} value={draft} onChange={setDraft} onSubmit={submit} inputRef={inputRef} loading={loading} canAttach={Boolean(draftView)} onFiles={uploadFiles} />
     </Paper>
   );
 });

@@ -52,7 +52,9 @@ async function extractEntities(message, { visibleDepartments = null, now = new D
   // (e.g. "IT") are not guessed from a loose word because they are also ordinary words.
   const all = visibleDepartments || (await prisma.department.findMany({ select: { name: true } })).map((d) => d.name);
   const candidates = all.filter((n) => String(n).replace(/[^a-z0-9]/gi, "").length >= 3);
-  const hits = matchDepartments(m, candidates);
+  // "open support tickets" describes the kind of ticket; it is not the "IT Support" department.
+  const forDepartments = m.replace(/\b(?:support|help|helpdesk|service|request|issue)s?\b(?=\s+(?:tickets?|requests?|issues?)\b)/g, " ");
+  const hits = matchDepartments(forDepartments, candidates);
   if (hits.length === 1) out.department = hits[0];
 
   const priorities = await prisma.priority.findMany({ select: { name: true }, orderBy: { level: "asc" } });

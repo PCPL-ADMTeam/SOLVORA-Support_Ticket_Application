@@ -247,4 +247,19 @@ async function hasPendingInConversation(user, conversationId) {
   return Boolean(row);
 }
 
-module.exports = { proposeAction, confirmAction, confirmTyped, cancelAction, cancelPendingInConversation, hasPendingInConversation, TTL_MS };
+// Before asking for a missing reason or comment, run the rest of the request through the same rules
+// (permission, ticket access, role operation), so something the user may not do is refused first
+// instead of after they have typed a reason. Reads only; nothing is stored.
+async function precheckAction(ctx, parsed) {
+  const def = ACTIONS[parsed.action];
+  if (!def || !parsed.args?.ticket) return;
+  requireActionPermission(ctx.scope.user, parsed.action);
+  const filled = { ...parsed.args };
+  for (const f of parsed.missing || []) {
+    if (!["reason", "comment", "description"].includes(f)) return;
+    filled[f] = "(pending)";
+  }
+  await def.prepare({ actorId: ctx.scope.userId, user: ctx.scope.user, scope: ctx.scope, audit: async () => {} }, filled);
+}
+
+module.exports = { precheckAction, proposeAction, confirmAction, confirmTyped, cancelAction, cancelPendingInConversation, hasPendingInConversation, TTL_MS };

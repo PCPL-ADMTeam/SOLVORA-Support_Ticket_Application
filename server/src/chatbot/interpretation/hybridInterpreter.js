@@ -71,9 +71,22 @@ async function followUp(message, scope, frame) {
     const page = Math.max(1, (frame.params.page || 1) + (/previous|prev|back/.test(paging[0]) ? -1 : 1));
     return { intent: "list_tickets", params: { ...frame.params, mode: "list", page } };
   }
+  // "Assigned to Jamie" / "raised by Manoj": the same list, narrowed to that person.
+  const byPerson = frame.intent === "list_tickets" && String(message).trim().match(/^(?:no,?\s+|actually,?\s+|and\s+|only\s+|just\s+)*(assigned to|handled by|raised by|created by)\s+([a-z][a-z.' -]{1,40}?)\s*[?.!]*$/i);
+  if (byPerson && !/\b\d{5,}\b/.test(byPerson[2])) {
+    const { mine, ...rest } = frame.params || {};
+    // "me" is the signed-in user, never a name to look up.
+    if (/^(?:me|myself)$/i.test(byPerson[2].trim())) {
+      const { userId, personRelation, ...plain } = rest;
+      return { intent: "list_tickets", params: { ...plain, mode: "list", mine: /assigned|handled/i.test(byPerson[1]) ? "assignee" : "requester" } };
+    }
+    return { intent: "list_tickets", params: { ...rest, mode: "list", personText: byPerson[2].trim(), personRelation: /assigned|handled/i.test(byPerson[1]) ? "assignee" : "requester" } };
+  }
   if (m.split(/\s+/).length > 8 || /\b\d{5,}\b/.test(m)) return null;
   const show = SHOW_THEM.test(m);
-  if (!show && !FOLLOW_UP.test(m) && !/\b(ones|those|them|these)\b/.test(m)) return null;
+  // A bare department or status in a list conversation is a correction ("Actually BI/Copilot", "resolved").
+  const shortCorrection = frame.intent === "list_tickets" && m.split(/\s+/).length <= 4 && !/\b(show|list|get|give|see|tickets?|my|all|how|what|who)\b/.test(m);
+  if (!show && !shortCorrection && !FOLLOW_UP.test(m) && !/\b(ones|those|them|these)\b/.test(m)) return null;
   const base = frame.params || {};
 
   if (frame.intent === "people_directory") {
@@ -135,7 +148,9 @@ async function decide({ message: original, scope, state = {}, lastTicketNumber, 
   // An answer to a free-text question (a reason, a comment, a description) is an answer even if it mentions a
   // ticket number or other words that look like a command ("duplicate of 2600007"); only an obvious new
   // question ("show my tickets") moves on.
-  const freeTextAnswer = state.clarification && ["reason", "comment", "description", "title"].includes(state.clarification.field) && !/^(?:show|list|who|how many|what|when|which|cancel|never ?mind)\b/i.test(message.trim());
+  // A bare ticket number answers "Which ticket number?" instead of starting a lookup.
+  const bareTicketAnswer = state.clarification?.field === "ticket" && /^#?\s?[A-Za-z]{0,4}-?\d{3,12}[.!?]*$/.test(message.trim());
+  const freeTextAnswer = bareTicketAnswer || (state.clarification && ["reason", "comment", "description", "title"].includes(state.clarification.field) && !/^(?:show|list|who|how many|what|when|which|cancel|never ?mind)\b/i.test(message.trim()));
   if (state.clarification && (det.confidence !== "high" || freeTextAnswer)) {
     const cont = applyClarification(message, state.clarification);
     if (cont?.aiIntentId) {

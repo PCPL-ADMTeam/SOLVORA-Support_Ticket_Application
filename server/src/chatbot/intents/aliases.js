@@ -15,6 +15,11 @@ const WORD_ALIASES = [
   [/\bissues\b/g, "tickets"],
   [/\bissue\b/g, "ticket"],
   [/\b(?:unresolved|outstanding|incomplete|not closed|not resolved|still open)\b/g, "open"],
+  // "onhold", "on_hold", "inprogress": one spelling for the status words.
+  [/\bon[_-]?hold\b/g, "on hold"],
+  [/\bin[_-]?progress\b/g, "in progress"],
+  // A correction or filler at the start: "actually show X", "instead show X", "no wait, show X".
+  [/^(?:actually|instead|rather|sorry|no wait|wait|ok(?:ay)?|hmm+|um+)\b[,:]?\s+/g, ""],
   [/\bemps\b/g, "employees"],
   [/\bemp\b/g, "employee"],
   [/\b(?:mngrs|mgrs)\b/g, "managers"],

@@ -99,6 +99,8 @@ function project(row, select) {
 const withFiles = (d) => ({ ...d, attachments: db.draftFiles.filter((f) => f.draftId === d.id).map(({ id, fileName, mimeType, size, createdAt }) => ({ id, fileName, mimeType, size, createdAt })) });
 
 const prisma = {
+  // The dashboard's time-series charts use raw SQL; the regression tests compare its counts, not the charts.
+  $queryRaw: async () => [],
   ticket: {
     findFirst: async ({ where, select }) => {
       const r = db.tickets.find((t) => matches(t, where));

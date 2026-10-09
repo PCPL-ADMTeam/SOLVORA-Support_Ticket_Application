@@ -1,11 +1,11 @@
 const prisma = require("../config/prisma");
 const env = require("../config/env");
-const { ChatError, CODES, toErrorPayload } = require("./chatbot.errors");
+const { ChatError, CODES, toErrorPayload, USER_MESSAGES } = require("./chatbot.errors");
 const { recordChatAudit } = require("./chatbot.audit");
 const { resolveRoleScope, portalFor, authorizedWhere } = require("./roleScope");
 const { handlerFor, visibleDepartmentNames } = require("./intents/handlers");
 const { extractEntities } = require("./entities/extract");
-const { didYouMean } = require("./intents/didYouMean");
+const { didYouMean, fallbackSuggestions, departmentSuggestions } = require("./intents/didYouMean");
 const { decide } = require("./interpretation/hybridInterpreter");
 const { getRuntime } = require("./interpretation/aiRuntime");
 const { isConfirmWord, isCancelWord } = require("./interpretation/conversationContext");
@@ -121,6 +121,43 @@ function responseTypeOf({ result, error, state, intent }) {
   return "data";
 }
 
+// What to say, and what to offer, when a request is outside what this role may see. The wording
+// names the role's own limit (never the hidden data, ids or internals).
+function accessReply(role, departments = []) {
+  const reply = accessReplyBase(role, departments);
+  // At least three working suggestions, whatever the role's departments are.
+  for (const f of fallbackSuggestions(role)) if (reply.prompts.length < 3 && !reply.prompts.includes(f)) reply.prompts.push(f);
+  return reply;
+}
+
+function accessReplyBase(role, departments) {
+  switch (role) {
+    case "EMPLOYEE":
+      return { message: "I don't have access to that information from your Employee portal. I can help with your own tickets and tickets assigned to you.", prompts: ["Show my tickets", "Show tickets assigned to me", "Show my notifications"] };
+    case "TEAMLEAD":
+      return { message: "I can only access tickets for your assigned department.", prompts: ["Show my department tickets", "Show tickets assigned to me", "Show unassigned tickets"] };
+    case "MANAGER":
+      return { message: "I can only access ticket data for your authorized departments.", prompts: ["Show my department tickets", ...departments.slice(0, 3).map((d) => `Show ${d} tickets`)] };
+    default:
+      return { message: "I don't have access to that information.", prompts: ["Show all tickets", "Show all departments", "Show my notifications"] };
+  }
+}
+
+// A question that names a department this user has no access to must be refused, not answered
+// as "nothing found" (which would read as "I searched and there is none"). Department names are
+// not secret (the Raise a Ticket page lists them for everyone); only their tickets and people are.
+// Applies to READ questions only: raising a ticket to any department stays allowed.
+const DEPARTMENT_GUARDED = new Set(["dashboard_overview", "list_departments", "list_tickets", "people_directory", "person_lookup", "unsupported", "ticket_statistics", "summarize_tickets", "tickets_by_department", "manager_assignments", "department_headcount"]);
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+async function blockedDepartments(message, ctx) {
+  const visible = await visibleDepartmentNames(ctx);
+  const all = (await prisma.department.findMany({ select: { name: true } })).map((d) => d.name);
+  const hidden = all.filter((n) => !visible.some((v) => v.toLowerCase() === n.toLowerCase()));
+  const hit = hidden.filter((n) => new RegExp(`(^|[^a-z0-9])${escapeRe(n)}(?=$|[^a-z0-9])`, "i").test(message));
+  return { hit, visible };
+}
+
 // When the user's wording was not understood and the model could not help, offer
 // questions that always work instead of a bare refusal.
 function exampleActions(role) {
@@ -211,11 +248,26 @@ async function sendMessage(user, { message, conversationId, pageTicketId }) {
 
     if (!result) {
       try {
+        if (scope.role !== "ADMIN" && DEPARTMENT_GUARDED.has(intent)) {
+          const { hit, visible } = await blockedDepartments(cleaned, ctx);
+          if (hit.length) {
+            const denied = new ChatError(CODES.ACCESS_DENIED, { internal: `department outside access: ${hit.join(", ")}` });
+            denied.roleReply = true; // answered with the role's own wording and working suggestions
+            throw denied;
+          }
+        }
         result = await handlerFor(intent)(ctx, params, cleaned);
       } catch (err) {
         if (!(err instanceof ChatError) || !SOFT_ERRORS.has(err.code)) throw err;
         error = { ...toErrorPayload(err), retryable: false };
         result = plain(err.message);
+        // Access denied: say what this role CAN do, with questions that work for it (no ids, no internals).
+        if (err.code === CODES.ACCESS_DENIED) {
+          const reply = accessReply(scope.role, await visibleDepartmentNames(ctx).catch(() => []));
+          if (err.roleReply || err.message === USER_MESSAGES[CODES.ACCESS_DENIED]) result.message = reply.message;
+          result.suggestedActions = reply.prompts.map((p) => ({ label: p, prompt: p }));
+          result.message = `${result.message}\n\nTry:\n${reply.prompts.map((p) => `• ${p}`).join("\n")}`;
+        }
         // Several matches: remember the candidates (ids stay on the server) and let the user pick.
         if (err.suggestions?.length) result.suggestedActions = err.suggestions;
         if (err.choices?.length) {
@@ -242,15 +294,42 @@ async function sendMessage(user, { message, conversationId, pageTicketId }) {
         result.message = `${result.message} AI interpretation is unavailable right now, so I can only understand the standard phrasings. Try one of these:`;
         result.data = { ...result.data, aiUnavailable: true };
       }
-      // Layer 3: never a dead end. Say what was recognized and offer the closest real questions.
+      // Never a dead end and never a guess: say what happened, then offer the closest real questions for this role.
       const found = await extractEntities(cleaned, { visibleDepartments: await visibleDepartmentNames(ctx) }).catch(() => null);
       const hints = didYouMean({ message: cleaned, role: scope.role, found });
-      if (hints.prompts.length) {
-        result.message = `I'm not sure I understood that.${hints.noticed} Did you mean one of these?${aiNote ? " (AI interpretation is unavailable right now, so I can only understand the standard phrasings.)" : ""}`;
-        result.suggestedActions = hints.prompts.map((p) => ({ label: p, prompt: p }));
+      const aiSuffix = aiNote ? " (AI interpretation is unavailable right now, so I can only understand the standard phrasings.)" : "";
+      let prompts;
+      if (/^(?:show|list|find|get|see|display|tell me)[?.!]*$/i.test(cleaned)) {
+        // A verb with nothing after it: incomplete, not unknown.
+        result.message = "What would you like to see?";
+        prompts = fallbackSuggestions(scope.role);
+      } else if (found?.department && cleaned.split(/\s+/).length <= 3) {
+        // Just a department name: ambiguous. Offer what can be asked about it (only what this role may do).
+        result.message = `I'm not sure what you'd like to check for ${found.department}.`;
+        prompts = departmentSuggestions(scope.role, found.department);
+      } else if (scope.role === "EMPLOYEE" && /^(?:(?:show|find|tell me about)\s+)?[A-Z][a-z]{2,}$/.test(cleaned)) {
+        // A person's name from an Employee: other people cannot be looked up, so say what can be asked.
+        const who = cleaned.replace(/^(?:show|find|tell me about)\s+/i, "");
+        result.message = `I'm not sure what you want to know about "${who}". I can only show your own tickets and notifications. Did you mean one of these?`;
+        prompts = fallbackSuggestions(scope.role);
+      } else if (hints.prompts.length) {
+        result.message = `I'm not sure I understood that.${hints.noticed} Did you mean one of these?${aiSuffix}`;
+        prompts = hints.prompts;
       } else {
-        result.suggestedActions = exampleActions(scope.role);
+        const bare = cleaned.match(/^(?:show|find|list|get|see|display)\s+(?:me\s+)?(.{1,40}?)\s*[?.!]*$/i);
+        result.message = bare ? `I'm not sure what you want to see for "${bare[1]}". Did you mean one of these?` : `I'm not sure what you're looking for.${aiSuffix}`;
+        prompts = fallbackSuggestions(scope.role);
       }
+      // Only questions that work for THIS user: drop any that name a department they cannot reach, then top up to at least three.
+      const usable = [];
+      for (const p of prompts) {
+        const blocked = scope.role === "ADMIN" ? { hit: [] } : await blockedDepartments(p, ctx).catch(() => ({ hit: [] }));
+        if (!blocked.hit.length && !usable.includes(p)) usable.push(p);
+      }
+      for (const f of fallbackSuggestions(scope.role)) if (usable.length < 3 && !usable.includes(f)) usable.push(f);
+      result.suggestedActions = usable.slice(0, 5).map((p) => ({ label: p, prompt: p }));
+      // The same suggestions in the text, so they are visible wherever the answer is shown.
+      result.message = `${result.message}\n\nTry:\n${result.suggestedActions.map((a) => `• ${a.prompt}`).join("\n")}`;
     }
 
     if (decision.ai?.attempted && decision.ai.unavailable !== "disabled") {

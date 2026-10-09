@@ -80,6 +80,8 @@ const TOOL_POLICY = {
   get_authorized_ticket_reasons: READ_TICKETS,
   // Always the authenticated user's OWN dashboard numbers / notifications.
   get_my_dashboard: SELF("dashboard.read.self"),
+  // The dashboard numbers for the caller's own scope; the dashboard service applies the role's visibility.
+  get_dashboard_overview: READ_TICKETS,
   get_my_notifications: SELF("notifications.read.self"),
   get_tickets_by_department: STAFF_TICKETS,
   get_weekly_report: STAFF_TICKETS,

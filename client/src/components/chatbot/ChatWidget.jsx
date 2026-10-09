@@ -5,6 +5,7 @@ import { useTheme } from "@mui/material/styles";
 import CloseIcon from "@mui/icons-material/Close";
 import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ChatPanel from "./ChatPanel";
+import RobotAvatar, { hasRobotImage } from "./RobotAvatar";
 import { useChatbot } from "../../hooks/useChatbot";
 import { LAUNCHER_GRADIENT, chatThemeVars } from "./theme/chatTokens";
 import { bounce, glow, reducedMotion } from "./theme/chatStyles";
@@ -116,7 +117,7 @@ export default function ChatWidget({ onOpenDialog, role, firstName }) {
               ...reducedMotion,
             }}
           >
-            {open ? <CloseIcon fontSize="large" /> : <AutoAwesomeIcon fontSize="large" />}
+            {open ? <CloseIcon fontSize="large" /> : hasRobotImage ? <RobotAvatar size={56} ring /> : <AutoAwesomeIcon fontSize="large" />}
           </Fab>
         </Badge>
       )}

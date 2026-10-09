@@ -35,7 +35,9 @@ async function resetConversation(req, res) {
 async function suggestions(req, res) {
   const data = getSuggestions(req.user);
   if (!data) throw new ChatError(CODES.ACCESS_DENIED);
-  res.json({ success: true, data });
+  // The number on the Notifications card: the user's own unread count (same service as the bell).
+  const unread = await require("../services/notification.service").countUnread(req.user.id).catch(() => 0);
+  res.json({ success: true, data: { ...data, unreadNotifications: unread } });
 }
 
 async function feedback(req, res) {
