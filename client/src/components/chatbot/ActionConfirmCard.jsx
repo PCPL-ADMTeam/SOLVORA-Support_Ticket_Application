@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import { focusRing, reducedMotion } from "./theme/chatStyles";
 
@@ -17,6 +18,9 @@ const DONE = {
 export default function ActionConfirmCard({ action, state, onConfirm, onCancel, onEdit }) {
   const status = state?.status && state.status !== "PENDING" ? state.status : null;
   const busy = Boolean(state?.busy);
+  // Discarding a ticket that has been filled in asks first: what was entered would be lost.
+  const [discarding, setDiscarding] = useState(false);
+  const isTicket = action.title === "Raise ticket";
   const outcome = status ? DONE[status] : null;
 
   return (
@@ -47,7 +51,7 @@ export default function ActionConfirmCard({ action, state, onConfirm, onCancel, 
       {outcome ? (
         <Chip size="small" label={outcome.label} color={outcome.color} sx={{ mt: 1 }} role="status" />
       ) : (
-        <Stack direction="row" spacing={1} sx={{ mt: 1.5 }}>
+        <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} alignItems="center" flexWrap="wrap" useFlexGap>
           <Button
             variant="contained"
             size="small"
@@ -63,13 +67,26 @@ export default function ActionConfirmCard({ action, state, onConfirm, onCancel, 
             variant="outlined"
             size="small"
             disabled={busy}
-            onClick={() => onCancel(action)}
+            onClick={() => (isTicket ? setDiscarding(true) : onCancel(action))}
             aria-label="Cancel this change"
             sx={{ color: "var(--sv-text)", borderColor: "var(--sv-border)", borderRadius: "10px", ...focusRing }}
           >
             Cancel
           </Button>
-          {onEdit && (
+          {discarding && (
+            <Stack role="alertdialog" aria-label="Discard this ticket?" direction="row" spacing={1} alignItems="center" sx={{ width: "100%", p: 1, borderRadius: "10px", bgcolor: "var(--sv-accent-soft)" }}>
+              <Typography variant="body2" sx={{ flex: 1 }}>
+                Discard this ticket?
+              </Typography>
+              <Button size="small" variant="contained" disableElevation disabled={busy} onClick={() => onCancel(action)} sx={{ background: "var(--sv-accent-gradient)", color: "var(--sv-on-accent)", borderRadius: "10px", ...focusRing }}>
+                Yes, discard
+              </Button>
+              <Button size="small" variant="text" onClick={() => setDiscarding(false)} sx={{ color: "var(--sv-accent-ink)", borderRadius: "10px", ...focusRing }}>
+                Keep
+              </Button>
+            </Stack>
+          )}
+          {onEdit && !discarding && (
             <Button
               variant="text"
               size="small"

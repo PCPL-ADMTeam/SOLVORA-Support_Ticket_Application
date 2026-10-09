@@ -78,6 +78,9 @@ const HOME = {
   },
 };
 
+// Offered on every role's home, under the greeting: the "what's new" digest (same rules and scope as typed).
+const WHATS_NEW = { label: "What's New today", prompt: "What's new today" };
+
 const homeFor = (role) => HOME[role] || null;
 
-module.exports = { homeFor, HOME };
+module.exports = { homeFor, HOME, WHATS_NEW };

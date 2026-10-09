@@ -275,14 +275,12 @@ describe("EMPLOYEE", () => {
     r = await ask(users.empA, "Medium", a.conversationId);
     r = await ask(users.empA, "IT Support", a.conversationId);
     r = await ask(users.empA, "It shows a black screen after the logo.", a.conversationId);
-    r = await ask(users.empA, "no", a.conversationId);
-    r = await ask(users.empA, "no", a.conversationId);
     expect(r.pendingAction.summary).toBe('Raise the ticket "Laptop will not start" to IT Support with Medium priority.');
     expect(spies.createTicket).not.toHaveBeenCalled();
     const out = await confirm(users.empA, r.pendingAction.id);
     expect(out).toMatchObject({ status: "EXECUTED" });
-    expect(out.message).toMatch(/Ticket #2627100/);
-    expect(out.navigationTarget).toMatchObject({ type: "route", label: "View ticket" });
+    expect(out.message).toMatch(/Ticket number: 2627100/);
+    expect(out.navigationTarget).toMatchObject({ type: "route", label: "Open Ticket" });
     const [actor, payload] = spies.createTicket.mock.calls[0];
     expect(actor).toBe(users.empA); // the authenticated user, never a model/chat-supplied id
     expect(payload).toEqual({ title: "Laptop will not start", problemSummary: "It shows a black screen after the logo.", priorityId: "p_med", toDepartmentId: D1.id, ccUserIds: [] });

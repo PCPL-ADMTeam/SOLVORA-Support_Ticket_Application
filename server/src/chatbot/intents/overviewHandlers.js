@@ -44,30 +44,41 @@ async function dashboardOverview(ctx, params) {
 
   const o = await runTool("get_dashboard_overview", ctx, { ...(departmentId ? { departmentId } : {}) });
   const label = departmentName || scopeLabel(role);
+  // These counts are not limited to a date range (no dateFrom is sent), so the card says "All time".
+  const PERIOD = "All time";
 
   if (view === "priority") {
     const rows = o.byPriority.filter((p) => p.count > 0);
     if (!o.total) throw new ChatError(CODES.NO_RESULTS);
-    return reply(`${label}, tickets by priority (${o.total} in total):\n${(rows.length ? rows : o.byPriority).map((p) => `• ${p.priority}: ${p.count}`).join("\n")}`, {
+    const heading = `${label}, tickets by priority (${o.total} in total):`;
+    return reply(`${heading}\n${(rows.length ? rows : o.byPriority).map((p) => `• ${p.priority}: ${p.count}`).join("\n")}`, {
+      data: { overview: { kind: "priority", title: "Tickets by priority", scope: label, period: PERIOD, total: o.total, rows: o.byPriority.map((p) => ({ label: p.priority, count: p.count })) }, headline: heading.replace(/:$/, ".") },
       suggestedActions: [{ label: "Status summary", prompt: "Show status summary" }],
     });
   }
 
   if (view === "status") {
     if (!o.total) throw new ChatError(CODES.NO_RESULTS);
-    return reply(`${label}, tickets by status (${o.total} in total):\n${o.byStatus.map((s) => `• ${statusLabel(s.status)}: ${s.count}`).join("\n")}`, {
+    const heading = `${label}, tickets by status (${o.total} in total):`;
+    return reply(`${heading}\n${o.byStatus.map((s) => `• ${statusLabel(s.status)}: ${s.count}`).join("\n")}`, {
+      data: { overview: { kind: "status", title: "Tickets by status", scope: label, period: PERIOD, total: o.total, rows: o.byStatus.map((s) => ({ status: s.status, label: statusLabel(s.status), count: s.count })) }, headline: heading.replace(/:$/, ".") },
       suggestedActions: [{ label: "Priority summary", prompt: "Show priority summary" }],
     });
   }
 
   // workload
+  const COLUMNS = ["Open", "In progress", "Resolved", "Closed"];
   if (o.workload.length) {
     const lines = o.workload.map((w) => `• ${w.agentName}: ${w.openTickets} open, ${w.inProgressTickets} in progress, ${w.resolvedTickets} resolved, ${w.closedTickets} closed`);
-    return reply(`Employee workload${departmentName ? ` in ${departmentName}` : ""}:\n${lines.join("\n")}`);
+    const heading = `Employee workload${departmentName ? ` in ${departmentName}` : ""}`;
+    return reply(`${heading}:\n${lines.join("\n")}`, {
+      data: { overview: { kind: "workload", title: heading, scope: departmentName || label, period: PERIOD, columns: COLUMNS, note: "Open counts every ticket not yet Resolved or Closed.", rows: o.workload.map((w) => ({ label: w.agentName, values: [w.openTickets, w.inProgressTickets, w.resolvedTickets, w.closedTickets] })) }, headline: `${heading}.` },
+    });
   }
   if (o.departmentWorkload.length) {
     const lines = o.departmentWorkload.map((d) => `• ${d.departmentName}: ${d.openTickets} open, ${d.inProgressTickets} in progress, ${d.resolvedTickets} resolved, ${d.closedTickets} closed`);
     return reply(`Workload by department:\n${lines.join("\n")}\nAsk for one department to see its employees.`, {
+      data: { overview: { kind: "workload", title: "Workload by department", scope: label, period: PERIOD, columns: COLUMNS, rows: o.departmentWorkload.map((d) => ({ label: d.departmentName, values: [d.openTickets, d.inProgressTickets, d.resolvedTickets, d.closedTickets] })) }, headline: "Workload by department. Pick one to see its employees." },
       suggestedActions: o.departmentWorkload.slice(0, 4).map((d) => ({ label: d.departmentName, prompt: `Show employee workload in ${d.departmentName}` })),
     });
   }

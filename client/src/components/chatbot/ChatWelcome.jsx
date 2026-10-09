@@ -10,10 +10,11 @@ import BarChartOutlinedIcon from "@mui/icons-material/BarChartOutlined";
 import PeopleAltOutlinedIcon from "@mui/icons-material/PeopleAltOutlined";
 import ApartmentOutlinedIcon from "@mui/icons-material/ApartmentOutlined";
 import TrendingUpIcon from "@mui/icons-material/TrendingUp";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import RobotAvatar from "./RobotAvatar";
 import ChatErrorState from "./ChatErrorState";
-import { interactiveCard, rise, reducedMotion } from "./theme/chatStyles";
+import { focusRing, interactiveCard, rise, reducedMotion } from "./theme/chatStyles";
 
 const ICONS = {
   tickets: ConfirmationNumberOutlinedIcon,
@@ -57,6 +58,40 @@ export default function ChatWelcome({ intro, introError, onRetry, onSelect, disa
           </span>
         </Typography>
         <Typography sx={{ mt: 1.5, fontSize: 16, color: "var(--sv-text)" }}>{intro.welcomeSubtitle || "How can I help you today?"}</Typography>
+        {intro.whatsNew && (
+          <Box
+            component="button"
+            type="button"
+            onClick={() => onSelect(intro.whatsNew.prompt)}
+            disabled={disabled}
+            sx={{
+              mt: 1.75,
+              mx: "auto",
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: 0.75,
+              font: "inherit",
+              fontSize: 14,
+              fontWeight: 600,
+              cursor: "pointer",
+              px: 2,
+              py: 0.9,
+              borderRadius: 99,
+              color: "var(--sv-accent-ink)",
+              bgcolor: "var(--sv-accent-soft)",
+              border: "1px solid var(--sv-accent-ink)",
+              transition: "transform var(--sv-fast) ease, box-shadow var(--sv-fast) ease",
+              "&:hover:not(:disabled)": { transform: "translateY(-1px)", boxShadow: "var(--sv-card-shadow-hover)" },
+              "&:disabled": { opacity: 0.55, cursor: "default" },
+              ...focusRing,
+              ...reducedMotion,
+            }}
+          >
+            <AutoAwesomeIcon sx={{ fontSize: 17 }} />
+            {intro.whatsNew.label}
+          </Box>
+        )}
       </Box>
 
       {actions.length > 0 && (

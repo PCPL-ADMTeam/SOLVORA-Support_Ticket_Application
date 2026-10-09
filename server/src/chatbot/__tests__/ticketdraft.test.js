@@ -36,10 +36,8 @@ describe("the guided conversation (one question at a time)", () => {
     r = await ask(users.empA, "Finance", cid);
     expect(r.message).toMatch(/describe the problem/);
     r = await ask(users.empA, "The report is failing to refresh and shows an authentication error.", cid);
-    expect(r.message).toMatch(/add anyone in CC/);
-    r = await ask(users.empA, "No", cid);
-    expect(r.message).toMatch(/attach any files/);
-    r = await ask(users.empA, "No", cid);
+    // CC people and files are part of the form, never a separate question: the review follows the four required details.
+    expect(r.message).not.toMatch(/add anyone in CC|attach any files/);
     expect(r.message).toContain("Ticket Review");
     expect(r.message).toContain("Title: Power BI refresh is failing");
     expect(r.message).toContain("Priority: High");
@@ -51,12 +49,12 @@ describe("the guided conversation (one question at a time)", () => {
 
     const done = await ask(users.empA, "Yes, raise it.", cid);
     expect(create).toHaveBeenCalledTimes(1);
-    expect(done.message).toBe("Your ticket has been created successfully.\n\nTicket #2600099\nStatus: Open");
+    expect(done.message).toBe("Your ticket has been raised successfully. Ticket number: 2600099.\n\nTitle: Power BI refresh is failing\nDepartment: Finance\nPriority: High\nStatus: Open");
     const [actor, payload, files] = create.mock.calls[0];
     expect(actor.id).toBe(users.empA.id); // the authenticated user, nothing from the message
     expect(payload).toEqual({ title: "Power BI refresh is failing", problemSummary: "The report is failing to refresh and shows an authentication error.", priorityId: "p_high", toDepartmentId: "dept_finance", ccUserIds: [] });
     expect(files).toEqual([]);
-    expect(done.navigationTarget).toEqual({ type: "route", path: "/tickets/id_2600099", label: "View ticket" });
+    expect(done.navigationTarget).toEqual({ type: "route", path: "/tickets/id_2600099", label: "Open Ticket" });
   });
 
   test("a priority that is not one of the configured ones is asked again, never guessed", async () => {
@@ -131,7 +129,7 @@ describe("corrections keep everything else", () => {
     expect(x.message).toContain("Custom CC: Bob Employee");
     const done = await ask(users.empA, "yes", cid);
     expect(create.mock.calls[0][1].ccUserIds).toEqual(["u_empB"]);
-    expect(done.message).toMatch(/Ticket #2600099/);
+    expect(done.message).toMatch(/Ticket number: 2600099/);
   });
 
   test("an unknown person for CC is reported and nothing is added", async () => {
@@ -152,7 +150,7 @@ describe("corrections keep everything else", () => {
     const done = await ask(users.empA, "yes", cid);
     expect(create.mock.calls[0][1].ccUserIds).toContain("u_empB");
     expect(create.mock.calls[0][1].ccUserIds).not.toContain("u_empA");
-    expect(done.message).toMatch(/Ticket #2600099/);
+    expect(done.message).toMatch(/Ticket number: 2600099/);
   });
 
   test("CC: the person raising the ticket cannot be added by their own email", async () => {
@@ -201,7 +199,7 @@ describe("attachments (the ticket service's 5 files / 10 MB rules)", () => {
     const cid = await draft();
     await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png"), file("b.png")] });
     const r = await ask(users.empA, "yes", cid);
-    expect(r.message).toMatch(/Ticket #2600099/);
+    expect(r.message).toMatch(/Ticket number: 2600099/);
     expect(r.message).toMatch(/None of your 2 attachments could be saved/);
   });
 
@@ -279,7 +277,7 @@ describe("cancel, decline, fail, retry", () => {
     expect(retry.message).toMatch(/Here is the ticket again/);
     expect(retry.message).toContain("Title: Printer broken");
     const ok = await ask(users.empA, "yes", cid);
-    expect(ok.message).toMatch(/Ticket #2600099/);
+    expect(ok.message).toMatch(/Ticket number: 2600099/);
     expect(create).toHaveBeenCalledTimes(2);
   });
 
@@ -288,7 +286,7 @@ describe("cancel, decline, fail, retry", () => {
     const proof = { token: r.pendingAction.confirmationToken, conversationId: r.conversationId };
     const done = await service.confirmAction(users.empA, r.pendingAction.id, proof);
     expect(done.status).toBe("EXECUTED");
-    expect(done.message).toMatch(/Ticket #2600099/);
+    expect(done.message).toMatch(/Ticket number: 2600099/);
     await service.confirmAction(users.empA, r.pendingAction.id, proof);
     expect(create).toHaveBeenCalledTimes(1);
   });
@@ -337,8 +335,6 @@ describe("roles and the rest of the conversation", () => {
     expect(r.message).toMatch(/Which department should handle this ticket\?/);
     const cid = r.conversationId;
     await ask(users.empA, "Finance", cid);
-    await ask(users.empA, "No", cid);
-    await ask(users.empA, "No", cid);
     await ask(users.empA, "yes", cid);
     const [actor, payload] = create.mock.calls[0];
     expect(actor.id).toBe(users.empA.id);

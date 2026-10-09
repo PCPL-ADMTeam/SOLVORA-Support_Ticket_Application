@@ -414,9 +414,8 @@ each(["EMPLOYEE", "TEAMLEAD", "MANAGER"], (role) => {
     { say: "VPN keeps disconnecting", outcome: "CLARIFY", has: ["priority"] },
     { say: "High", outcome: "CLARIFY", has: ["department"] },
     { say: "BI/Copilot", outcome: "CLARIFY" },
-    { say: "The VPN drops every ten minutes and I lose my session.", outcome: "CLARIFY" },
-    { say: "No CC", outcome: "CLARIFY" },
-    { say: "No attachments", outcome: "PREVIEW", has: ["VPN keeps disconnecting", "High", "BI/Copilot"] },
+    // CC people and files are part of the form, so the review follows the four required details.
+    { say: "The VPN drops every ten minutes and I lose my session.", outcome: "PREVIEW", has: ["VPN keeps disconnecting", "High", "BI/Copilot"] },
     { say: "yes", check: (r, ctx) => {
       const c = callsOf(ctx.spies.createTicket)[0];
       if (!c) return "createTicket was not called after the user confirmed";

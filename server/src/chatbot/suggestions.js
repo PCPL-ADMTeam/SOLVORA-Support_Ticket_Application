@@ -1,5 +1,5 @@
 const { portalFor } = require("./roleScope");
-const { homeFor } = require("./roleHome");
+const { homeFor, WHATS_NEW } = require("./roleHome");
 
 // Role-specific starter prompts, served by GET /chatbot/suggestions so the
 // widget renders what the SERVER authorizes for the authenticated role — the
@@ -49,6 +49,7 @@ function getSuggestions(user) {
     suggestions: SUGGESTIONS[role],
     // The role's own home screen: greeting line, quick actions and the "What I can do" list.
     welcomeSubtitle: homeFor(role)?.subtitle || "How can I help you today?",
+    whatsNew: WHATS_NEW,
     quickActions: homeFor(role)?.quickActions || [],
     capabilities: homeFor(role)?.capabilities || [],
   };

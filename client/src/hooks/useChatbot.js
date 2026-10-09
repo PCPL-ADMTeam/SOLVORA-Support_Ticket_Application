@@ -3,6 +3,8 @@ import { chatbotApi } from "../api/chatbot";
 import { MAX_ATTACHMENTS_PER_TICKET, MAX_ATTACHMENTS_TOTAL_SIZE_BYTES, validateNewAttachments } from "../utils/attachmentValidation";
 
 const GENERIC_ERROR = "Something went wrong. Please try again.";
+// Conversations per page in the history panel.
+export const HISTORY_PAGE_SIZE = 10;
 
 // Turns any failure into a { code, message, retryable } the UI can show. The
 // server's own standardized error payload is preferred; network failures and
@@ -16,6 +18,15 @@ function toErrorInfo(err) {
   if (!err?.response) return { code: "NETWORK", message: "I couldn't reach the server. Check your connection and try again.", retryable: true };
   return { code: "UNKNOWN", message: GENERIC_ERROR, retryable: true };
 }
+
+// Releases a temporary browser URL; a browser without the call (or an already-released URL) is not an error.
+const revokeUrl = (url) => {
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    // nothing to release
+  }
+};
 
 // Tell the page that something changed (ticket pages listen and reload their data).
 const announceChange = () => window.dispatchEvent(new CustomEvent("solvora:data-changed"));
@@ -37,9 +48,11 @@ export function useChatbot({ pageTicketId = null } = {}) {
   const [introError, setIntroError] = useState(false);
   // Outcome of each proposed admin change, by pending-action id: { status, busy }.
   const [actionState, setActionState] = useState({});
-  // Earlier conversations: null until loaded, then [{ conversationId, title, status, lastMessageAt }].
+  // Earlier conversations, one page at a time: null until loaded, then [{ conversationId, title, status, lastMessageAt }].
   const [history, setHistory] = useState(null);
   const [historyError, setHistoryError] = useState(false);
+  const [historyPage, setHistoryPage] = useState({ page: 1, totalPages: 1, total: 0 });
+  const historyPageRef = useRef(1);
   // Object URLs for thumbnails of the files attached in this session, by attachment id.
   const [previews, setPreviews] = useState({});
   const conversationRef = useRef(null);
@@ -163,15 +176,47 @@ export function useChatbot({ pageTicketId = null } = {}) {
   const confirmAction = useCallback((action) => resolveAction(action, "confirm"), [resolveAction]);
   const cancelAction = useCallback((action) => resolveAction(action, "cancel"), [resolveAction]);
 
-  const loadHistory = useCallback(async () => {
+  // One page of the history. The server answers with the page it actually used (a page that no longer
+  // exists after a delete becomes the last one), so the list never lands on an empty page.
+  const loadHistory = useCallback(async (page = historyPageRef.current) => {
     setHistoryError(false);
     try {
-      const { data } = await chatbotApi.listConversations();
-      setHistory(data.data.conversations);
+      const { data } = await chatbotApi.listConversations({ page, pageSize: HISTORY_PAGE_SIZE });
+      const d = data.data;
+      const info = { page: d.page ?? 1, totalPages: d.totalPages ?? 1, total: d.total ?? d.conversations.length };
+      historyPageRef.current = info.page;
+      setHistoryPage(info);
+      setHistory(d.conversations);
+      return true;
     } catch {
       setHistoryError(true);
+      return false;
     }
   }, []);
+
+  // The conversation on screen was deleted: start a fresh chat so nothing is sent to a conversation
+  // that no longer exists.
+  const forgetOpenConversation = useCallback((deletedIds) => {
+    const open = conversationRef.current;
+    if (!open || (deletedIds && !deletedIds.includes(open))) return false;
+    conversationRef.current = null;
+    setConversationId(null);
+    setMessages([]);
+    setFailure(null);
+    setActionState({});
+    return true;
+  }, []);
+
+  // After a delete: drop the rows at once, then re-read the same page so counts and paging stay right.
+  const afterDelete = useCallback(
+    async (deletedIds) => {
+      setHistory((prev) => (prev && deletedIds ? prev.filter((c) => !deletedIds.includes(c.conversationId)) : deletedIds ? prev : []));
+      const removedOpen = forgetOpenConversation(deletedIds);
+      await loadHistory(historyPageRef.current);
+      return removedOpen;
+    },
+    [forgetOpenConversation, loadHistory]
+  );
 
   // Reopen an earlier conversation and continue it. Replayed proposals have no
   // confirmation token (the server never resends it), so they are shown as
@@ -207,58 +252,145 @@ export function useChatbot({ pageTicketId = null } = {}) {
     }
   }, []);
 
-  const deleteConversation = useCallback(async (id) => {
-    try {
-      await chatbotApi.deleteConversation(id);
-    } catch {
-      return false;
-    }
-    setHistory((prev) => (prev ? prev.filter((c) => c.conversationId !== id) : prev));
-    if (conversationRef.current === id) {
-      conversationRef.current = null;
-      setConversationId(null);
-      setMessages([]);
-      setFailure(null);
-      setActionState({});
-    }
-    return true;
-  }, []);
+  // Deletes report { ok, deleted, removedOpen } or { ok: false, code, message }; they never throw.
+  const deleteConversation = useCallback(
+    async (id) => {
+      try {
+        await chatbotApi.deleteConversation(id);
+      } catch (err) {
+        return { ok: false, ...toErrorInfo(err) };
+      }
+      return { ok: true, deleted: 1, removedOpen: await afterDelete([id]) };
+    },
+    [afterDelete]
+  );
 
-  // ---- files for the ticket being raised -------------------------------------------
-  // A draft is "open" from the first ticket-draft reply until a reply says it is finished.
-  const draftView = useMemo(() => {
+  const deleteConversations = useCallback(
+    async (ids) => {
+      let result;
+      try {
+        const { data } = await chatbotApi.deleteConversations(ids);
+        result = data.data;
+      } catch (err) {
+        return { ok: false, ...toErrorInfo(err) };
+      }
+      return { ok: true, deleted: result.deleted, removedOpen: await afterDelete(result.deletedIds || ids) };
+    },
+    [afterDelete]
+  );
+
+  const deleteAllConversations = useCallback(async () => {
+    let result;
+    try {
+      const { data } = await chatbotApi.deleteAllConversations();
+      result = data.data;
+    } catch (err) {
+      return { ok: false, ...toErrorInfo(err) };
+    }
+    historyPageRef.current = 1;
+    return { ok: true, deleted: result.deleted, removedOpen: await afterDelete(null) };
+  }, [afterDelete]);
+
+  // ---- the ticket being raised: one form, one review, one Raise Ticket ---------------------------
+  // The draft is "open" from the first ticket-draft reply until a reply says it is finished. `draftKey` is the
+  // message that currently shows it: only that one is editable (older copies are read-only or hidden).
+  const { draftView, draftKey } = useMemo(() => {
     let open = null;
+    let key = null;
     for (const m of messages) {
       if (m.role !== "assistant") continue;
-      if (m.data?.ticketDraftClosed) open = null;
-      else if (m.data?.ticketDraft) open = m.data.ticketDraft;
+      if (m.data?.ticketDraftClosed) {
+        open = null;
+        key = null;
+      } else if (m.data?.ticketDraft) {
+        open = m.data.ticketDraft;
+        key = m.key;
+      }
     }
-    return open;
+    return { draftView: open, draftKey: key };
   }, [messages]);
 
   const pushAssistant = useCallback((payload) => {
     setMessages((prev) => [...prev, { key: nextKey(), role: "assistant", at: Date.now(), data: {}, ...payload }]);
   }, []);
 
+  // The form changes in place (its files list, for example): the draft inside its own message is replaced,
+  // so what the user has typed in the form is not lost and no new chat message appears.
+  const patchDraft = useCallback((view) => {
+    setMessages((prev) => {
+      let at = -1;
+      for (let i = prev.length - 1; i >= 0; i -= 1) {
+        const m = prev[i];
+        if (m.role === "assistant" && m.data?.ticketDraft?.id === view.id && !m.data.pendingAction) {
+          at = i;
+          break;
+        }
+      }
+      if (at < 0) return prev;
+      const next = prev.slice();
+      next[at] = { ...prev[at], data: { ...prev[at].data, ticketDraft: view } };
+      return next;
+    });
+  }, []);
+
+  // Temporary browser URLs for thumbnails of files chosen in this session. They are released when a file is
+  // removed, when the ticket is finished or cancelled, and when the widget goes away.
+  const previewsRef = useRef({});
+  previewsRef.current = previews;
+  const releasePreview = useCallback((id) => {
+    setPreviews((prev) => {
+      if (!prev[id]) return prev;
+      revokeUrl(prev[id]);
+      const { [id]: _gone, ...rest } = prev;
+      return rest;
+    });
+  }, []);
+  useEffect(() => {
+    if (draftView || !Object.keys(previewsRef.current).length) return;
+    Object.values(previewsRef.current).forEach((u) => revokeUrl(u));
+    setPreviews({});
+  }, [draftView]);
+  useEffect(
+    () => () => {
+      Object.values(previewsRef.current).forEach((u) => revokeUrl(u));
+    },
+    []
+  );
+
+  // Files for the open ticket. While the form is showing they are added in place; at the review the server builds a
+  // fresh review. `inline`: the caller shows the error itself (the form does) instead of a chat message.
   const uploadFiles = useCallback(
-    async (files) => {
-      if (!files?.length || loadingRef.current) return;
+    async (files, { inline = false } = {}) => {
+      const fail = (text) => {
+        if (inline) return { error: text };
+        pushAssistant({ text, intent: "ticket_draft", error: { code: "ATTACHMENT", message: text, retryable: false } });
+        return { error: text };
+      };
+      if (!files?.length || loadingRef.current) return {};
       if (!conversationRef.current || !draftView) {
-        pushAssistant({ text: 'Say "raise a ticket" first, then attach your files.', intent: "ticket_draft" });
-        return;
+        const text = 'Say "raise a ticket" first, then attach your files.';
+        if (inline) return { error: text };
+        pushAssistant({ text, intent: "ticket_draft" });
+        return { error: text };
       }
       const have = draftView.attachments || [];
-      const { validFiles, error } = validateNewAttachments(files, {
+      // The same file twice is not added twice.
+      const fresh = files.filter((f) => !have.some((a) => a.name === f.name && a.size === f.size));
+      if (!fresh.length) return fail("That file is already attached.");
+      const { validFiles, error } = validateNewAttachments(fresh, {
         remainingSlots: Math.max((draftView.limits?.maxFiles || MAX_ATTACHMENTS_PER_TICKET) - have.length, 0),
         remainingBytes: Math.max(MAX_ATTACHMENTS_TOTAL_SIZE_BYTES - have.reduce((s, a) => s + a.size, 0), 0),
       });
-      if (error) pushAssistant({ text: error, intent: "ticket_draft", error: { code: "ATTACHMENT", message: error, retryable: false } });
-      if (!validFiles.length) return;
+      let problem = error || null;
+      if (problem) fail(problem);
+      if (!validFiles.length) return { error: problem };
+      const quiet = draftView.step !== "REVIEW";
       loadingRef.current = true;
       setLoading(true);
       try {
         const form = new FormData();
         form.append("conversationId", conversationRef.current);
+        if (quiet) form.append("quiet", "1");
         validFiles.forEach((f) => form.append("files", f));
         const { data } = await chatbotApi.uploadDraftFiles(form);
         const r = data.data;
@@ -272,30 +404,60 @@ export function useChatbot({ pageTicketId = null } = {}) {
           }
           return next;
         });
-        pushAssistant({ text: r.message, messageId: r.messageId, intent: "ticket_draft", data: r.data, suggestedActions: r.suggestedActions });
+        if (r.quiet) patchDraft(r.data.ticketDraft);
+        else pushAssistant({ text: r.message, messageId: r.messageId, intent: "ticket_draft", data: r.data, suggestedActions: r.suggestedActions });
+        return { ok: true, error: problem };
       } catch (err) {
-        const info = toErrorInfo(err);
-        pushAssistant({ text: info.message, intent: "ticket_draft", error: { ...info, retryable: false } });
+        problem = toErrorInfo(err).message;
+        if (!inline) pushAssistant({ text: problem, intent: "ticket_draft", error: { code: "ATTACHMENT", message: problem, retryable: false } });
+        return { error: problem };
       } finally {
         loadingRef.current = false;
         setLoading(false);
       }
     },
-    [draftView, pushAssistant]
+    [draftView, pushAssistant, patchDraft]
   );
 
   const removeAttachment = useCallback(
-    async (attachmentId) => {
-      if (loadingRef.current || !conversationRef.current) return;
+    async (attachmentId, { inline = false } = {}) => {
+      if (loadingRef.current || !conversationRef.current) return {};
+      const quiet = draftView?.step !== "REVIEW";
       loadingRef.current = true;
       setLoading(true);
       try {
-        const { data } = await chatbotApi.removeDraftFile(attachmentId, conversationRef.current);
+        const { data } = await chatbotApi.removeDraftFile(attachmentId, conversationRef.current, quiet);
         const r = data.data;
-        pushAssistant({ text: r.message, messageId: r.messageId, intent: "ticket_draft", data: r.data, suggestedActions: r.suggestedActions });
+        releasePreview(attachmentId);
+        if (r.quiet) patchDraft(r.data.ticketDraft);
+        else pushAssistant({ text: r.message, messageId: r.messageId, intent: "ticket_draft", data: r.data, suggestedActions: r.suggestedActions });
+        return { ok: true };
       } catch (err) {
         const info = toErrorInfo(err);
-        pushAssistant({ text: info.message, intent: "ticket_draft", error: { ...info, retryable: false } });
+        if (!inline) pushAssistant({ text: info.message, intent: "ticket_draft", error: { ...info, retryable: false } });
+        return { error: info.message };
+      } finally {
+        loadingRef.current = false;
+        setLoading(false);
+      }
+    },
+    [draftView, pushAssistant, patchDraft, releasePreview]
+  );
+
+  // "Review Ticket": the form's fields go to the server in one request. It answers with the review (the only
+  // place a ticket can be raised from) or a clear reason, which the form shows next to the fields it keeps.
+  const reviewDraft = useCallback(
+    async (fields) => {
+      if (loadingRef.current || !conversationRef.current) return { error: "Please wait a moment and try again." };
+      loadingRef.current = true;
+      setLoading(true);
+      try {
+        const { data } = await chatbotApi.reviewDraft({ conversationId: conversationRef.current, ...fields });
+        const r = data.data;
+        pushAssistant({ text: r.message, messageId: r.messageId, intent: "ticket_draft", data: r.data, suggestedActions: r.suggestedActions });
+        return { ok: true };
+      } catch (err) {
+        return { error: toErrorInfo(err).message };
       } finally {
         loadingRef.current = false;
         setLoading(false);
@@ -304,6 +466,38 @@ export function useChatbot({ pageTicketId = null } = {}) {
     [pushAssistant]
   );
 
+  const searchDraftCc = useCallback(async (q) => {
+    if (!conversationRef.current) return { users: [] };
+    try {
+      const { data } = await chatbotApi.searchDraftCc(conversationRef.current, q);
+      return { users: data.data.users || [] };
+    } catch (err) {
+      return { users: [], error: toErrorInfo(err).message };
+    }
+  }, []);
+
+  // Opens an attached file in a new tab (before the ticket exists, from the user's own draft only).
+  const openAttachment = useCallback(async (attachmentId) => {
+    const local = previewsRef.current[attachmentId];
+    if (local) {
+      window.open(local, "_blank");
+      return {};
+    }
+    // The tab is opened first (a click is required for that); the file is put into it when it arrives.
+    const tab = window.open("about:blank", "_blank");
+    try {
+      const { data } = await chatbotApi.fetchDraftFile(attachmentId, conversationRef.current);
+      const url = URL.createObjectURL(data);
+      if (tab) tab.location.href = url;
+      else window.open(url, "_blank");
+      setTimeout(() => revokeUrl(url), 60000);
+      return {};
+    } catch (err) {
+      tab?.close();
+      return { error: toErrorInfo(err).message };
+    }
+  }, []);
+
   // The Edit button on a ticket review: the review is set aside and the assistant asks what to change.
   const supersedeAction = useCallback((actionId) => setActionState((prev) => ({ ...prev, [actionId]: { status: "SUPERSEDED", busy: false } })), []);
 
@@ -311,5 +505,5 @@ export function useChatbot({ pageTicketId = null } = {}) {
     await chatbotApi.sendFeedback(messageId, rating);
   }, []);
 
-  return { messages, conversationId, loading, failure, intro, introError, loadIntro, send, retry, reset, sendFeedback, actionState, confirmAction, cancelAction, draftView, previews, uploadFiles, removeAttachment, supersedeAction, history, historyError, loadHistory, openConversation, deleteConversation };
+  return { messages, conversationId, loading, failure, intro, introError, loadIntro, send, retry, reset, sendFeedback, actionState, confirmAction, cancelAction, draftView, draftKey, previews, uploadFiles, removeAttachment, reviewDraft, searchDraftCc, openAttachment, supersedeAction, history, historyError, historyPage, loadHistory, openConversation, deleteConversation, deleteConversations, deleteAllConversations };
 }

@@ -8,6 +8,7 @@ jest.mock("../../config/prisma", () => require("../testkit/prismaMock"));
 const dashboardService = require("../../services/dashboard.service");
 const service = require("../chatbot.service");
 const { users, seedDefault, prismaMock, daysAgo } = require("../testkit/fixtures");
+const { partsIn, startOfLocalDay } = require("../period");
 
 const db = prismaMock.__db;
 const proofs = new Map();
@@ -48,11 +49,40 @@ describe("dashboard numbers (the same service the Dashboard page uses)", () => {
   test("summary shows both tabs with status counts", async () => {
     const r = await ask(users.empA, "give me my dashboard summary");
     expect(r.intent).toBe("dashboard_summary");
-    expect(r.message).toContain("Your ticket summary (the last 30 days)");
+    expect(r.message).toMatch(/^Your ticket summary — Last 30 days \(/);
     expect(r.message).toContain(`Raised by you: ${mine(users.empA, "created").length}`);
     expect(r.message).toContain(`Assigned to you: ${mine(users.empA, "assigned").length}`);
     expect(r.message).toMatch(/In Progress 1/);
     expect(dashboardService.getStats).toHaveBeenCalledWith(expect.objectContaining({ id: users.empA.id }), expect.objectContaining({ scope: "created", days: 30 }));
+    // The structured card: one section per tab, each with its own status and priority counts.
+    const report = r.data.summaryReport;
+    expect(report.period.label).toBe("Last 30 days");
+    expect(report.sections.map((s) => [s.key, s.label, s.total])).toEqual([
+      ["created", "Raised by you", mine(users.empA, "created").length],
+      ["assigned", "Assigned to you", mine(users.empA, "assigned").length],
+    ]);
+    expect(report.sections[0].byStatus.find((s) => s.status === "IN_PROGRESS")).toEqual({ status: "IN_PROGRESS", label: "In Progress", count: 1 });
+    expect(r.data.headline).toBe("Here's your ticket summary for the last 30 days.");
+    expect(r.navigationTarget).toMatchObject({ path: "/portal", label: "View Dashboard" });
+  });
+
+  test("'last 30 days' covers exactly the last 30 days, as the Dashboard page sends it (not all time)", async () => {
+    const before = Date.now();
+    await ask(users.empA, "give me my dashboard summary");
+    const { dateFrom } = dashboardService.getStats.mock.calls[0][1];
+    const from = new Date(dateFrom).getTime();
+    expect(from).toBeGreaterThanOrEqual(before - 30 * 86400000 - 1000);
+    expect(from).toBeLessThanOrEqual(Date.now() - 30 * 86400000 + 1000);
+  });
+
+  test("raised-by and assigned-to priorities are never mixed", async () => {
+    // Alice raised 2 High tickets and has none assigned; Carol has those 2 assigned and raised none.
+    const alice = (await ask(users.empA, "give me my dashboard summary")).data.summaryReport.sections;
+    expect(alice.find((s) => s.key === "created").byPriority.find((p) => p.priority === "High").count).toBe(2);
+    expect(alice.find((s) => s.key === "assigned").byPriority.every((p) => p.count === 0)).toBe(true);
+    const carol = (await ask(users.empC, "give me my dashboard summary")).data.summaryReport.sections;
+    expect(carol.find((s) => s.key === "created").total).toBe(0);
+    expect(carol.find((s) => s.key === "assigned").byPriority.find((p) => p.priority === "High").count).toBe(2);
   });
 
   test("counts are answered per dashboard tab, never guessed", async () => {
@@ -67,7 +97,7 @@ describe("dashboard numbers (the same service the Dashboard page uses)", () => {
 
   test("a date range in the question is passed to the dashboard", async () => {
     await ask(users.empA, "how many tickets have I created in the last 7 days");
-    expect(dashboardService.getStats).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: "created", dateFrom: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) }));
+    expect(dashboardService.getStats).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ scope: "created", dateFrom: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/) }));
   });
 
   test("the user is always the authenticated one", async () => {
@@ -86,6 +116,26 @@ describe("notifications", () => {
     expect((await ask(users.empA, "how many unread notifications do I have")).message).toBe("You have 2 unread notifications.");
     expect((await ask(users.empA, "show notifications related to ticket 2627001")).message).toMatch(/1 notification for ticket 2627001/);
     expect((await ask(users.empC, "do I have unread notifications")).message).toBe("You have no unread notifications.");
+  });
+
+  test("the answer carries each notification as a structured item (newest first), with unread and total kept apart", async () => {
+    const all = await ask(users.empA, "show my notifications");
+    const { notifications } = all.data;
+    expect(notifications).toMatchObject({ unread: 2, shown: 3, matching: 3 });
+    expect(notifications.items.map((n) => [n.id, n.isRead])).toEqual([["n1", false], ["n2", false], ["n3", true]]);
+    expect(notifications.items[0]).toMatchObject({ type: "STATUS_CHANGED", title: "Status changed", ticketNumber: "2627001", ticketRouteId: "id_2627001" });
+    expect(notifications.items[0].at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    expect(all.data.headline).toBe("3 notifications.");
+    // Each card has its own Open Ticket button, so no extra link is put under the answer.
+    expect(all.navigationTarget).toBeNull();
+  });
+
+  test("a notification about a ticket the user can no longer see has no ticket link", async () => {
+    // 2627003 is a Finance ticket: outside Alice's scope, though she has a (stale) notification about it.
+    db.notifications.push({ id: "n4", userId: users.empA.id, ticketId: "id_2627003", type: "STATUS_CHANGED", title: "Moved", message: "Ticket moved", isRead: false, createdAt: daysAgo(0.05) });
+    const items = (await ask(users.empA, "show my notifications")).data.notifications.items;
+    expect(items.find((n) => n.id === "n4").ticketRouteId).toBeNull();
+    expect(items.find((n) => n.id === "n1").ticketRouteId).toBe("id_2627001");
   });
 
   test("mark all as read: preview first, then only the caller's rows change", async () => {
@@ -215,39 +265,83 @@ describe("ticket dates", () => {
 describe("what's new", () => {
   const ROLE_USERS = () => ({ EMPLOYEE: users.empA, TEAMLEAD: users.tlD1, MANAGER: users.mgrD2, ADMIN: users.admin });
 
+  const digestTickets = (r) => [...(r.data.digest.assigned?.tickets || []), ...r.data.digest.updated.tickets];
+
   test.each(["what new", "what's new", "whats new", "anything new?", "what did I miss", "catch me up"])("'%s' gives a digest to every role", async (q) => {
     for (const [role, user] of Object.entries(ROLE_USERS())) {
       const r = await ask(user, q);
       expect({ role, intent: r.intent }).toEqual({ role, intent: "whats_new" });
-      expect(r.message).toMatch(/^What's new \(the last 7 days\)|^Nothing new/);
+      expect(r.message).toMatch(/^What's New — Last 7 days \(/);
+      expect(r.data.digest.period.label).toBe("Last 7 days");
     }
   });
 
   test("an Employee sees their own notifications and tickets, nothing departmental", async () => {
     const r = await ask(users.empA, "what's new");
-    expect(r.message).toContain("• Notifications: 2 unread");
-    expect(r.message).toContain("• Your tickets updated:");
-    expect(r.message).not.toMatch(/New tickets created|nobody assigned|Department tickets/);
-    expect(r.message).toContain("Latest notifications:");
+    const { digest } = r.data;
+    expect(digest.notifications.unread).toBe(2);
+    expect(r.message).toContain("• Unread (any date): 2");
+    expect(digest.updated.label).toBe("Your tickets");
+    expect(digest.created).toBeNull();
+    expect(digest.unassigned).toBeNull();
+    expect(r.message).not.toMatch(/Created|nobody assigned|Department tickets/);
     expect(JSON.stringify(r)).not.toContain("BOB-PRIVATE");
-    for (const t of r.data.tickets) expect([t.raisedBy, t.assignedTo]).toContain("Alice Employee");
+    for (const t of digestTickets(r)) expect([t.raisedBy, t.assignedTo]).toContain("Alice Employee");
   });
 
   test("staff also see new and unassigned tickets, only inside their departments", async () => {
     const tl = await ask(users.tlD1, "what's new");
-    expect(tl.message).toMatch(/Department tickets updated: \d+/);
-    expect(tl.message).toMatch(/New tickets created: \d+/);
-    expect(tl.message).toMatch(/Open tickets with nobody assigned: \d+/);
-    expect(tl.message).toMatch(/Assigned to you and updated: \d+/);
-    for (const t of tl.data.tickets) expect(t.department).toBe("IT Support");
+    expect(tl.data.digest.updated.label).toBe("Department tickets");
+    expect(tl.message).toMatch(/Created in the last 7 days: \d+/);
+    expect(tl.message).toMatch(/Open with nobody assigned \(now\): \d+/);
+    expect(tl.data.digest.assigned).toMatchObject({ count: expect.any(Number) });
+    for (const t of digestTickets(tl)) expect(t.department).toBe("IT Support");
     const mgr = await ask(users.mgrD2, "what's new");
+    expect(mgr.data.digest.assigned).toBeNull();
     expect(mgr.message).not.toMatch(/Assigned to you/);
-    for (const t of mgr.data.tickets) expect(t.department).toBe("Finance");
-    expect((await ask(users.admin, "what's new")).message).toMatch(/Tickets updated: \d+/);
+    for (const t of digestTickets(mgr)) expect(t.department).toBe("Finance");
+    expect((await ask(users.admin, "what's new")).data.digest.updated.label).toBe("All tickets");
   });
 
-  test("a range changes the window, and nothing odd is printed for a quiet account", async () => {
-    expect((await ask(users.empA, "what's new today")).message).toMatch(/^What's new \(today\)|^Nothing new in today/);
-    expect((await ask(users.empC, "what's new")).message).not.toMatch(/undefined|NaN/);
+  test("'today' means since the user's own midnight, and the answer says so", async () => {
+    const timeZone = "Asia/Kolkata";
+    const p = partsIn(new Date(), timeZone);
+    const midnight = startOfLocalDay(p.year, p.month, p.day, timeZone);
+    for (const t of db.tickets) t.updatedAt = new Date(midnight.getTime() - 60000); // a minute before today
+    db.tickets.find((t) => t.ticketNumber === "2627001").updatedAt = new Date(Date.now() - 1000); // just now
+    const r = await service.sendMessage(users.empA, { message: "What's new today", timeZone });
+    expect(r.data.digest.period).toMatchObject({ label: "Today", timeZone, from: midnight.toISOString() });
+    expect(r.message).toMatch(/^What's New — Today \(/);
+    expect(r.data.digest.updated.count + (r.data.digest.assigned?.count || 0)).toBe(1);
+    expect(digestTickets(r).map((t) => t.ticketNumber)).toEqual(["2627001"]);
+    expect(r.message).toContain("Updated today: 1");
+    // Unread notifications are a running total, never presented as today's activity.
+    expect(r.message).toContain("Unread (any date): 2");
+  });
+
+  test("an unknown time zone falls back to UTC instead of failing", async () => {
+    const r = await service.sendMessage(users.empA, { message: "What's new today", timeZone: "Mars/Olympus" });
+    expect(r.data.digest.period.timeZone).toBe("UTC");
+    expect(r.data.digest.period.from).toBe(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+  });
+
+  test("a ticket shown under 'Assigned to you' is not shown again under 'Your tickets'", async () => {
+    // Both of Carol's tickets are assigned to her and were updated yesterday.
+    const r = await ask(users.empC, "what's new");
+    const { assigned, updated } = r.data.digest;
+    expect(assigned.tickets.map((t) => t.ticketNumber).sort()).toEqual(["2627001", "2627004"]);
+    expect(updated.count).toBe(2);
+    expect(updated.tickets).toEqual([]);
+    expect(updated.skippedAssigned).toBe(true);
+  });
+
+  test("with nothing new the answer says 'all caught up' and fabricates nothing", async () => {
+    db.notifications = db.notifications.filter((n) => n.userId !== users.empA.id);
+    for (const t of db.tickets) t.updatedAt = daysAgo(30);
+    const r = await ask(users.empA, "what's new today");
+    expect(r.data.digest).toMatchObject({ caughtUp: true, notifications: { unread: 0, inPeriod: 0, latest: [] }, updated: { count: 0, tickets: [] } });
+    expect(r.message).toContain("You're all caught up.");
+    expect(r.data.headline).toBe("You're all caught up for today.");
+    expect(r.message).not.toMatch(/undefined|NaN/);
   });
 });

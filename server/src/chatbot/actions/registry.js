@@ -430,10 +430,16 @@ const ACTIONS = {
           warning = `\n\n⚠ ${saved === 0 ? "None of your" : `Only ${saved} of your`} ${files.length} attachment${files.length === 1 ? "" : "s"} could be saved to the ticket (file storage is unavailable). Please add ${saved === 0 ? "them" : "the rest"} again from the ticket page once it is fixed.`;
         }
       }
-      return { message: `Your ticket has been created successfully.
+      return {
+        message: `Your ticket has been raised successfully. Ticket number: ${t.ticketNumber}.
 
-Ticket #${t.ticketNumber}
-Status: ${STATUS_LABEL[t.status] || t.status}${warning}`, ticketId: t.id, ticketNumber: t.ticketNumber };
+Title: ${f.title}
+Department: ${f.toDepartmentName}
+Priority: ${f.priorityName}
+Status: ${STATUS_LABEL[t.status] || t.status}${warning}`,
+        ticketId: t.id,
+        ticketNumber: t.ticketNumber,
+      };
     },
   },
 

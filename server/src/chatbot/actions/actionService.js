@@ -190,7 +190,7 @@ async function confirmAction(user, actionId, proof = {}) {
   }
   await saveResultMessage(row, message);
   // A link the page opens client-side; the ticket page itself re-checks access.
-  const navigationTarget = status === "EXECUTED" && ticketId ? { type: "route", path: `/tickets/${ticketId}`, label: "View ticket" } : null;
+  const navigationTarget = status === "EXECUTED" && ticketId ? { type: "route", path: `/tickets/${ticketId}`, label: "Open Ticket" } : null;
   // Show the ticket as it is now, through the same authorized, field-filtered summary tool
   // used for "summarize ticket"; any failure here must not change the result of the action.
   let summary = null;

@@ -6,7 +6,7 @@ const { ChatError, CODES } = require("./chatbot.errors");
 // axios client can be reused unchanged.
 async function sendMessage(req, res) {
   const { message, conversationId } = req.body;
-  const result = await service.sendMessage(req.user, { message, conversationId, pageTicketId: req.body.pageTicketId });
+  const result = await service.sendMessage(req.user, { message, conversationId, pageTicketId: req.body.pageTicketId, timeZone: req.body.timeZone });
   res.json({ success: true, data: result });
 }
 
@@ -16,7 +16,17 @@ async function getConversation(req, res) {
 }
 
 async function listConversations(req, res) {
-  res.json({ success: true, data: await service.listConversations(req.user) });
+  res.json({ success: true, data: await service.listConversations(req.user, { page: req.query.page, pageSize: req.query.pageSize }) });
+}
+
+// Bulk deletes: the scope is always the authenticated user's own conversations; the body only
+// says WHICH of them (never whose).
+async function deleteConversations(req, res) {
+  res.json({ success: true, data: await service.deleteConversations(req.user, req.body.conversationIds) });
+}
+
+async function deleteAllConversations(req, res) {
+  res.json({ success: true, data: await service.deleteAllConversations(req.user) });
 }
 
 async function resumeConversation(req, res) {
@@ -54,11 +64,30 @@ async function cancelAction(req, res) {
 }
 
 async function uploadDraftFiles(req, res) {
-  res.json({ success: true, data: await service.addDraftFiles(req.user, { conversationId: req.body.conversationId, files: req.files || [] }) });
+  res.json({ success: true, data: await service.addDraftFiles(req.user, { conversationId: req.body.conversationId, files: req.files || [], quiet: req.body.quiet === "1" }) });
 }
 
 async function removeDraftFile(req, res) {
-  res.json({ success: true, data: await service.removeDraftFile(req.user, { conversationId: req.query.conversationId, attachmentId: req.params.attachmentId }) });
+  res.json({ success: true, data: await service.removeDraftFile(req.user, { conversationId: req.query.conversationId, attachmentId: req.params.attachmentId, quiet: req.query.quiet === "1" }) });
+}
+
+async function reviewDraft(req, res) {
+  res.json({ success: true, data: await service.submitDraftForm(req.user, req.body) });
+}
+
+async function searchDraftCc(req, res) {
+  res.json({ success: true, data: await service.searchDraftCc(req.user, { conversationId: req.query.conversationId, q: req.query.q }) });
+}
+
+// The owner's own file, shown inline only for images and PDFs; anything else downloads.
+async function getDraftFile(req, res) {
+  const f = await service.getDraftFile(req.user, { conversationId: req.query.conversationId, attachmentId: req.params.attachmentId });
+  const inline = /^image\/(png|jpe?g|gif|webp)$/i.test(f.mimeType) || f.mimeType === "application/pdf";
+  res.setHeader("Content-Type", inline ? f.mimeType : "application/octet-stream");
+  res.setHeader("Content-Disposition", `${inline ? "inline" : "attachment"}; filename*=UTF-8''${encodeURIComponent(f.fileName)}`);
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cache-Control", "private, no-store");
+  res.send(f.buffer);
 }
 
 async function aiDiagnostics(req, res) {
@@ -69,4 +98,4 @@ async function missesReport(req, res) {
   res.json({ success: true, data: await service.missesReport(req.user, { days: req.query.days }) });
 }
 
-module.exports = { uploadDraftFiles, removeDraftFile, missesReport, sendMessage, getConversation, listConversations, resumeConversation, deleteConversation, resetConversation, suggestions, feedback, confirmAction, cancelAction, aiDiagnostics };
+module.exports = { uploadDraftFiles, removeDraftFile, reviewDraft, searchDraftCc, getDraftFile, missesReport, sendMessage, getConversation, listConversations, resumeConversation, deleteConversation, deleteConversations, deleteAllConversations, resetConversation, suggestions, feedback, confirmAction, cancelAction, aiDiagnostics };

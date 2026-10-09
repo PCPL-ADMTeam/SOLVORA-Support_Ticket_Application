@@ -13,7 +13,9 @@ import { popIn, reducedMotion, srOnly } from "./theme/chatStyles";
 // delegated up so the panel stays router-agnostic and easy to test.
 // `role` / `firstName` are display-only (theme + greeting).
 const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavigate, role, firstName, expanded = false, onToggleExpand }, ref) {
-  const { messages, loading, failure, intro, introError, loadIntro, send, retry, reset, sendFeedback, actionState, confirmAction, cancelAction, history, historyError, loadHistory, openConversation, deleteConversation, conversationId, draftView, previews, uploadFiles, removeAttachment, supersedeAction } = chat;
+  const { messages, loading, failure, intro, introError, loadIntro, send, retry, reset, sendFeedback, actionState, confirmAction, cancelAction, history, historyError, historyPage, loadHistory, openConversation, deleteConversation, deleteConversations, deleteAllConversations, conversationId, draftView, draftKey, previews, uploadFiles, removeAttachment, reviewDraft, searchDraftCc, openAttachment, supersedeAction } = chat;
+  // What the ticket form needs from the chat: files in place, the review, CC people and opening a file.
+  const draftTools = { upload: uploadFiles, remove: removeAttachment, review: reviewDraft, searchCc: searchDraftCc, open: openAttachment };
   const [draft, setDraft] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef(null);
@@ -121,13 +123,13 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
         }}
       >
         {showHistory && (
-          <ChatHistory history={history} error={historyError} onLoad={loadHistory} onOpen={openFromHistory} onDelete={deleteConversation} onNew={newChat} currentId={conversationId} />
+          <ChatHistory history={history} page={historyPage} error={historyError} onLoad={loadHistory} onOpen={openFromHistory} onDelete={deleteConversation} onDeleteMany={deleteConversations} onDeleteAll={deleteAllConversations} onNew={newChat} currentId={conversationId} />
         )}
 
         {!showHistory && !messages.length && <ChatWelcome intro={intro} introError={introError} onRetry={loadIntro} onSelect={send} disabled={loading} firstName={firstName} role={role} />}
 
         {!showHistory && messages.map((m, i) => (
-          <ChatMessage key={m.key} message={m} onNavigate={onNavigate} onSend={send} onFeedback={sendFeedback} disabled={loading} actionState={actionState} onConfirmAction={confirmAction} onCancelAction={cancelAction} onEditAction={(a) => editAction(a, i)} previews={previews} onRemoveAttachment={removeAttachment} activeDraftId={draftView?.id} firstName={firstName} />
+          <ChatMessage key={m.key} message={m} onNavigate={onNavigate} onSend={send} onFeedback={sendFeedback} disabled={loading} actionState={actionState} onConfirmAction={confirmAction} onCancelAction={cancelAction} onEditAction={(a) => editAction(a, i)} previews={previews} onRemoveAttachment={removeAttachment} activeDraftKey={draftKey} draftTools={draftTools} firstName={firstName} />
         ))}
 
         {!showHistory && loading && <TypingIndicator />}

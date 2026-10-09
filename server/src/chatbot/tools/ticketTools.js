@@ -6,6 +6,7 @@ const { TICKET_CARD_SELECT, toTicketCard, toTicketSummary, toHistoryEntry } = re
 
 const OPEN_STATUSES = ["OPEN", "IN_PROGRESS", "ON_HOLD", "REOPENED"];
 const DAY_MS = 24 * 60 * 60 * 1000;
+const ISO_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
 
 // Accepts "2627001" or "TKT-2627001". The application's ticket numbers are
 // digits only (see utils/ticketNumber.js); the optional TKT- prefix is just
@@ -100,6 +101,12 @@ const searchAuthorizedTickets = {
     page: { type: "int", min: 1, max: 1000 },
     staleDays: { type: "int", min: 1, max: 365 },
     updatedDays: { type: "int", min: 1, max: 90 },
+    // Exact windows (ISO instants, `Until` exclusive) for "what's new today": a day starts at the user's own
+    // midnight, which a whole number of days cannot express. They only NARROW the caller-scoped result.
+    updatedSince: { type: "string", max: 30, pattern: ISO_INSTANT },
+    updatedUntil: { type: "string", max: 30, pattern: ISO_INSTANT },
+    createdSince: { type: "string", max: 30, pattern: ISO_INSTANT },
+    createdUntil: { type: "string", max: 30, pattern: ISO_INSTANT },
     // "latest ticket" / "recently created": newest first by creation date instead of last update.
     sort: { type: "enum", values: ["created"] },
     withReasons: { type: "enum", values: ["yes"] },
@@ -120,6 +127,10 @@ const searchAuthorizedTickets = {
     if (filter === "stale") clauses.push({ status: { in: OPEN_STATUSES }, updatedAt: { lt: new Date(Date.now() - staleDays * DAY_MS) } });
     if (input.status) clauses.push({ status: input.status });
     if (input.updatedDays) clauses.push({ updatedAt: { gte: new Date(Date.now() - input.updatedDays * DAY_MS) } });
+    if (input.updatedSince) clauses.push({ updatedAt: { gte: new Date(input.updatedSince) } });
+    if (input.updatedUntil) clauses.push({ updatedAt: { lt: new Date(input.updatedUntil) } });
+    if (input.createdSince) clauses.push({ createdAt: { gte: new Date(input.createdSince) } });
+    if (input.createdUntil) clauses.push({ createdAt: { lt: new Date(input.createdUntil) } });
     if (input.requester === "me") clauses.push({ requesterId: ctx.scope.userId });
     if (input.assignee === "me") clauses.push({ assigneeId: ctx.scope.userId });
     if (input.assigneeId) clauses.push({ assigneeId: input.assigneeId });

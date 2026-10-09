@@ -35,6 +35,10 @@ const pill = (color, outlined) => ({
   border: `1px solid ${outlined ? color : `${color}33`}`,
 });
 
+// The accent colour of a status or priority, for tiles and bars (always next to a text label).
+export const statusColor = (status) => STATUS[status]?.color || "#6B7280";
+export const priorityColor = (name, fallback) => PRIORITY[String(name || "").toLowerCase()] || fallback || "#6B7280";
+
 export function StatusChip({ status }) {
   const s = STATUS[status] || { label: String(status || ""), color: "#6B7280" };
   return <Box component="span" sx={pill(s.color, false)}>{s.label}</Box>;

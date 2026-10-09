@@ -1,4 +1,6 @@
+const prisma = require("../../config/prisma");
 const dashboardService = require("../../services/dashboard.service");
+const { authorizedWhere } = require("../roleScope");
 const notificationService = require("../../services/notification.service");
 const { ChatError, CODES } = require("../chatbot.errors");
 
@@ -8,7 +10,9 @@ const { ChatError, CODES } = require("../chatbot.errors");
 // message can point these at someone else.
 
 const SCOPES = ["created", "assigned", "mine"];
-const DATE = /^\d{4}-\d{2}-\d{2}$/;
+// A calendar date, or an exact instant (a day that starts at the user's own midnight).
+const DATE = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z)?$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const getMyDashboard = {
   name: "get_my_dashboard",
@@ -16,15 +20,18 @@ const getMyDashboard = {
   inputSchema: {
     scope: { type: "enum", values: SCOPES },
     days: { type: "int", min: 1, max: 365 },
-    dateFrom: { type: "string", max: 10, pattern: DATE },
-    dateTo: { type: "string", max: 10, pattern: DATE },
+    dateFrom: { type: "string", max: 30, pattern: DATE },
+    dateTo: { type: "string", max: 30, pattern: DATE },
   },
   async run(ctx, input) {
-    // Same service and same arguments the dashboard page uses (scope "created" = Raised by Me).
+    // Same service and same arguments the dashboard page uses (scope "created" = Raised by Me). The page
+    // sends "Last N days" as dateFrom = now - N days; the service's `days` alone only shapes the trend
+    // chart, so without that dateFrom the counts would cover all time while being labelled "last N days".
+    const days = input.days || 30;
     const stats = await dashboardService.getStats(ctx.scope.user, {
       scope: input.scope || "mine",
-      days: input.days || 30,
-      dateFrom: input.dateFrom,
+      days,
+      dateFrom: input.dateFrom || (input.dateTo ? undefined : new Date(Date.now() - days * DAY_MS).toISOString()),
       dateTo: input.dateTo,
     });
     await ctx.audit("TOOL_MY_DASHBOARD", "Dashboard", input.scope || "mine", "SUCCESS");
@@ -43,6 +50,12 @@ const getMyNotifications = {
   async run(ctx, input) {
     const userId = ctx.scope.userId;
     const [rows, unread] = await Promise.all([notificationService.listForUser(userId, { unreadOnly: input.unreadOnly === "yes" }), notificationService.countUnread(userId)]);
+    // A notification can outlive the user's access to its ticket (e.g. the ticket moved to another
+    // department). Its ticket link is only offered when the ticket is still inside this user's scope.
+    const ticketIds = [...new Set(rows.map((n) => n.ticket?.id).filter(Boolean))];
+    const viewable = ticketIds.length
+      ? new Set((await prisma.ticket.findMany({ where: { AND: [{ id: { in: ticketIds } }, authorizedWhere(ctx.scope)] }, select: { id: true } })).map((t) => t.id))
+      : new Set();
     await ctx.audit("TOOL_MY_NOTIFICATIONS", "Notification", null, "SUCCESS");
     return {
       unread,
@@ -54,7 +67,7 @@ const getMyNotifications = {
         isRead: n.isRead,
         createdAt: n.createdAt,
         ticketNumber: n.ticket?.ticketNumber || null,
-        ticketRouteId: n.ticket?.id || null,
+        ticketRouteId: n.ticket?.id && viewable.has(n.ticket.id) ? n.ticket.id : null,
       })),
     };
   },

@@ -61,8 +61,9 @@ async function view(ctx, draft) {
     maxWords: MAX_PROBLEM_SUMMARY_WORDS,
     attachments: (draft.attachments || []).map((a) => ({ id: a.id, name: a.fileName, size: a.size, mimeType: a.mimeType })),
     limits: { maxFiles: ticketService.MAX_ATTACHMENTS_PER_TICKET, maxMb: ticketService.MAX_ATTACHMENTS_TOTAL_SIZE_MB },
-    // The first question can be answered with the form: the real priorities and departments to pick from.
-    ...(draft.step === "TITLE" && !f.title ? { options: { priorities: await priorityNames(), departments: await departmentNames() } } : {}),
+    ccUsers: (f.ccUsers || []).map((u) => ({ id: u.id, name: u.name, email: u.email || null })),
+    // The form is showing until the review: the real priorities and departments to pick from.
+    ...(draft.step !== "REVIEW" ? { options: { priorities: await priorityNames(), departments: await departmentNames() } } : {}),
   };
 }
 
@@ -164,8 +165,7 @@ function nextStep(f, draft) {
   if (!f.priorityId) return "PRIORITY";
   if (!f.toDepartmentId) return "DEPARTMENT";
   if (!f.problemSummary) return "SUMMARY";
-  if (f.asked && !f.ccDone) return "CC";
-  if (f.asked && !f.attachDone && !(draft.attachments || []).length) return "ATTACH";
+  // Custom CC and attachments are optional and live in the form and the review: never a separate question.
   return "REVIEW";
 }
 
@@ -176,14 +176,14 @@ async function prompt(ctx, draft, step, { first = false } = {}) {
   const base = { data: { ticketDraft: await view(ctx, { ...draft, step }) } };
   switch (step) {
     case "TITLE":
-      return say(first ? "Sure. I'll help you raise a support ticket. Let's start with the issue title. What is the issue title?" : "What is the issue title?", base);
+      return say(first ? "Sure. I'll help you raise a support ticket. Fill in the form below: title, priority, department and problem summary. CC people and files are optional. What is the issue title?" : "What is the issue title?", base);
     case "PRIORITY": {
       const names = await priorityNames();
-      return say(`What priority should this ticket have? (${names.join(", ")})`, { ...base, suggestedActions: chips(names) });
+      return say(`What priority should this ticket have? (${names.join(", ")})`, base);
     }
     case "DEPARTMENT": {
       const names = await departmentNames();
-      return say("Which department should handle this ticket?", { ...base, suggestedActions: chips(names) });
+      return say("Which department should handle this ticket?", base);
     }
     case "SUMMARY":
       return say(`Please describe the problem (up to ${MAX_PROBLEM_SUMMARY_WORDS} words).`, base);
@@ -362,7 +362,7 @@ async function handleTurn(ctx, draft, rawMessage) {
       await draftStore.save(draft.id, { fields: f, step: "CC" });
       return prompt(ctx, { ...draft, step: "CC" }, "CC");
     }
-    if (!hit) return say("What would you like to change? I can change the title, priority, department, CC, problem summary or attachments.", { data: { ticketDraft: await view(ctx, draft) } });
+    if (!hit) return formReply(ctx, draft, "Okay, edit your ticket in the form below. Everything you entered is kept.");
   }
 
   // Removing an attachment by words.
@@ -399,6 +399,10 @@ async function handleTurn(ctx, draft, rawMessage) {
     if (NO.test(message)) slots.noCc = true;
     else slots.ccAdd = splitNames(message);
   }
+  // The form is open and the message names nothing it could use: point at the form rather than guess.
+  if (step === "FORM" && !slots.title && !slots.priority && !slots.departmentText && !slots.description && !slots.ccAdd.length && !slots.ccRemove.length && !slots.noCc && !slots.noFiles) {
+    return formReply(ctx, draft, 'Please use the form below, or tell me what to change (for example: "priority high").');
+  }
   if (step === "ATTACH") {
     if (NO.test(message) || slots.noFiles) f.attachDone = true;
     else if (YES.test(message)) return say(`Use the attach button (or paste a screenshot) to add files. Say done when you have finished, or no to continue without files.`, { data: { ticketDraft: await view(ctx, draft) } });
@@ -413,6 +417,47 @@ async function handleTurn(ctx, draft, rawMessage) {
   return advance(ctx, draft, { preface: [understood(notes), problemText(problems)].filter(Boolean).join(" ") });
 }
 
+const invalid = (message) => new ChatError(CODES.ACTION_INVALID, { message });
+
+// The form again, with everything entered so far (used by Edit on the review).
+async function formReply(ctx, draft, preface) {
+  await dropPending(ctx);
+  const saved = await draftStore.save(draft.id, { fields: draft.fields, step: "FORM" });
+  return say(preface, { data: { ticketDraft: await view(ctx, saved) } });
+}
+
+// Custom CC arrives as user ids chosen in the form. They are checked against real, active users here (and
+// again by the ticket service when the ticket is raised); the requester is never added to their own CC.
+async function resolveCcIds(ctx, ids) {
+  const unique = [...new Set((Array.isArray(ids) ? ids : []).map((x) => String(x)).filter(Boolean))];
+  if (unique.length > 20) throw invalid("You can add at most 20 people in CC.");
+  if (!unique.length) return [];
+  if (unique.includes(ctx.scope.userId)) throw invalid("You are raising the ticket, so you don't need to CC yourself.");
+  const rows = await prisma.user.findMany({ where: { id: { in: unique }, isActive: true }, select: { id: true, name: true, email: true } });
+  if (rows.length !== unique.length) throw invalid("One or more of the people you chose for CC are not valid active users. Please change the CC list.");
+  return unique.map((id) => rows.find((r) => r.id === id)).map((u) => ({ id: u.id, name: u.name, email: u.email || null }));
+}
+
+// The form's "Review Ticket": every field in one request, validated with the same rules as typed answers,
+// then the review (the only place a ticket can be raised from). Nothing is created here.
+async function submitForm(ctx, draft, payload = {}) {
+  const f = draft.fields;
+  const text = (v) => (typeof v === "string" ? cleanUserMessage(v) : "");
+  const title = text(payload.title);
+  const priority = text(payload.priority);
+  const department = text(payload.department);
+  const summary = typeof payload.problemSummary === "string" ? payload.problemSummary.replace(/\s+/g, " ").trim() : "";
+  const missing = [["Title", title], ["Priority", priority], ["Department", department], ["Problem Summary", summary]].filter(([, v]) => !v).map(([l]) => l);
+  if (missing.length) throw invalid(`Please fill in: ${missing.join(", ")}.`);
+  const ccUsers = await resolveCcIds(ctx, payload.ccUserIds);
+  const { problems } = await applySlots(ctx, draft, { title, priority, departmentText: department, description: summary, ccAdd: [], ccRemove: [], noCc: false, noFiles: false });
+  f.ccUsers = ccUsers;
+  // What was valid is kept, so nothing the user entered is lost when one field is refused.
+  await draftStore.save(draft.id, { fields: f });
+  if (problems.length) throw invalid(problems.join(" "));
+  return advance(ctx, draft, {});
+}
+
 // Called after files were added or removed through the upload endpoint.
 async function afterFilesChanged(ctx, draft, preface) {
   await dropPending(ctx);
@@ -421,4 +466,4 @@ async function afterFilesChanged(ctx, draft, preface) {
   return advance(ctx, fresh, { preface });
 }
 
-module.exports = { start, handleTurn, afterFilesChanged, view };
+module.exports = { start, handleTurn, afterFilesChanged, view, submitForm, formReply };

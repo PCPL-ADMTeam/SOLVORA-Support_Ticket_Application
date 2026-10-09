@@ -13,6 +13,9 @@ vi.mock("../../../api/chatbot", () => ({
     cancelAction: vi.fn(),
     uploadDraftFiles: vi.fn(),
     removeDraftFile: vi.fn(),
+    reviewDraft: vi.fn(),
+    searchDraftCc: vi.fn(),
+    fetchDraftFile: vi.fn(),
     listConversations: vi.fn(),
     resumeConversation: vi.fn(),
     getConversation: vi.fn(),
@@ -561,7 +564,8 @@ describe("chat history", () => {
   });
 
   test("deleting asks first, then removes the conversation", async () => {
-    chatbotApi.listConversations.mockResolvedValue(LIST);
+    // After the delete the page is read again; the server no longer returns the deleted one.
+    chatbotApi.listConversations.mockResolvedValueOnce(LIST).mockResolvedValue({ data: { data: { conversations: [LIST.data.data.conversations[0]] } } });
     chatbotApi.deleteConversation.mockResolvedValue({});
     const { user } = setup();
     await openHistory(user);
@@ -596,12 +600,12 @@ describe("after a change is confirmed", () => {
     chatbotApi.sendMessage.mockResolvedValue(reply({
       data: { pendingAction: { id: "act-2", title: "Create ticket", summary: "Raise a ticket", impact: [], confirmationToken: "t".repeat(20) } },
     }));
-    chatbotApi.confirmAction.mockResolvedValue({ data: { data: { status: "EXECUTED", message: "Ticket 2600007 was created for Hardware.", navigationTarget: { type: "route", path: "/tickets/abc123", label: "View ticket" } } } });
+    chatbotApi.confirmAction.mockResolvedValue({ data: { data: { status: "EXECUTED", message: "Ticket 2600007 was created for Hardware.", navigationTarget: { type: "route", path: "/tickets/abc123", label: "Open Ticket" } } } });
     const { user } = setup();
     await openPanel(user);
     await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
     await user.click(await screen.findByRole("button", { name: /^Confirm:/ }));
-    await user.click(await screen.findByRole("button", { name: "View ticket" }));
+    await user.click(await screen.findByRole("button", { name: "Open Ticket" }));
     expect(screen.getByTestId("where")).toHaveTextContent("/tickets/abc123");
   });
 });
@@ -646,7 +650,7 @@ describe("raising a ticket with files", () => {
 
     chatbotApi.removeDraftFile.mockResolvedValue({ data: { data: { messageId: "m10", message: "Removed shot.png.", data: { ticketDraft: draft() }, suggestedActions: [] } } });
     await user.click(screen.getByRole("button", { name: "Remove attachment shot.png" }));
-    expect(chatbotApi.removeDraftFile).toHaveBeenCalledWith("a1", "conv-1");
+    expect(chatbotApi.removeDraftFile).toHaveBeenCalledWith("a1", "conv-1", true);
     expect(await screen.findByText("Removed shot.png.")).toBeInTheDocument();
   });
 
@@ -776,25 +780,6 @@ describe("the reference design", () => {
     await user.click(screen.getByRole("button", { name: "Show my resolved tickets" }));
     expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Show my resolved tickets", "conv-1", null);
   });
-
-  test("Raise a ticket opens a form; Create Ticket sends its fields in one message", async () => {
-    const d = { id: "d1", status: "ACTIVE", step: "TITLE", title: null, priority: null, fromDepartment: null, department: null, cc: [], summary: null, words: 0, maxWords: 50, attachments: [], limits: { maxFiles: 5, maxMb: 10 }, options: { priorities: ["Low", "High"], departments: ["Hardware", "BI/Copilot"] } };
-    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ intent: "ticket_draft", message: "What is the issue title?", data: { ticketDraft: d } }));
-    const { user } = setup();
-    await openPanel(user);
-    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
-    const form = await screen.findByRole("form", { name: "Raise a ticket form" });
-    const create = within(form).getByRole("button", { name: "Create Ticket" });
-    expect(create).toBeDisabled();
-    await user.type(within(form).getByLabelText(/Title/), "VPN down");
-    await user.selectOptions(within(form).getByLabelText(/Priority/), "High");
-    await user.selectOptions(within(form).getByLabelText(/Department/), "Hardware");
-    await user.type(within(form).getByLabelText(/Problem Summary/), "Cannot connect | at all");
-    expect(create).toBeEnabled();
-    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "Please describe the problem." }));
-    await user.click(create);
-    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Title: VPN down | Priority: High | Department: Hardware | Problem Summary: Cannot connect / at all", "conv-1", null);
-  });
 });
 
 describe("the role-based home and the info panel", () => {
@@ -824,5 +809,275 @@ describe("the role-based home and the info panel", () => {
     expect(within(panel).getByText("What I can do")).toBeInTheDocument();
     expect(within(panel).getByText("View tickets in your authorized departments")).toBeInTheDocument();
     expect(within(panel).getByText("View your notifications")).toBeInTheDocument();
+  });
+});
+
+describe("What's New today on the home", () => {
+  test("a centred button under the greeting sends the what's-new question", async () => {
+    chatbotApi.suggestions.mockResolvedValue({ data: { data: { ...INTRO, whatsNew: { label: "What's New today", prompt: "What's new today" } } } });
+    const { user } = setup();
+    await openPanel(user);
+    const button = await screen.findByRole("button", { name: "What's New today" });
+    expect(screen.getByText("How can I help you manage your departments and tickets today?").compareDocumentPosition(button) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply());
+    await user.click(button);
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("What's new today", null, null);
+  });
+});
+
+describe("the single ticket session: one form, one review, one Raise Ticket", () => {
+  const OPTIONS = { priorities: ["Low", "High"], departments: ["Hardware", "BI/Copilot"] };
+  const formDraft = (over = {}) => ({
+    id: "d1", status: "ACTIVE", step: "TITLE", title: null, priority: null, fromDepartment: null, department: null, cc: [], ccUsers: [], summary: null, words: 0, maxWords: 50,
+    attachments: [], limits: { maxFiles: 5, maxMb: 10 }, options: OPTIONS, ...over,
+  });
+  const image = (name = "shot.png", size = 2048) => new File([new Uint8Array(size)], name, { type: "image/png" });
+  const att = (id, name, size = 2048, mimeType = "image/png") => ({ id, name, size, mimeType });
+
+  async function openForm(user, draft = formDraft()) {
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ intent: "ticket_draft", message: "Sure. Fill in the form below.", data: { ticketDraft: draft } }));
+    await openPanel(user);
+    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
+    return screen.findByRole("form", { name: "Raise a ticket form" });
+  }
+  const fill = async (user, form, { title = "VPN down", priority = "High", department = "Hardware", summary = "Cannot connect." } = {}) => {
+    await user.type(within(form).getByLabelText(/^Title/), title);
+    await user.selectOptions(within(form).getByLabelText(/^Priority/), priority);
+    await user.selectOptions(within(form).getByLabelText(/^Department/), department);
+    await user.type(within(form).getByLabelText(/^Problem Summary/), summary);
+  };
+  const reviewReply = (over = {}) =>
+    reply({
+      intent: "ticket_draft",
+      message: "Ticket Review\n\nTitle: VPN down",
+      data: { ticketDraft: formDraft({ step: "REVIEW", options: undefined, title: "VPN down", priority: "High", department: "Hardware", summary: "Cannot connect." }), pendingAction: { id: "act-1", title: "Raise ticket", summary: 'Raise the ticket "VPN down" to Hardware with High priority.', impact: [], confirmationToken: "t".repeat(20) } },
+      ...over,
+    });
+
+  test("the form has every field, an attachments section and a CC picker, and one primary button", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    for (const label of [/^Title/, /^Priority/, /^Department/, /^Problem Summary/, /^Add people in CC/]) expect(within(form).getByLabelText(label)).toBeInTheDocument();
+    expect(within(form).getByRole("group", { name: "Attachments" })).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Add files" })).toBeInTheDocument();
+    expect(within(form).getByRole("button", { name: "Review Ticket" })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Create Ticket" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Raise Ticket/ })).not.toBeInTheDocument(); // only the review can raise
+  });
+
+  test("Review Ticket sends every field once; the server's review replaces the form", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.reviewDraft.mockResolvedValue(reviewReply());
+    const button = within(form).getByRole("button", { name: "Review Ticket" });
+    await user.dblClick(button);
+    expect(chatbotApi.reviewDraft).toHaveBeenCalledTimes(1);
+    expect(chatbotApi.reviewDraft).toHaveBeenCalledWith({ conversationId: "conv-1", title: "VPN down", priority: "High", department: "Hardware", problemSummary: "Cannot connect.", ccUserIds: [] });
+    expect(await screen.findByText(/Ticket Review/)).toBeInTheDocument();
+    expect(screen.queryByRole("form", { name: "Raise a ticket form" })).not.toBeInTheDocument(); // one form only, never a second copy
+    expect(screen.getByRole("button", { name: /^Confirm: Raise the ticket/ })).toHaveTextContent("Raise Ticket");
+  });
+
+  test("a refusal is shown next to the form and everything typed is kept", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.reviewDraft.mockRejectedValue(apiError("CHAT_ACTION_INVALID", "The problem summary is limited to 50 words.", 422));
+    await user.click(within(form).getByRole("button", { name: "Review Ticket" }));
+    expect(await within(form).findByRole("alert")).toHaveTextContent("limited to 50 words");
+    expect(within(form).getByLabelText(/^Title/)).toHaveValue("VPN down");
+    expect(within(form).getByLabelText(/^Problem Summary/)).toHaveValue("Cannot connect.");
+    expect(within(form).getByRole("button", { name: "Review Ticket" })).toBeEnabled(); // a retry is possible
+  });
+
+  test("files are added in place: the list updates, typed text stays, no chat message is added", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ title: "VPN down", attachments: [att("a1", "shot.png")] }) } } } });
+    await user.upload(within(form).getByTestId("form-file-input"), image());
+    const sent = chatbotApi.uploadDraftFiles.mock.calls[0][0];
+    expect(sent.get("conversationId")).toBe("conv-1");
+    expect(sent.get("quiet")).toBe("1");
+    expect(sent.getAll("files")[0].name).toBe("shot.png");
+    expect(await within(form).findByText("shot.png")).toBeInTheDocument();
+    expect(within(form).getByText(/1\/5 · 2 KB of 10 MB/)).toBeInTheDocument();
+    expect(await within(form).findByAltText("Preview of shot.png")).toBeInTheDocument();
+    expect(within(form).getByLabelText(/^Title/)).toHaveValue("VPN down");
+    expect(screen.queryByText(/Added shot.png/)).not.toBeInTheDocument();
+  });
+
+  test("Ctrl+V of an image attaches it and never puts it in the summary", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ attachments: [att("a2", "pasted-image-1.png")] }) } } } });
+    const summary = within(form).getByLabelText(/^Problem Summary/);
+    fireEvent.paste(summary, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => image("clip.png") }] } });
+    await waitFor(() => expect(chatbotApi.uploadDraftFiles).toHaveBeenCalledTimes(1));
+    expect(chatbotApi.uploadDraftFiles.mock.calls[0][0].getAll("files")[0].name).toMatch(/^pasted-image-\d+\.png$/);
+    expect(summary).toHaveValue("");
+    expect(await within(form).findByText("pasted-image-1.png")).toBeInTheDocument();
+  });
+
+  test("a sixth file or a file over the combined 10 MB is refused before upload; a repeated file is not added twice", async () => {
+    const { user } = setup();
+    const five = Array.from({ length: 5 }, (_, i) => att(`a${i}`, `f${i}.png`));
+    const form = await openForm(user, formDraft({ attachments: five }));
+    await user.upload(within(form).getByTestId("form-file-input"), image("six.png"));
+    expect(await within(form).findByRole("alert")).toHaveTextContent(/Maximum 5 attachments/);
+    await user.upload(within(form).getByTestId("form-file-input"), image("f0.png")); // same name and size as one already attached
+    expect(await within(form).findByRole("alert")).toHaveTextContent(/already attached|Maximum 5/);
+    expect(chatbotApi.uploadDraftFiles).not.toHaveBeenCalled();
+  });
+
+  test("a failed upload is reported next to the files and the rest of the form is untouched", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.uploadDraftFiles.mockRejectedValue(apiError("CHAT_ACTION_INVALID", "That file type is not allowed.", 400));
+    await user.upload(within(form).getByTestId("form-file-input"), image());
+    expect(await within(form).findByRole("alert")).toHaveTextContent("That file type is not allowed.");
+    expect(within(form).getByLabelText(/^Title/)).toHaveValue("VPN down");
+    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ attachments: [att("a1", "shot.png")] }) } } } });
+    await user.upload(within(form).getByTestId("form-file-input"), image()); // retry works
+    expect(await within(form).findByText("shot.png")).toBeInTheDocument();
+  });
+
+  test("a file can be opened in a new tab and removed; the temporary preview is released", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:preview");
+    URL.revokeObjectURL = vi.fn();
+    const open = vi.spyOn(window, "open").mockReturnValue({ location: {}, close: vi.fn() });
+    const { user } = setup();
+    const form = await openForm(user);
+    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ attachments: [att("a1", "shot.png")] }) } } } });
+    await user.upload(within(form).getByTestId("form-file-input"), image());
+    await within(form).findByText("shot.png");
+    await user.click(within(form).getByRole("button", { name: "Open attachment shot.png" }));
+    expect(open).toHaveBeenCalledWith("blob:preview", "_blank");
+    chatbotApi.removeDraftFile.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft() } } } });
+    await user.click(within(form).getByRole("button", { name: "Remove attachment shot.png" }));
+    expect(chatbotApi.removeDraftFile).toHaveBeenCalledWith("a1", "conv-1", true);
+    await waitFor(() => expect(within(form).queryByText("shot.png")).not.toBeInTheDocument());
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview");
+    open.mockRestore();
+  });
+
+  test("a file chosen earlier (no local copy) is fetched and opened from the server", async () => {
+    URL.createObjectURL = vi.fn(() => "blob:from-server");
+    const tab = { location: {}, close: vi.fn() };
+    const open = vi.spyOn(window, "open").mockReturnValue(tab);
+    chatbotApi.fetchDraftFile.mockResolvedValue({ data: new Blob(["x"], { type: "application/pdf" }) });
+    const { user } = setup();
+    const form = await openForm(user, formDraft({ attachments: [att("a9", "spec.pdf", 5000, "application/pdf")] }));
+    await user.click(within(form).getByRole("button", { name: "Open attachment spec.pdf" }));
+    await waitFor(() => expect(chatbotApi.fetchDraftFile).toHaveBeenCalledWith("a9", "conv-1"));
+    await waitFor(() => expect(tab.location.href).toBe("blob:from-server"));
+    open.mockRestore();
+  });
+
+  test("CC people: search, pick several, remove one, and send only their ids", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.searchDraftCc.mockImplementation(async (_conv, q) => ({ data: { data: { users: q === "bo" ? [{ id: "u2", name: "Bob Lee", email: "bob@x.test", department: "IT" }] : [{ id: "u3", name: "Bola Ade", email: "bola@x.test", department: null }, { id: "u2", name: "Bob Lee", email: "bob@x.test", department: "IT" }] } } }));
+    await user.type(within(form).getByLabelText(/^Add people in CC/), "bo");
+    await user.click(await within(form).findByRole("button", { name: /Bob Lee/ }));
+    expect(chatbotApi.searchDraftCc).toHaveBeenCalledWith("conv-1", "bo");
+    await user.type(within(form).getByLabelText(/^Add people in CC/), "bol");
+    await user.click(await within(form).findByRole("button", { name: /Bola Ade/ }));
+    const chips = within(form).getByRole("list", { name: "Selected CC people" });
+    expect(within(chips).getAllByRole("listitem")).toHaveLength(2);
+    await user.click(within(form).getByRole("button", { name: "Remove Bob Lee from CC" }));
+    expect(within(chips).getAllByRole("listitem")).toHaveLength(1);
+    chatbotApi.reviewDraft.mockResolvedValue(reviewReply());
+    await user.click(within(form).getByRole("button", { name: "Review Ticket" }));
+    expect(chatbotApi.reviewDraft.mock.calls[0][0].ccUserIds).toEqual(["u3"]);
+  });
+
+  test("Edit on the review brings the form back with everything that was entered", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.reviewDraft.mockResolvedValue(reviewReply());
+    await user.click(within(form).getByRole("button", { name: "Review Ticket" }));
+    await screen.findByText(/Ticket Review/);
+    chatbotApi.sendMessage.mockResolvedValueOnce(
+      reply({ intent: "ticket_draft", message: "Okay, edit your ticket in the form below. Everything you entered is kept.", data: { ticketDraft: formDraft({ step: "FORM", title: "VPN down", priority: "High", department: "Hardware", summary: "Cannot connect.", ccUsers: [{ id: "u2", name: "Bob Lee", email: "bob@x.test" }], attachments: [att("a1", "shot.png")] }) } })
+    );
+    await user.click(screen.getByRole("button", { name: "Edit this request" }));
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("I want to edit the ticket", "conv-1", null);
+    const again = await screen.findByRole("form", { name: "Raise a ticket form" });
+    expect(within(again).getByLabelText(/^Title/)).toHaveValue("VPN down");
+    expect(within(again).getByLabelText(/^Priority/)).toHaveValue("High");
+    expect(within(again).getByLabelText(/^Department/)).toHaveValue("Hardware");
+    expect(within(again).getByLabelText(/^Problem Summary/)).toHaveValue("Cannot connect.");
+    expect(within(again).getByText("Bob Lee")).toBeInTheDocument();
+    expect(within(again).getByText("shot.png")).toBeInTheDocument();
+    expect(chatbotApi.confirmAction).not.toHaveBeenCalled();
+  });
+
+  test("Cancel asks first when something would be lost, and cancels at once when the form is empty", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    chatbotApi.sendMessage.mockResolvedValue(reply({ message: "Okay, I've cancelled the ticket. Nothing was created.", data: { ticketDraftClosed: true } }));
+    await user.type(within(form).getByLabelText(/^Title/), "VPN down");
+    await user.click(within(form).getByRole("button", { name: "Cancel" }));
+    expect(chatbotApi.sendMessage).toHaveBeenCalledTimes(1); // only "raise a ticket": nothing sent yet
+    await user.click(within(form).getByRole("button", { name: "Keep editing" }));
+    expect(within(form).getByLabelText(/^Title/)).toHaveValue("VPN down");
+    await user.click(within(form).getByRole("button", { name: "Cancel" }));
+    await user.click(within(form).getByRole("button", { name: "Yes, discard" }));
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("cancel", "conv-1", null);
+  });
+
+  test("Raise Ticket is the one creating action; success shows the real ticket number and Open Ticket", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.reviewDraft.mockResolvedValue(reviewReply());
+    await user.click(within(form).getByRole("button", { name: "Review Ticket" }));
+    chatbotApi.confirmAction.mockResolvedValue({ data: { data: { status: "EXECUTED", message: "Your ticket has been raised successfully. Ticket number: 2600099.", navigationTarget: { type: "route", path: "/tickets/id_1", label: "Open Ticket" } } } });
+    const raise = await screen.findByRole("button", { name: /^Confirm: Raise the ticket/ });
+    await user.dblClick(raise);
+    expect(chatbotApi.confirmAction).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText(/Ticket number: 2600099/)).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open Ticket" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/tickets/id_1");
+    // The finished ticket leaves no editable form behind.
+    expect(screen.queryByRole("form", { name: "Raise a ticket form" })).not.toBeInTheDocument();
+  });
+
+  test("a failed Raise Ticket is reported honestly, never as success", async () => {
+    const { user } = setup();
+    const form = await openForm(user);
+    await fill(user, form);
+    chatbotApi.reviewDraft.mockResolvedValue(reviewReply());
+    await user.click(within(form).getByRole("button", { name: "Review Ticket" }));
+    chatbotApi.confirmAction.mockResolvedValue({ data: { data: { status: "FAILED", message: "No ticket was created. Invalid department" } } });
+    await user.click(await screen.findByRole("button", { name: /^Confirm: Raise the ticket/ }));
+    expect(await screen.findByText("No ticket was created. Invalid department")).toBeInTheDocument();
+    expect(screen.queryByText(/raised successfully/)).not.toBeInTheDocument();
+  });
+});
+
+describe("discarding a reviewed ticket", () => {
+  test("Cancel on the review asks first; only 'Yes, discard' cancels the pending ticket", async () => {
+    chatbotApi.sendMessage.mockResolvedValueOnce(
+      reply({ intent: "ticket_draft", message: "Ticket Review", data: { pendingAction: { id: "act-5", title: "Raise ticket", summary: 'Raise the ticket "VPN down" to Hardware.', impact: [], confirmationToken: "t".repeat(20) } } })
+    );
+    const { user } = setup();
+    await openPanel(user);
+    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
+    await user.click(await screen.findByRole("button", { name: "Cancel this change" }));
+    expect(chatbotApi.cancelAction).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "Keep" }));
+    expect(screen.getByRole("button", { name: /^Confirm: Raise the ticket/ })).toBeInTheDocument();
+    chatbotApi.cancelAction.mockResolvedValue({ data: { data: { status: "CANCELLED", message: "Cancelled. Nothing was changed." } } });
+    await user.click(screen.getByRole("button", { name: "Cancel this change" }));
+    await user.click(screen.getByRole("button", { name: "Yes, discard" }));
+    expect(chatbotApi.cancelAction).toHaveBeenCalledTimes(1);
+    expect(chatbotApi.confirmAction).not.toHaveBeenCalled();
   });
 });

@@ -6,7 +6,7 @@ const ApiError = require("../utils/ApiError");
 const env = require("../config/env");
 const { upload } = require("../config/multer");
 const controller = require("./chatbot.controller");
-const { sendMessageSchema, conversationIdSchema, feedbackSchema, actionIdSchema } = require("./chatbot.schemas");
+const { sendMessageSchema, conversationIdSchema, conversationListSchema, bulkDeleteSchema, deleteAllSchema, feedbackSchema, actionIdSchema, draftReviewSchema } = require("./chatbot.schemas");
 const { ChatError, CODES, toErrorPayload, USER_MESSAGES } = require("./chatbot.errors");
 const { recordChatAudit } = require("./chatbot.audit");
 const { getProvider } = require("./providers");
@@ -30,6 +30,16 @@ const chatLimiter = rateLimit({
   },
 });
 
+// The CC people search runs as the user types, so it has its own, roomier per-user limit.
+const searchLimiter = rateLimit({
+  windowMs: env.chatbot.rateLimitWindowMs,
+  max: env.chatbot.rateLimitMax * 6,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => `chatbot-search:${req.user.id}`,
+  handler: (req, res) => res.status(429).json({ success: false, error: toErrorPayload(new ChatError(CODES.RATE_LIMITED)) }),
+});
+
 function validateRequest(req, _res, next) {
   const errors = validationResult(req);
   if (!errors.isEmpty()) throw new ChatError(CODES.INVALID_INPUT, { internal: errors.array().map((e) => e.path).join(",") });
@@ -43,7 +53,11 @@ getProvider();
 router.get("/suggestions", controller.suggestions);
 router.post("/messages", chatLimiter, sendMessageSchema, validateRequest, controller.sendMessage);
 router.post("/messages/:messageId/feedback", chatLimiter, feedbackSchema, validateRequest, controller.feedback);
-router.get("/conversations", controller.listConversations);
+router.get("/conversations", conversationListSchema, validateRequest, controller.listConversations);
+// Bulk delete (the ids you pick) and delete-all (everything you have). Both only ever act on the
+// signed-in user's own conversations.
+router.post("/conversations/bulk-delete", chatLimiter, bulkDeleteSchema, validateRequest, controller.deleteConversations);
+router.post("/conversations/delete-all", chatLimiter, deleteAllSchema, validateRequest, controller.deleteAllConversations);
 router.post("/conversations/:conversationId/resume", chatLimiter, conversationIdSchema, validateRequest, controller.resumeConversation);
 router.delete("/conversations/:conversationId", chatLimiter, conversationIdSchema, validateRequest, controller.deleteConversation);
 router.get("/conversations/:conversationId", conversationIdSchema, validateRequest, controller.getConversation);
@@ -54,6 +68,10 @@ router.post("/conversations/:conversationId/reset", chatLimiter, conversationIdS
 // is the ticket service's own and is applied when the files are added.
 router.post("/drafts/attachments", chatLimiter, upload.array("files", 20), controller.uploadDraftFiles);
 router.delete("/drafts/attachments/:attachmentId", chatLimiter, controller.removeDraftFile);
+router.get("/drafts/attachments/:attachmentId", chatLimiter, controller.getDraftFile);
+// The form's "Review Ticket" (all fields) and its CC people search; both only while a ticket is being raised.
+router.post("/drafts/review", chatLimiter, draftReviewSchema, validateRequest, controller.reviewDraft);
+router.get("/drafts/cc-search", searchLimiter, controller.searchDraftCc);
 
 // Protected AI configuration/capability check (Admin only; never returns secrets).
 router.get("/diagnostics/ai", chatLimiter, controller.aiDiagnostics);

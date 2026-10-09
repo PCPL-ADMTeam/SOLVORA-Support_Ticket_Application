@@ -166,19 +166,50 @@ Ticket information: *Show my open / pending / recently updated tickets*, *Show t
 
 ## Chat history
 
-All three are authenticated, per-user rate-limited and scoped to the caller's own conversations. A conversation
-opened under a different role than the caller's current one is treated as not found (its stored answers may hold
-data the new role must not see).
+All are authenticated and scoped to the caller's own conversations; the writes are per-user rate-limited. Whose
+conversations are listed or deleted always comes from the session, never from the request (there is no user id
+field). A conversation opened under a different role than the caller's current one is not listed and is treated as
+not found when opened (its stored answers may hold data the new role must not see).
 
 | Method and path | Purpose |
 |---|---|
-| `GET /chatbot/conversations` | The caller's last 30 conversations: `{ conversationId, title, status, lastMessageAt }`. Title is the first message sent. |
+| `GET /chatbot/conversations?page=&pageSize=` | One page of the caller's conversations, newest first: `{ conversations: [{ conversationId, title, status, lastMessageAt }], total, page, pageSize, totalPages }`. `pageSize` 1–50 (default 30, the widget uses 10). A page past the end returns the last page. Conversations with no user message are not listed or counted. |
 | `POST /chatbot/conversations/:id/resume` | Reopen an archived conversation so it can be continued (audited as `CONVERSATION_RESUMED`). |
-| `DELETE /chatbot/conversations/:id` | Permanently delete the caller's conversation, its messages and feedback; any open proposal is cancelled first (audited as `CONVERSATION_DELETED`). |
+| `DELETE /chatbot/conversations/:id` | Delete one of the caller's conversations (`CONVERSATION_DELETED`). Someone else's id: 404, audited as `CONVERSATION_ACCESS_DENIED`. |
+| `POST /chatbot/conversations/bulk-delete` | Body `{ conversationIds: [id, …] }` (1–50 ids). Deletes those that belong to the caller and returns `{ deleted, deletedIds }`. Ids that are not the caller's are skipped without saying which (audited as `CONVERSATION_ACCESS_DENIED` with a count only). Audited as `CONVERSATIONS_DELETED`. |
+| `POST /chatbot/conversations/delete-all` | Body `{ confirm: true }` (anything else is a 400). Deletes every conversation of the caller, whatever role it was opened under; returns `{ deleted }`. Audited as `CONVERSATIONS_DELETED_ALL`. |
+
+Deleting is permanent (the existing behaviour; there is no soft delete). In one transaction it removes the
+conversations, and through the foreign-key cascade their messages and feedback; a change still waiting for
+confirmation in them is set to `CANCELLED`, and an unfinished ticket draft (with its uploaded files) is deleted.
+Tickets, comments, notifications, executed-change records and the chat audit trail are not touched.
 
 `GET /chatbot/conversations/:id` returns the messages. Replayed change proposals never include their confirmation
 token, so the widget shows them as "From an earlier chat" and they cannot be confirmed. Conversations are also
 removed by the existing retention purge (`docs/chatbot-deployment.md`).
+
+## Structured answers
+
+`POST /messages` accepts an optional `timeZone` (an IANA name such as `Asia/Kolkata`, sent by the widget from the
+browser). It only decides where "today" starts in date windows; an unknown zone means UTC. It is never used for an
+access decision.
+
+Answers that have a card carry `data.headline` (the one line the bubble shows) plus a structured payload; `message`
+keeps the complete plain-text version (copied by the Copy button and stored in the transcript).
+
+| `data` key | Answer | Contents |
+|---|---|---|
+| `digest` | What's New | `period { label, rangeText, from, to, timeZone }`; `notifications { unread (any date), inPeriod, inPeriodCapped, latest[] }`; `assigned { count, tickets[] }` (Employees and Team Leads only); `updated { label, count, tickets[], skippedAssigned }`; `created`, `unassigned` (staff only); `caughtUp`. A ticket shown under `assigned` is not repeated under `updated`. |
+| `summaryReport` | Ticket summary | `title`, `period`, `sections[{ key: created / assigned, label, total, byStatus[{ status, label, count }], byPriority[{ priority, count }] }]`. Statuses and priorities are exactly the ones the dashboard service returns; each section has its own priorities. |
+| `overview` | Priority / status summary, workload | `kind` (priority, status, workload), `title`, `scope`, `period` ("All time"), `total`, `rows`, `columns`. |
+| `notifications.items` | Notification list | `id, type, title, message, isRead, at, ticketNumber, ticketRouteId`. `ticketRouteId` is null when the ticket is no longer in the user's scope. |
+| `listing` | Ticket list | `showing` ("1–5 of 12"), `filters[]`, `notes[]`, next to the existing `tickets` and `total`. |
+| `person`, `departmentMembers`, `departments` | People and departments | Names, roles and departments only (never e-mails or ids). |
+
+Date windows: "today", "yesterday", "this week" and named dates start at midnight in the user's time zone. The
+ticket summary's "Last N days" is exactly N x 24 hours back, as the Dashboard page sends it (the chatbot used to
+send only the number of days, which the dashboard service does not apply to its counts, so "last 30 days" was all
+time). What's New with no range means today plus the six days before it.
 
 ## Raising a ticket (drafts)
 

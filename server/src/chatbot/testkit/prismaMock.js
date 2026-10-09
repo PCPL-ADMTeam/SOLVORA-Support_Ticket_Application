@@ -25,6 +25,7 @@ function reset(seed = {}) {
     notifications: [],
     drafts: [],
     draftFiles: [],
+    ticketAttachments: [],
     ...seed,
   });
 }
@@ -62,6 +63,8 @@ function matches(row, where = {}) {
     if (key === "NOT") return ![].concat(cond).some((c) => matches(row, c));
     // Prisma relation filter on the user -> department-access rows.
     if (key === "departmentAccess") return db.access.filter((a) => a.userId === row.id).some((a) => matches(a, cond.some));
+    // Same, for a conversation -> its messages ("has at least one message from the user").
+    if (key === "messages" && cond.some) return db.messages.filter((m) => m.conversationId === row.id).some((m) => matches(m, cond.some));
     return matchField(row[key], cond);
   });
 }
@@ -101,6 +104,8 @@ const withFiles = (d) => ({ ...d, attachments: db.draftFiles.filter((f) => f.dra
 const prisma = {
   // The dashboard's time-series charts use raw SQL; the regression tests compare its counts, not the charts.
   $queryRaw: async () => [],
+  // The array form only: the operations have already been started, so this just waits for all of them.
+  $transaction: async (ops) => Promise.all(ops),
   ticket: {
     findFirst: async ({ where, select }) => {
       const r = db.tickets.find((t) => matches(t, where));
@@ -197,16 +202,26 @@ const prisma = {
     },
     findUnique: async ({ where }) => db.conversations.find((c) => c.id === where.id) || null,
     update: async ({ where, data }) => Object.assign(db.conversations.find((c) => c.id === where.id), data),
-    findMany: async ({ where, orderBy, take }) => {
-      let rows = orderRows(db.conversations.filter((c) => matches(c, where)), orderBy);
+    findMany: async ({ where, orderBy, take, skip = 0 }) => {
+      let rows = orderRows(db.conversations.filter((c) => matches(c, where)), orderBy).slice(skip);
       if (take) rows = rows.slice(0, take);
       return rows;
     },
+    count: async ({ where } = {}) => db.conversations.filter((c) => matches(c, where)).length,
     delete: async ({ where }) => {
       const i = db.conversations.findIndex((c) => c.id === where.id);
       const [row] = db.conversations.splice(i, 1);
       db.messages = db.messages.filter((m) => m.conversationId !== where.id);
       return row;
+    },
+    // Messages and feedback follow the conversation, like the real foreign-key cascade.
+    deleteMany: async ({ where }) => {
+      const gone = db.conversations.filter((c) => matches(c, where)).map((c) => c.id);
+      db.conversations = db.conversations.filter((c) => !gone.includes(c.id));
+      const goneMessages = db.messages.filter((m) => gone.includes(m.conversationId)).map((m) => m.id);
+      db.messages = db.messages.filter((m) => !gone.includes(m.conversationId));
+      db.feedback = db.feedback.filter((f) => !goneMessages.includes(f.messageId));
+      return { count: gone.length };
     },
   },
   chatMessage: {
@@ -255,7 +270,16 @@ const prisma = {
       rows.forEach((r) => Object.assign(r, data));
       return { count: rows.length };
     },
+    // The stored files follow the draft, like the real foreign-key cascade.
+    deleteMany: async ({ where }) => {
+      const gone = db.drafts.filter((d) => matches(d, where)).map((d) => d.id);
+      db.drafts = db.drafts.filter((d) => !gone.includes(d.id));
+      db.draftFiles = db.draftFiles.filter((f) => !gone.includes(f.draftId));
+      return { count: gone.length };
+    },
   },
+  // Only what the ticket form needs: how many files ended up on a ticket (the ticket service saves them).
+  ticketAttachment: { count: async ({ where } = {}) => db.ticketAttachments.filter((a) => matches(a, where)).length },
   chatDraftAttachment: {
     create: async ({ data }) => {
       const row = { id: newId(), createdAt: new Date(Date.now() + counter), ...data };
@@ -263,6 +287,7 @@ const prisma = {
       return row;
     },
     findMany: async ({ where }) => db.draftFiles.filter((f) => matches(f, where)),
+    findFirst: async ({ where }) => db.draftFiles.find((f) => matches(f, where)) || null,
     delete: async ({ where }) => {
       const i = db.draftFiles.findIndex((f) => f.id === where.id);
       return db.draftFiles.splice(i, 1)[0];

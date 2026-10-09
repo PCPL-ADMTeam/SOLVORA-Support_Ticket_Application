@@ -16,6 +16,7 @@ const { listToolDefinitions } = require("./tools");
 const { cleanUserMessage } = require("./text");
 const { SUGGESTIONS } = require("./suggestions");
 const actions = require("./actions/actionService");
+const { validTimeZone } = require("./period");
 
 const MAX_MESSAGE_CHARS = 1000;
 const HISTORY_TURNS = 6;
@@ -173,7 +174,7 @@ function exampleActions(role) {
 // conversation state -> rules -> (only if no reliable rule) AI interpretation ->
 // validate -> authorize/resolve inside the controlled handler -> read result,
 // or write PREVIEW (execution needs the separate confirm call).
-async function sendMessage(user, { message, conversationId, pageTicketId }) {
+async function sendMessage(user, { message, conversationId, pageTicketId, timeZone }) {
   const cleaned = cleanUserMessage(message ?? "");
   if (!cleaned || cleaned.length > MAX_MESSAGE_CHARS) throw new ChatError(CODES.INVALID_INPUT);
 
@@ -244,7 +245,8 @@ async function sendMessage(user, { message, conversationId, pageTicketId }) {
       params = decision.params;
     }
 
-    const ctx = { scope, conversationId: convo.id, lastTicketNumber: ctxHistory.lastTicketNumber || pageTicketNumber, method: decision.method, aiIntent: decision.aiIntent };
+    // `timeZone` only decides where "today" starts in date windows; an unknown zone means UTC.
+    const ctx = { scope, conversationId: convo.id, lastTicketNumber: ctxHistory.lastTicketNumber || pageTicketNumber, method: decision.method, aiIntent: decision.aiIntent, timeZone: validTimeZone(timeZone) };
 
     if (!result) {
       try {
@@ -389,17 +391,22 @@ async function loadReadableConversation(user, conversationId) {
 }
 
 const HISTORY_LIMIT = 30;
+const HISTORY_MAX_PAGE_SIZE = 50;
+const BULK_DELETE_MAX = 50;
 const TITLE_CHARS = 60;
 
-// The signed-in user's own earlier conversations, newest first. Titles are the
-// first thing the user typed. Nothing from other users or other roles.
-async function listConversations(user) {
+// The signed-in user's own earlier conversations, newest first, one page at a time. Titles are the
+// first thing the user typed. Nothing from other users or other roles. A conversation with no user
+// message yet (nothing worth reopening) is not listed, and not counted.
+async function listConversations(user, { page, pageSize } = {}) {
   return guarded(async () => {
-    const rows = await prisma.chatConversation.findMany({
-      where: { userId: user.id, portalRole: user.role.name },
-      orderBy: { lastMessageAt: "desc" },
-      take: HISTORY_LIMIT,
-    });
+    const size = Math.min(Math.max(Number.parseInt(pageSize, 10) || HISTORY_LIMIT, 1), HISTORY_MAX_PAGE_SIZE);
+    const where = { userId: user.id, portalRole: user.role.name, messages: { some: { senderType: "USER" } } };
+    const total = await prisma.chatConversation.count({ where });
+    const totalPages = Math.max(Math.ceil(total / size), 1);
+    // A page past the end (e.g. after deleting the last items of it) lands on the last page instead of an empty one.
+    const current = Math.min(Math.max(Number.parseInt(page, 10) || 1, 1), totalPages);
+    const rows = await prisma.chatConversation.findMany({ where, orderBy: { lastMessageAt: "desc" }, skip: (current - 1) * size, take: size });
     const items = await Promise.all(
       rows.map(async (c) => {
         const [first] = await prisma.chatMessage.findMany({ where: { conversationId: c.id, senderType: "USER" }, orderBy: { createdAt: "asc" }, take: 1 });
@@ -408,7 +415,7 @@ async function listConversations(user) {
         return { conversationId: c.id, title: text.length > TITLE_CHARS ? `${text.slice(0, TITLE_CHARS - 1)}…` : text, status: c.status, lastMessageAt: c.lastMessageAt };
       })
     );
-    return { conversations: items.filter(Boolean) };
+    return { conversations: items.filter(Boolean), total, page: current, pageSize: size, totalPages };
   });
 }
 
@@ -422,14 +429,55 @@ async function resumeConversation(user, conversationId) {
   });
 }
 
-// Permanently remove one of the user's own conversations (messages and feedback cascade).
+// Permanently removes conversations that belong to `user` (the user id is in every query, so nothing
+// of anyone else's can be touched). Deleting is a real delete, not an archive: the messages and their
+// feedback follow the conversation (foreign-key cascade). A change still waiting for confirmation in
+// those conversations is cancelled and a ticket draft still being filled in (with its stored files) is
+// discarded. Tickets, comments, notifications and the records of changes already made are other tables
+// and are not touched. One transaction: all of it, or none of it.
+async function removeConversations(user, ids) {
+  if (!ids.length) return 0;
+  const [, , removed] = await prisma.$transaction([
+    prisma.chatPendingAction.updateMany({ where: { userId: user.id, conversationId: { in: ids }, status: "PENDING" }, data: { status: "CANCELLED", resolvedAt: new Date() } }),
+    prisma.chatTicketDraft.deleteMany({ where: { userId: user.id, conversationId: { in: ids }, status: "ACTIVE" } }),
+    prisma.chatConversation.deleteMany({ where: { userId: user.id, id: { in: ids } } }),
+  ]);
+  return removed.count;
+}
+
+// Delete one of the user's own conversations.
 async function deleteConversation(user, conversationId) {
   return guarded(async () => {
     const convo = await loadOwnedConversation(user, conversationId);
-    await actions.cancelPendingInConversation(user, convo.id);
-    await prisma.chatConversation.delete({ where: { id: convo.id } });
+    await removeConversations(user, [convo.id]);
     await recordChatAudit({ userId: user.id, conversationId: null, action: "CONVERSATION_DELETED", resourceType: "ChatConversation", resourceId: convo.id, result: "SUCCESS" });
     return { conversationId: convo.id, deleted: true };
+  });
+}
+
+// Delete several of the user's own conversations. Ids that are not the caller's (or do not exist) are
+// skipped without saying which, so the answer never confirms that someone else's conversation exists.
+async function deleteConversations(user, conversationIds) {
+  return guarded(async () => {
+    const wanted = [...new Set(conversationIds)];
+    if (!wanted.length || wanted.length > BULK_DELETE_MAX) throw new ChatError(CODES.INVALID_INPUT, { message: `Choose between 1 and ${BULK_DELETE_MAX} conversations to delete.`, internal: "bulk delete size" });
+    const owned = (await prisma.chatConversation.findMany({ where: { userId: user.id, id: { in: wanted } } })).map((c) => c.id);
+    if (owned.length < wanted.length) {
+      await recordChatAudit({ userId: user.id, conversationId: null, action: "CONVERSATION_ACCESS_DENIED", resourceType: "ChatConversation", resourceId: `${wanted.length - owned.length} not found or not owned`, result: "DENIED" });
+    }
+    const deleted = await removeConversations(user, owned);
+    await recordChatAudit({ userId: user.id, conversationId: null, action: "CONVERSATIONS_DELETED", resourceType: "ChatConversation", resourceId: `${deleted} deleted`, result: "SUCCESS" });
+    return { deleted, deletedIds: owned };
+  });
+}
+
+// Delete every conversation the signed-in user has (whatever role it was opened under). Never anyone else's.
+async function deleteAllConversations(user) {
+  return guarded(async () => {
+    const owned = (await prisma.chatConversation.findMany({ where: { userId: user.id } })).map((c) => c.id);
+    const deleted = await removeConversations(user, owned);
+    await recordChatAudit({ userId: user.id, conversationId: null, action: "CONVERSATIONS_DELETED_ALL", resourceType: "ChatConversation", resourceId: `${deleted} deleted`, result: "SUCCESS" });
+    return { deleted };
   });
 }
 
@@ -525,24 +573,64 @@ async function saveDraftReply(user, ctx, r) {
   return { conversationId: ctx.conversationId, messageId: assistant.id, responseType: "text", intent: "ticket_draft", message: r.message, data: r.data || {}, suggestedActions: r.suggestedActions || [], navigationTarget: null, pendingAction: r.data?.pendingAction || null, error: null };
 }
 
-async function addDraftFiles(user, { conversationId, files }) {
+// While the form is open (not yet at the review) files are added in place: the form's own list changes and no
+// chat message is created. At the review they go through the normal path, which builds a fresh review.
+async function addDraftFiles(user, { conversationId, files, quiet = false }) {
   return guarded(async () => {
     if (!files?.length) throw new ChatError(CODES.ACTION_INVALID, { message: "I didn't receive a file. Please try attaching it again." });
     const { ctx, draft } = await draftContext(user, conversationId);
     const store = require("./ticketDraft/draftStore");
     const updated = await store.addFiles(draft, files);
+    if (quiet && draft.step !== "REVIEW") {
+      return { quiet: true, data: { ticketDraft: await require("./ticketDraft/flow").view(ctx, updated) } };
+    }
     const names = files.map((f) => f.originalname).join(", ");
     const r = await require("./ticketDraft/flow").afterFilesChanged(ctx, updated, `Added ${names}.`);
     return saveDraftReply(user, ctx, r);
   });
 }
 
-async function removeDraftFile(user, { conversationId, attachmentId }) {
+async function removeDraftFile(user, { conversationId, attachmentId, quiet = false }) {
   return guarded(async () => {
     const { ctx, draft } = await draftContext(user, conversationId);
-    const removed = await require("./ticketDraft/draftStore").removeFile(draft, attachmentId);
+    const store = require("./ticketDraft/draftStore");
+    const removed = await store.removeFile(draft, attachmentId);
+    if (quiet && draft.step !== "REVIEW") {
+      const fresh = await store.getActive(user.id, ctx.conversationId);
+      return { quiet: true, data: { ticketDraft: await require("./ticketDraft/flow").view(ctx, fresh) } };
+    }
     const r = await require("./ticketDraft/flow").afterFilesChanged(ctx, draft, `Removed ${removed.fileName}.`);
     return saveDraftReply(user, ctx, r);
+  });
+}
+
+// The form's "Review Ticket": all fields at once. Validated and turned into the review; nothing is created.
+async function submitDraftForm(user, { conversationId, ...payload }) {
+  return guarded(async () => {
+    const { ctx, draft } = await draftContext(user, conversationId);
+    const r = await require("./ticketDraft/flow").submitForm(ctx, draft, payload);
+    return saveDraftReply(user, ctx, r);
+  });
+}
+
+// People to CC: the same search the Raise a Ticket page uses, only while a ticket is being raised, and never the requester.
+async function searchDraftCc(user, { conversationId, q }) {
+  return guarded(async () => {
+    await draftContext(user, conversationId);
+    const term = String(q || "").trim().slice(0, 60);
+    if (term.length < 2) return { users: [] };
+    const found = await require("../services/user.service").searchActiveEmployees(term);
+    return { users: found.filter((u) => u.id !== user.id).slice(0, 8).map((u) => ({ id: u.id, name: u.name, email: u.email, department: u.department?.name || null })) };
+  });
+}
+
+// One attachment of the ticket being raised, for the owner's own preview ("open in a new tab").
+async function getDraftFile(user, { conversationId, attachmentId }) {
+  return guarded(async () => {
+    const { draft } = await draftContext(user, conversationId);
+    const row = await prisma.chatDraftAttachment.findFirst({ where: { id: attachmentId, draftId: draft.id } });
+    if (!row) throw new ChatError(CODES.ACTION_INVALID, { message: "I couldn't find that attachment on your ticket." });
+    return { fileName: row.fileName, mimeType: row.mimeType, buffer: Buffer.from(row.data) };
   });
 }
 
@@ -578,10 +666,15 @@ module.exports = {
   listConversations,
   resumeConversation,
   deleteConversation,
+  deleteConversations,
+  deleteAllConversations,
   resetConversation,
   submitFeedback,
   addDraftFiles,
   removeDraftFile,
+  submitDraftForm,
+  searchDraftCc,
+  getDraftFile,
   confirmAction,
   cancelAction,
   aiDiagnostics,

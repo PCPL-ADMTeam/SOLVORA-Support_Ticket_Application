@@ -3,7 +3,7 @@
 const { add, each, web, status, prio, noWrite } = require("./scenarios");
 const { WHO, OUTSIDE_BI } = require("./data");
 const { getSuggestions } = require("../suggestions");
-const { HOME } = require("../roleHome");
+const { HOME, WHATS_NEW } = require("../roleHome");
 const dashboardService = require("../../services/dashboard.service");
 const { getAccessibleTickets, numbers } = require("./harness");
 
@@ -31,6 +31,14 @@ each(ROLES, (role) => {
       if (!intro.capabilities.length) return "no capabilities for the Info panel";
       return null;
     },
+  });
+});
+
+// "What's New today" under the greeting, on every role's home.
+each(ROLES, (role) => {
+  add(role, "ROLE_HOME", "The home offers What's New today, and it answers", {
+    say: WHATS_NEW.prompt, outcome: "DATA", intent: "whats_new",
+    check: () => (getSuggestions(WHO[role]).whatsNew?.prompt === WHATS_NEW.prompt ? null : "the home does not offer What's New today"),
   });
 });
 

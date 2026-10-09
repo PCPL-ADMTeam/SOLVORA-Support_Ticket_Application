@@ -75,8 +75,9 @@ function TicketDetailCard({ t, onNavigate }) {
   );
 }
 
-// Several tickets: one compact, pressable row each.
-function TicketRow({ t, onNavigate }) {
+// Several tickets: one compact, pressable row each (also used by the What's New card).
+export function TicketRow({ t, onNavigate }) {
+  const dates = [t.createdAt ? `Created ${day(t.createdAt)}` : null, t.lastUpdatedAt ? `Updated ${day(t.lastUpdatedAt)}` : null].filter(Boolean).join(" · ");
   return (
     <Box component="li" sx={{ listStyle: "none" }}>
       <Box
@@ -115,9 +116,14 @@ function TicketRow({ t, onNavigate }) {
           <Typography variant="body2" fontWeight={700} sx={{ mt: 0.5, wordBreak: "break-word" }}>
             {t.title}
           </Typography>
-          <Typography variant="caption" display="block" sx={{ color: "var(--sv-muted)" }}>
+          <Typography variant="caption" display="block" sx={{ color: "var(--sv-muted)", wordBreak: "break-word" }}>
             {[t.department, t.assignedTo ? `Assigned to ${t.assignedTo}` : "Unassigned"].filter(Boolean).join(" · ")}
           </Typography>
+          {dates && (
+            <Typography variant="caption" display="block" sx={{ color: "var(--sv-muted)" }}>
+              {dates}
+            </Typography>
+          )}
           <Reason reason={t.reason} />
         </Box>
         <ChevronRightIcon aria-hidden sx={{ color: "var(--sv-muted)", flexShrink: 0 }} />
@@ -126,30 +132,59 @@ function TicketRow({ t, onNavigate }) {
   );
 }
 
+// What the list is: the filters in force, which results are shown, and what a word like "Open" means.
+function ListingHeader({ listing }) {
+  if (!listing) return null;
+  return (
+    <Box sx={{ mt: 1 }}>
+      <Stack direction="row" spacing={0.5} alignItems="center" flexWrap="wrap" useFlexGap role="group" aria-label="Filters">
+        {listing.filters?.map((f) => (
+          <Box key={f} component="span" sx={{ px: 1, py: 0.25, borderRadius: 99, fontSize: 12, fontWeight: 600, color: "var(--sv-accent-ink)", bgcolor: "var(--sv-accent-soft)", maxWidth: "100%", overflowWrap: "anywhere" }}>
+            {f}
+          </Box>
+        ))}
+        {listing.showing && (
+          <Typography component="span" variant="caption" sx={{ color: "var(--sv-muted)", ml: listing.filters?.length ? 0.5 : 0 }}>
+            Showing {listing.showing}
+          </Typography>
+        )}
+      </Stack>
+      {listing.notes?.map((n) => (
+        <Typography key={n} variant="caption" display="block" sx={{ mt: 0.5, color: "var(--sv-muted)" }}>
+          {n}
+        </Typography>
+      ))}
+    </Box>
+  );
+}
+
 // Renders the server's restricted ticket-card DTOs. Only fields the server
 // already authorized and filtered arrive here; this component never fetches.
-export default function TicketListCard({ tickets, total, onNavigate, onSend }) {
+export default function TicketListCard({ tickets, total, listing, onNavigate, onSend }) {
   if (!tickets?.length) return null;
   const more = total > tickets.length;
   return (
-    <Stack component="ul" spacing={1} sx={{ m: 0, p: 0, mt: 1 }} aria-label="Matching tickets">
-      {tickets.length === 1 ? <TicketDetailCard t={tickets[0]} onNavigate={onNavigate} /> : tickets.map((t) => <TicketRow key={t.ticketNumber} t={t} onNavigate={onNavigate} />)}
-      {more && (
-        <Box component="li" sx={{ listStyle: "none" }}>
-          <Box
-            component="button"
-            type="button"
-            onClick={() => onSend?.("Show more")}
-            sx={{ width: "100%", display: "flex", alignItems: "center", gap: 1, font: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer", px: 1.5, py: 1, color: "var(--sv-accent-ink)", bgcolor: "var(--sv-accent-soft)", border: "1px solid transparent", borderRadius: "12px", ...focusRing, ...reducedMotion }}
-          >
-            <FormatListBulletedIcon sx={{ fontSize: 18 }} />
-            <Box component="span" sx={{ flex: 1, textAlign: "left" }}>
-              View all {total} tickets (showing {tickets.length})
+    <>
+      <ListingHeader listing={listing} />
+      <Stack component="ul" spacing={1} sx={{ m: 0, p: 0, mt: 1 }} aria-label="Matching tickets">
+        {tickets.length === 1 ? <TicketDetailCard t={tickets[0]} onNavigate={onNavigate} /> : tickets.map((t) => <TicketRow key={t.ticketNumber} t={t} onNavigate={onNavigate} />)}
+        {more && (
+          <Box component="li" sx={{ listStyle: "none" }}>
+            <Box
+              component="button"
+              type="button"
+              onClick={() => onSend?.("Show more")}
+              sx={{ width: "100%", display: "flex", alignItems: "center", gap: 1, font: "inherit", fontSize: 13.5, fontWeight: 600, cursor: "pointer", px: 1.5, py: 1, color: "var(--sv-accent-ink)", bgcolor: "var(--sv-accent-soft)", border: "1px solid transparent", borderRadius: "12px", ...focusRing, ...reducedMotion }}
+            >
+              <FormatListBulletedIcon sx={{ fontSize: 18 }} />
+              <Box component="span" sx={{ flex: 1, textAlign: "left" }}>
+                View all {total} tickets (showing {tickets.length})
+              </Box>
+              <ChevronRightIcon sx={{ fontSize: 18 }} />
             </Box>
-            <ChevronRightIcon sx={{ fontSize: 18 }} />
           </Box>
-        </Box>
-      )}
-    </Stack>
+        )}
+      </Stack>
+    </>
   );
 }

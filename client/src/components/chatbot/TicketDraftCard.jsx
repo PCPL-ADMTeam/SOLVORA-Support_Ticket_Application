@@ -1,10 +1,8 @@
-import { Box, IconButton, Paper, Tooltip, Typography } from "@mui/material";
-import CloseIcon from "@mui/icons-material/Close";
-import InsertDriveFileOutlinedIcon from "@mui/icons-material/InsertDriveFileOutlined";
-import PictureAsPdfOutlinedIcon from "@mui/icons-material/PictureAsPdfOutlined";
+import { Box, Paper, Typography } from "@mui/material";
 import TicketDraftForm from "./TicketDraftForm";
+import { AttachmentChip, totalsText } from "./DraftAttachments";
 
-const size = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
+const frame = { p: 1.5, mt: 1, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: "14px", color: "var(--sv-text)" };
 
 function Row({ label, children }) {
   return (
@@ -19,57 +17,23 @@ function Row({ label, children }) {
   );
 }
 
-// One attached file: a thumbnail for images (from the local file chosen in this session), a PDF
-// or file card otherwise, with a remove button until the ticket is raised.
-function AttachmentChip({ file, previewUrl, onRemove, disabled }) {
-  const isImage = file.mimeType?.startsWith("image/");
-  const isPdf = file.mimeType === "application/pdf";
-  return (
-    <Box component="li" sx={{ display: "flex", alignItems: "center", gap: 1, p: 0.75, border: "1px solid var(--sv-border)", borderRadius: "12px", bgcolor: "var(--sv-surface)", minWidth: 0 }}>
-      {isImage && previewUrl ? (
-        <Box component="img" src={previewUrl} alt={`Preview of ${file.name}`} sx={{ width: 40, height: 40, objectFit: "cover", borderRadius: "8px", flexShrink: 0 }} />
-      ) : (
-        <Box aria-hidden sx={{ width: 40, height: 40, flexShrink: 0, borderRadius: "8px", display: "grid", placeItems: "center", bgcolor: "var(--sv-accent-soft)", color: "var(--sv-accent-ink)" }}>
-          {isPdf ? <PictureAsPdfOutlinedIcon fontSize="small" /> : <InsertDriveFileOutlinedIcon fontSize="small" />}
-        </Box>
-      )}
-      <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography variant="body2" noWrap sx={{ fontWeight: 600, color: "var(--sv-text)" }}>
-          {file.name}
-        </Typography>
-        <Typography variant="caption" sx={{ color: "var(--sv-muted)" }}>
-          {isPdf ? "PDF" : isImage ? "Image" : "File"} · {size(file.size)}
-        </Typography>
-      </Box>
-      {onRemove && (
-        <Tooltip title="Remove">
-          <span>
-            <IconButton size="small" aria-label={`Remove attachment ${file.name}`} onClick={() => onRemove(file.id)} disabled={disabled}>
-              <CloseIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
-      )}
-    </Box>
-  );
-}
-
-// The ticket being raised: what has been collected so far, or (at the review) just the files, since
-// the review text already lists the fields. `active` is true only for the latest draft message, so
-// older cards stay read-only.
-export default function TicketDraftCard({ draft, previews = {}, onRemove, onSend, active = false, disabled = false, compact = false }) {
+// The ticket being raised. While the details are being entered it is ONE form (title, priority, department,
+// problem summary, CC people and files) shown on the latest message only; at the review it is the list of files
+// (with Open and Remove), because the review text above already lists every field. `active` is true only for the
+// latest draft message, so older cards stay read-only (or hidden).
+export default function TicketDraftCard({ draft, previews = {}, onRemove, onSend, tools, active = false, disabled = false, compact = false }) {
   if (!draft) return null;
-  // The first question: a form to fill in (only on the latest message; older ones stay read-only).
-  if (draft.options && active && onSend) {
+
+  if (draft.options) {
+    if (!active || !tools) return null;
     return (
-      <Paper variant="outlined" aria-label="Ticket being raised" sx={{ p: 1.5, mt: 1, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: "14px", color: "var(--sv-text)" }}>
-        <TicketDraftForm options={draft.options} maxWords={draft.maxWords} onSend={onSend} disabled={disabled} />
+      <Paper variant="outlined" aria-label="Ticket being raised" sx={frame}>
+        <TicketDraftForm draft={draft} previews={previews} tools={tools} onSend={onSend} disabled={disabled} />
       </Paper>
     );
   }
-  if (draft.options && !active) return null;
+
   const files = draft.attachments || [];
-  // Only what has been given is listed; what is still missing is named in one line.
   const given = [
     ["Title", draft.title],
     ["Priority", draft.priority],
@@ -78,56 +42,32 @@ export default function TicketDraftCard({ draft, previews = {}, onRemove, onSend
     ["Custom CC", draft.cc?.length ? draft.cc.join(", ") : null],
     ["Problem Summary", draft.summary ? `${draft.summary} (${draft.words}/${draft.maxWords} words)` : null],
   ].filter(([, v]) => v);
-  const missing = [
-    ["Title", draft.title],
-    ["Priority", draft.priority],
-    ["Department", draft.department],
-    ["Problem Summary", draft.summary],
-  ]
-    .filter(([, v]) => !v)
-    .map(([l]) => l);
-  const showFiles = files.length > 0 || draft.step === "ATTACH" || draft.step === "REVIEW";
-  if (compact && !showFiles) return null;
+  if (compact && !files.length) return null;
   return (
-    <Paper variant="outlined" aria-label="Ticket being raised" sx={{ p: 1.5, mt: 1, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: "14px", color: "var(--sv-text)" }}>
-      {!compact && (
-        <Box sx={{ display: "grid", gap: 0.75 }}>
-          {given.length > 0 && (
-            <>
-              <Typography variant="subtitle2" fontWeight={700}>
-                Added so far
-              </Typography>
-              {given.map(([label, value]) => (
-                <Row key={label} label={label}>
-                  {value}
-                </Row>
-              ))}
-            </>
-          )}
-          {missing.length > 0 && (
-            <Typography variant="body2" sx={{ color: "var(--sv-muted)" }}>
-              <strong>Still needed:</strong> {missing.join(", ")}
-            </Typography>
-          )}
+    <Paper variant="outlined" aria-label="Ticket being raised" sx={frame}>
+      {!compact && given.length > 0 && (
+        <Box sx={{ display: "grid", gap: 0.75, mb: files.length ? 1.25 : 0 }}>
+          <Typography variant="subtitle2" fontWeight={700}>
+            Ticket details
+          </Typography>
+          {given.map(([label, value]) => (
+            <Row key={label} label={label}>
+              {value}
+            </Row>
+          ))}
         </Box>
       )}
-      {showFiles && (
-      <Box sx={{ mt: compact || (given.length === 0 && missing.length === 0) ? 0 : 1.25 }}>
-        <Typography variant="caption" sx={{ color: "var(--sv-muted)", fontWeight: 600 }}>
-          Attachments ({files.length}/{draft.limits?.maxFiles}, up to {draft.limits?.maxMb} MB in total)
-        </Typography>
-        {files.length ? (
+      {files.length > 0 && (
+        <Box>
+          <Typography variant="caption" sx={{ color: "var(--sv-muted)", fontWeight: 600 }}>
+            Attachments ({totalsText(files, draft.limits)})
+          </Typography>
           <Box component="ul" aria-label="Attachments" sx={{ listStyle: "none", m: 0, mt: 0.5, p: 0, display: "grid", gap: 0.75 }}>
             {files.map((f) => (
-              <AttachmentChip key={f.id} file={f} previewUrl={previews[f.id]} onRemove={active ? onRemove : null} disabled={disabled} />
+              <AttachmentChip key={f.id} file={f} previewUrl={previews[f.id]} onOpen={active ? tools?.open : null} onRemove={active ? onRemove : null} disabled={disabled} />
             ))}
           </Box>
-        ) : (
-          <Typography variant="body2" sx={{ color: "var(--sv-muted)" }}>
-            None{active ? ". Use the attach button or paste a screenshot." : ""}
-          </Typography>
-        )}
-      </Box>
+        </Box>
       )}
     </Paper>
   );

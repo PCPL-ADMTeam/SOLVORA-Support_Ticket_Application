@@ -21,6 +21,13 @@ import ChatFeedback from "./ChatFeedback";
 import ActionConfirmCard from "./ActionConfirmCard";
 import TicketDraftCard from "./TicketDraftCard";
 import TicketReasonsCard from "./TicketReasonsCard";
+import FormattedText from "./response/FormattedText";
+import NoticeBanner from "./response/NoticeBanner";
+import WhatsNewCard from "./response/WhatsNewCard";
+import SummaryReportCard from "./response/SummaryReportCard";
+import OverviewCard from "./response/OverviewCard";
+import NotificationsCard from "./response/NotificationsCard";
+import { DepartmentListCard, DepartmentStatsCard, PeopleCard, PersonCard, RoleCountsCard, WeeklyReportCard } from "./response/DirectoryCards";
 import { card, focusRing, reducedMotion, rise, srOnly } from "./theme/chatStyles";
 
 const enter = { animation: `${rise} var(--sv-base) ease both`, ...reducedMotion };
@@ -43,6 +50,12 @@ const iconFor = (prompt) => (ICONS.find(([re]) => re.test(prompt)) || [null, Con
 // "Try:" plus bullet lines is appended by the server when a request was not understood.
 // They are shown as buttons below the message, so the bullet text is split off here.
 const TRY_BLOCK = /\n+Try(?: one of these)?:\n(?:•.*(?:\n|$))+\s*$/;
+
+// Answers whose details are shown as a card. For these the bubble shows a one-line headline instead of
+// repeating every number as prose (Copy still copies the full text).
+const hasCard = (data) =>
+  Boolean(data.digest || data.summaryReport || data.overview || data.notifications?.items || data.departmentMembers || data.person || data.userSummary || data.headcount || data.ticketsByDepartment || data.assignments || data.roles || data.weeklyReport || (data.departments && data.headline));
+const firstLine = (text) => String(text || "").split("\n")[0].replace(/:\s*$/, ".");
 
 function Time({ at }) {
   if (!at) return null;
@@ -124,7 +137,7 @@ function AlsoTry({ actions, onSend, disabled }) {
 
 // Assistant text is always rendered as TEXT (React-escaped; pre-line keeps the
 // numbered steps) — never as HTML — so ticket-derived strings cannot inject markup.
-export default function ChatMessage({ message, onNavigate, onSend, onFeedback, disabled, actionState = {}, onConfirmAction, onCancelAction, onEditAction, previews, onRemoveAttachment, activeDraftId, firstName }) {
+export default function ChatMessage({ message, onNavigate, onSend, onFeedback, disabled, actionState = {}, onConfirmAction, onCancelAction, onEditAction, previews, onRemoveAttachment, activeDraftKey, draftTools, firstName }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -166,7 +179,8 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
   const cardOpensTarget = Boolean(navigationTarget?.path && data.tickets?.some((t) => navigationTarget.path === `/tickets/${t.ticketRouteId}`));
   // "I couldn't understand that request. Try: ..." becomes the message plus a list of buttons.
   const isFallback = TRY_BLOCK.test(message.text || "");
-  const bodyText = isFallback ? message.text.replace(TRY_BLOCK, "") : message.text;
+  const fullText = isFallback ? message.text.replace(TRY_BLOCK, "") : message.text;
+  const bodyText = data.headline || (hasCard(data) ? firstLine(fullText) : fullText);
   // The ticket list has its own "View all" row for the next page.
   const hasMore = Boolean(data.tickets && data.total > data.tickets.length);
   const actions = suggestedActions.filter((a) => !(hasMore && a.prompt === "Show more"));
@@ -179,9 +193,8 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
           <Typography variant="caption" display="block" sx={{ color: "var(--sv-muted)", fontWeight: 600 }}>
             {ASSISTANT_NAME}
           </Typography>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-line", wordBreak: "break-word", color: "var(--sv-text)" }}>
-            {bodyText}
-          </Typography>
+          <NoticeBanner error={error} />
+          <FormattedText text={bodyText} />
           {isFallback && !/one of these\?\s*$/.test(bodyText) && (
             <Typography variant="caption" display="block" sx={{ mt: 0.5, color: "var(--sv-muted)" }}>
               Try one of these:
@@ -193,7 +206,17 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
             </Typography>
           )}
 
-          {data.tickets && <TicketListCard tickets={data.tickets} total={data.total} onNavigate={onNavigate} onSend={onSend} />}
+          {data.digest && <WhatsNewCard digest={data.digest} onNavigate={onNavigate} onSend={onSend} disabled={disabled} />}
+          {data.summaryReport && <SummaryReportCard report={data.summaryReport} />}
+          {data.overview && <OverviewCard overview={data.overview} />}
+          {data.notifications?.items && <NotificationsCard notifications={data.notifications} onNavigate={onNavigate} />}
+          {data.departmentMembers && <PeopleCard departments={data.departmentMembers} />}
+          {(data.person || data.userSummary) && <PersonCard person={data.person || data.userSummary} />}
+          {data.departments && data.headline && <DepartmentListCard departments={data.departments} />}
+          {(data.headcount || data.ticketsByDepartment || data.assignments) && <DepartmentStatsCard headcount={data.headcount} ticketsByDepartment={data.ticketsByDepartment} assignments={data.assignments} />}
+          {data.roles && <RoleCountsCard roles={data.roles} />}
+          {data.weeklyReport && <WeeklyReportCard report={data.weeklyReport} />}
+          {data.tickets && <TicketListCard tickets={data.tickets} total={data.total} listing={data.listing} onNavigate={onNavigate} onSend={onSend} />}
           {data.summary && <TicketSummaryCard summary={data.summary} />}
           {data.summaries && data.summaries.map((s) => <TicketSummaryCard key={s.ticketId} summary={s} compact />)}
           {data.history && <TicketHistoryCard history={data.history} />}
@@ -205,7 +228,8 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
               previews={previews}
               onRemove={onRemoveAttachment}
               onSend={onSend}
-              active={Boolean(activeDraftId) && data.ticketDraft.id === activeDraftId && !actionState[data.pendingAction?.id]?.status?.match(/EXECUTED|CANCELLED|SUPERSEDED/)}
+              tools={draftTools}
+              active={Boolean(activeDraftKey) && message.key === activeDraftKey && !actionState[data.pendingAction?.id]?.status?.match(/EXECUTED|CANCELLED|SUPERSEDED/)}
               disabled={disabled}
               compact={Boolean(data.pendingAction)}
             />

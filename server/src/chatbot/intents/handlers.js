@@ -10,6 +10,7 @@ const { resolveDepartment, resolvePriority, resolveUserArg, invalid } = require(
 const { matchDepartments } = require("../departmentMatch");
 const { extractEntities, STATUS_LABEL } = require("../entities/extract");
 const { toPlainText } = require("../text");
+const { resolvePeriod, periodView } = require("../period");
 
 // Each handler runs controlled tools and returns a result:
 //   {
@@ -320,9 +321,36 @@ async function listTickets(ctx, params0, question) {
     (params.filter === "open" ? " \"Open\" includes Open, In Progress, On Hold and Reopened." : "") +
     (params.withReasons ? " The recorded reason is shown on each ticket." : "") +
     (params.filter === "stale" ? " This is based on the last update time only; this application does not track SLAs or due dates." : "");
+  // What the list is, shown above the cards: the filters in force, the range shown, and what a word means.
+  const dateUsed = params.dateFrom ? used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}` : null;
+  const listing = {
+    showing: `${first}–${last} of ${result.total}`,
+    filters: [
+      ...(whom ? [whom === "you raised" ? "Raised by you" : "Assigned to you"] : []),
+      ...(who ? [cap(who)] : []),
+      ...({ open: ["Open (all active statuses)"], pending: ["On Hold"], unassigned: ["Unassigned"], stale: ["No recent activity"] }[params.filter] || []),
+      ...(params.status ? [STATUS_LABEL[params.status]] : []),
+      ...(filters.priority ? [`${filters.priority} priority`] : []),
+      ...(filters.department ? [filters.department] : []),
+      ...(dateUsed ? [dateUsed] : []),
+      ...(filters.text ? [`Matching "${filters.text}"`] : []),
+    ],
+    notes: [
+      params.filter === "pending" ? "\"Pending\" means tickets with status On Hold." : null,
+      params.filter === "open" ? "\"Open\" includes Open, In Progress, On Hold and Reopened." : null,
+      params.withReasons ? "The recorded reason is shown on each ticket." : null,
+      params.filter === "stale" ? "Based on the last update time only; this application does not track SLAs or due dates." : null,
+    ].filter(Boolean),
+  };
   return {
     message: params.latest ? (params.scope === "mine" ? "Your latest ticket:" : "The latest ticket:") : message,
-    data: { tickets: result.tickets, total: params.latest ? result.tickets.length : result.total, page, pageSize: PAGE_SIZE },
+    data: {
+      tickets: result.tickets,
+      total: params.latest ? result.tickets.length : result.total,
+      page,
+      pageSize: PAGE_SIZE,
+      ...(params.latest ? {} : { listing, headline: `${heading}${who || whom ? where : ""}: ${countOf(result.total, "ticket")} found.` }),
+    },
     navigationTarget: null,
     suggestedActions: params.latest ? [] : [
       ...(last < result.total ? [{ label: "Show more", prompt: "Show more" }] : []),
@@ -409,7 +437,8 @@ async function personLookup(ctx, params) {
   const dept = person.department?.name;
   return {
     message: `${person.name} is ${/^[AEIOU]/i.test(person.role.label) ? "an" : "a"} ${person.role.label}${dept ? ` in ${dept}` : ""}${person.isActive ? "" : " (deactivated)"}. What would you like to know about ${person.name}?`,
-    data: {},
+    // Name, role and department only (what the people directory already shows staff); never an email or id.
+    data: { person: { name: person.name, role: person.role.label, department: dept || null, active: Boolean(person.isActive) }, headline: `What would you like to know about ${person.name}?` },
     navigationTarget: null,
     suggestedActions: [
       { label: `Tickets assigned to ${person.name}`, prompt: `Show tickets assigned to ${person.name}` },
@@ -577,7 +606,7 @@ async function ticketStatistics(ctx, params) {
     `Created in the last 7 days: ${stats.createdLast7Days} (previous 7 days: ${stats.createdPrevious7Days}); last 30 days: ${stats.createdLast30Days}.`;
   return {
     message,
-    data: { statistics: { ...stats, label } },
+    data: { statistics: { ...stats, label }, headline: `${label}: ${countOf(stats.total, "ticket")} in total.` },
     navigationTarget: null,
     suggestedActions: scope === "staff" ? staffFollowUps(role) : [],
     useModel: true,
@@ -608,7 +637,8 @@ async function listDepartments(ctx, params, question = "") {
       : scope === "allocated"
         ? `You have access to ${n === 1 ? "1 department" : `${n} departments`}: ${departments.join(", ")}.`
         : `There ${n === 1 ? "is 1 department" : `are ${n} departments`}: ${departments.join(", ")}.`;
-  return report(message, { departments });
+  const headline = scope === "own" ? "Your department:" : scope === "allocated" ? `You have access to ${n === 1 ? "1 department" : `${n} departments`}:` : `There ${n === 1 ? "is 1 department" : `are ${n} departments`}:`;
+  return report(message, { departments, headline });
 }
 
 // Admin only (enforced again inside the tool). Names + role labels, no
@@ -669,9 +699,10 @@ async function peopleDirectory(ctx, params, question) {
     if (roles.length && !d.total) return `${d.name}: no ${roles.map((r) => `${ROLE_NOUN[r]}s`).join(" or ")} found.`;
     return [heading, ...lines].join("\n");
   });
+  const totalPeople = departments.reduce((n, d) => n + d.total, 0);
   return {
     message: blocks.join("\n\n"),
-    data: { departmentMembers: departments },
+    data: { departmentMembers: departments, headline: departments.length === 1 ? `${departments[0].name}: ${departments[0].total} ${noun(departments[0].total)}.` : `${totalPeople} ${noun(totalPeople)} in ${departments.length} departments.` },
     navigationTarget: !roles.length && ctx.scope.role === "ADMIN" ? { type: "route", path: "/admin/departments", label: "Open Departments" } : null,
     suggestedActions: [],
     state: { frame },
@@ -685,11 +716,19 @@ async function peopleDirectory(ctx, params, question) {
 // the Dashboard page ("Raised by me" / "Assigned to me", Last 7 / 30 / 90 days).
 const DASH_STATUS_LABEL = { OPEN: "Open", IN_PROGRESS: "In Progress", ON_HOLD: "On Hold", RESOLVED: "Resolved", CLOSED: "Closed", REOPENED: "Reopened" };
 
+// "the last 30 days" / "today" / "Oct 1 – Oct 5, 2026", for sentences.
+const periodName = (p) => (/^Last \d+ days$/.test(p.label) ? `the ${p.label.toLowerCase()}` : /^(Today|Yesterday|This week|Last week|This month|Last month|This year)$/.test(p.label) ? p.label.toLowerCase() : p.rangeText);
+
 async function dashboardSummary(ctx, params, question) {
   const found = question ? await extractEntities(question, { visibleDepartments: await visibleDepartmentNames(ctx) }) : {};
   if (found.dateAmbiguous) throw new ChatError(CODES.ACTION_INVALID, { message: "I can't tell which day you mean (day/month or month/day). Please write the date like 4 Oct 2026 or 2026-10-04." });
-  const range = params.dateFrom ? { dateFrom: params.dateFrom, dateTo: params.dateTo } : found.dateFrom ? { dateFrom: found.dateFrom, dateTo: found.dateTo } : { days: params.days || 30 };
-  const rangeLabel = params.dateFrom || found.dateFrom ? found.dateLabel || `${range.dateFrom} to ${range.dateTo}` : `the last ${range.days} days`;
+  // The window: one the question names (a day starts at the user's own midnight), else the Dashboard
+  // page's default "Last 30 days" (exactly 30 x 24 hours back, as the page sends it).
+  const period = resolvePeriod({ question, defaultDays: params.days || 30, rolling: true, timeZone: ctx.timeZone });
+  if (period.ambiguous) throw new ChatError(CODES.ACTION_INVALID, { message: "I can't tell which day you mean (day/month or month/day). Please write the date like 4 Oct 2026 or 2026-10-04." });
+  const runsToNow = period.to.getTime() >= Date.now() - 60000;
+  const range = { days: Math.min(period.days, 365), dateFrom: period.from.toISOString(), ...(runsToNow ? {} : { dateTo: new Date(period.to.getTime() - 1).toISOString() }) };
+  const rangeLabel = periodName(period);
   const status = params.status || found.status || null;
   const priority = params.priority || found.priority || null;
   const rels = params.rel === "created" ? ["created"] : params.rel === "assigned" ? ["assigned"] : ["created", "assigned"];
@@ -718,14 +757,35 @@ async function dashboardSummary(ctx, params, question) {
     };
   }
 
+  // Each section has its own status AND priority counts, so "raised by you" and "assigned to you" are
+  // never mixed. Only the statuses and priorities the dashboard service returns are shown.
   const statusLine = (d) => d.byStatus.map((s) => `${DASH_STATUS_LABEL[s.status] || s.status} ${s.count}`).join(" · ");
-  const blocks = rels.map((rel) => `${names[rel]}: ${got[rel].total}\n  ${statusLine(got[rel])}`);
-  const prio = got[rels[0]].byPriority.map((p) => `${p.priority} ${p.count}`).join(" · ");
+  const prioLine = (d) => d.byPriority.map((p) => `${p.priority} ${p.count}`).join(" · ");
+  const blocks = rels.map((rel) => `${names[rel]}: ${got[rel].total}\n• Status: ${statusLine(got[rel])}${got[rel].byPriority.length ? `\n• Priority: ${prioLine(got[rel])}` : ""}`);
+  const summaryReport = {
+    title: "Your Ticket Summary",
+    period: periodView(period),
+    sections: rels.map((rel) => ({
+      key: rel,
+      label: names[rel],
+      total: got[rel].total,
+      byStatus: got[rel].byStatus.map((s) => ({ status: s.status, label: DASH_STATUS_LABEL[s.status] || s.status, count: s.count })),
+      byPriority: got[rel].byPriority.map((p) => ({ priority: p.priority, count: p.count })),
+    })),
+  };
   return {
-    message: `Your ticket summary (${rangeLabel})\n${blocks.join("\n")}\nBy priority (${rels.length === 1 ? names[rels[0]].toLowerCase() : "raised by you"}): ${prio}`,
-    data: { dashboard: Object.fromEntries(rels.map((r) => [r, { total: got[r].total, byStatus: got[r].byStatus, byPriority: got[r].byPriority }])) },
+    message: `Your ticket summary — ${period.label} (${period.rangeText})\n\n${blocks.join("\n\n")}`,
+    data: {
+      dashboard: Object.fromEntries(rels.map((r) => [r, { total: got[r].total, byStatus: got[r].byStatus, byPriority: got[r].byPriority }])),
+      summaryReport,
+      headline: `Here's your ticket summary for ${rangeLabel}.`,
+    },
     navigationTarget: dashboardTarget,
-    suggestedActions: [{ label: "Last 7 days", prompt: "Show my dashboard summary for the last 7 days" }, { label: "Last 90 days", prompt: "Show my dashboard summary for the last 90 days" }],
+    suggestedActions: [
+      ...(period.label !== "Last 7 days" ? [{ label: "Last 7 days", prompt: "Show my dashboard summary for the last 7 days" }] : []),
+      ...(period.label !== "Last 30 days" ? [{ label: "Last 30 days", prompt: "Show my dashboard summary for the last 30 days" }] : []),
+      ...(period.label !== "Last 90 days" ? [{ label: "Last 90 days", prompt: "Show my dashboard summary for the last 90 days" }] : []),
+    ],
     useModel: false,
     ticketNumbers: [],
   };
@@ -763,11 +823,16 @@ async function notificationsList(ctx, params) {
   }
   const shown = rows.slice(0, 10);
   const lines = shown.map((n) => `• ${n.isRead ? "" : "(unread) "}${n.ticketNumber ? `Ticket ${n.ticketNumber} — ` : ""}${toPlainText(n.title, 80)}: ${toPlainText(n.message, 120)} (${ago(n.createdAt)})`);
-  const firstTicket = shown.find((n) => n.ticketRouteId);
+  // The user's own notifications, as the bell shows them. A ticket link only when the ticket is still in their scope.
+  const items = shown.map((n) => ({ id: n.id, type: n.type, title: toPlainText(n.title, 80), message: toPlainText(n.message, 160), isRead: n.isRead, at: new Date(n.createdAt).toISOString(), ticketNumber: n.ticketNumber, ticketRouteId: n.ticketRouteId }));
   return {
     message: `${countOf(rows.length, `${adjective}notification`)}${suffix}${rows.length > shown.length ? `; showing the latest ${shown.length}` : ""}. ${unread} unread in total.\n${lines.join("\n")}`,
-    data: { notifications: { unread, shown: shown.length } },
-    navigationTarget: firstTicket ? { type: "route", path: `/tickets/${firstTicket.ticketRouteId}`, label: `Open ticket ${firstTicket.ticketNumber}` } : null,
+    data: {
+      notifications: { unread, shown: shown.length, matching: rows.length, items, filter: scope.trim() || null },
+      headline: `${countOf(rows.length, `${adjective}notification`)}${suffix}${rows.length > shown.length ? ` (showing the latest ${shown.length})` : ""}.`,
+    },
+    // Each notification card has its own Open Ticket button, so no single link is added under the answer.
+    navigationTarget: null,
     suggestedActions: [
       ...(unread ? [{ label: "Mark all as read", prompt: "Mark all notifications as read" }] : []),
       { label: "Clear all notifications", prompt: "Clear all my notifications" },
@@ -861,50 +926,87 @@ function withTicket(ticket, message, data) {
 }
 
 // ---- "What's new": a short digest for the signed-in user, from the same scoped tools -------------
-// Counts come from the database (the tools' totals), limited to what this role may see; the tickets shown
-// are the most recently updated ones in that same scope.
+// Every count comes from the database (the tools' totals), limited to what this role may see, and
+// covers exactly the window named in the answer: "today" starts at the user's own midnight. Unread
+// notifications are a running total (any date) and are labelled that way, never as today's activity.
+// A ticket is counted once per section; tickets already shown under "Assigned to you" are not
+// shown again under "Your tickets".
+const DIGEST_CARDS = 3;
+const NOTIFICATION_PEEK = 3;
+
+// "today" / "this week" / "in the last 7 days" / "in Oct 1 – Oct 5, 2026", for sentences.
+function periodPhrase(p) {
+  if (/^(Today|Yesterday|This week|Last week|This month|Last month|This year)$/.test(p.label)) return p.label.toLowerCase();
+  if (/^Last \d+ days$/.test(p.label)) return `in the ${p.label.toLowerCase()}`;
+  return `in ${p.rangeText}`;
+}
+
 async function whatsNew(ctx, params, question) {
-  const found = question ? await extractEntities(question, { visibleDepartments: [] }) : {};
-  let days = params.days || 7;
-  if (found.dateFrom) days = Math.max(1, Math.min(90, Math.round((Date.now() - new Date(found.dateFrom).getTime()) / 86400000) + 1));
   const role = ctx.scope.role;
   const staff = role !== "EMPLOYEE";
-  const since = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const period = resolvePeriod({ question, defaultDays: params.days || 7, timeZone: ctx.timeZone });
+  if (period.ambiguous) throw new ChatError(CODES.ACTION_INVALID, { message: "I can't tell which day you mean (day/month or month/day). Please write the date like 4 Oct 2026 or 2026-10-04." });
+  const updatedWindow = { updatedSince: period.from.toISOString(), updatedUntil: period.to.toISOString() };
   const total = async (input) => (await runTool("search_authorized_tickets", ctx, { limit: 1, ...input })).total;
 
-  const [{ unread, notifications }, updated, assignedToMe, created, unassigned] = await Promise.all([
-    runTool("get_my_notifications", ctx, { unreadOnly: "yes" }),
-    runTool("search_authorized_tickets", ctx, { scope: staff ? "staff" : "mine", updatedDays: days, limit: 5 }),
-    role === "ADMIN" || role === "MANAGER" ? Promise.resolve(null) : total({ scope: "mine", assignee: "me", updatedDays: days }),
-    staff ? total({ scope: "staff", dateFrom: since }) : Promise.resolve(null),
+  const [{ unread, notifications }, updated, assigned, created, unassigned] = await Promise.all([
+    runTool("get_my_notifications", ctx, {}),
+    runTool("search_authorized_tickets", ctx, { scope: staff ? "staff" : "mine", ...updatedWindow, limit: DIGEST_CARDS * 2 }),
+    // Managers and Admins are never assignees, so they have no "assigned to you" section.
+    role === "ADMIN" || role === "MANAGER" ? Promise.resolve(null) : runTool("search_authorized_tickets", ctx, { scope: "mine", assignee: "me", ...updatedWindow, limit: DIGEST_CARDS }),
+    staff ? total({ scope: "staff", createdSince: period.from.toISOString(), createdUntil: period.to.toISOString() }) : Promise.resolve(null),
     staff ? total({ scope: "staff", filter: "unassigned" }) : Promise.resolve(null),
   ]);
 
-  const label = days === 1 ? "today" : `the last ${days} days`;
-  const area = role === "EMPLOYEE" ? "Your tickets updated" : role === "ADMIN" ? "Tickets updated" : "Department tickets updated";
-  const lines = [`• Notifications: ${unread ? `${unread} unread` : "none unread"}`];
-  if (assignedToMe !== null) lines.push(`• Assigned to you and updated: ${assignedToMe}`);
-  lines.push(`• ${area}: ${updated.total}`);
-  if (created !== null) lines.push(`• New tickets created: ${created}`);
-  if (unassigned !== null) lines.push(`• Open tickets with nobody assigned: ${unassigned}`);
-  const latest = notifications.slice(0, 3).map((n) => `  - ${n.ticketNumber ? `Ticket ${n.ticketNumber}: ` : ""}${toPlainText(n.title, 60)}`);
+  const when = periodPhrase(period);
+  // Notifications created inside the window (from the newest 50 the bell keeps); "50+" if the window holds them all.
+  const inWindow = notifications.filter((n) => new Date(n.createdAt) >= period.from && new Date(n.createdAt) < period.to);
+  const notificationsInPeriod = { count: inWindow.length, capped: notifications.length >= 50 && inWindow.length === notifications.length };
+  const peek = inWindow.slice(0, NOTIFICATION_PEEK).map((n) => ({ title: toPlainText(n.title, 80), message: toPlainText(n.message, 140), ticketNumber: n.ticketNumber, ticketRouteId: n.ticketRouteId, at: new Date(n.createdAt).toISOString(), isRead: n.isRead }));
 
-  const nothing = !unread && !updated.total && !created && !assignedToMe;
+  const assignedNumbers = new Set((assigned?.tickets || []).map((t) => t.ticketNumber));
+  const updatedShown = updated.tickets.filter((t) => !assignedNumbers.has(t.ticketNumber)).slice(0, DIGEST_CARDS);
+  const updatedLabel = role === "EMPLOYEE" ? "Your tickets" : role === "ADMIN" ? "All tickets" : "Department tickets";
+
+  const caughtUp = !unread && !notificationsInPeriod.count && !updated.total && !created && !(assigned?.total);
+  const digest = {
+    period: periodView(period),
+    notifications: { unread, inPeriod: notificationsInPeriod.count, inPeriodCapped: notificationsInPeriod.capped, latest: peek },
+    assigned: assigned ? { count: assigned.total, tickets: assigned.tickets } : null,
+    // `count` is every ticket in this scope updated in the window; the cards skip ones already shown above.
+    updated: { label: updatedLabel, count: updated.total, tickets: updatedShown, skippedAssigned: updated.tickets.some((t) => assignedNumbers.has(t.ticketNumber)) },
+    created,
+    unassigned,
+    caughtUp,
+  };
+
+  // The same content as plain text (what Copy copies and what the transcript keeps).
+  const n = (x, capped) => `${x}${capped ? "+" : ""}`;
+  const sections = [
+    `Notifications\n• Unread (any date): ${unread}\n• New ${when}: ${n(notificationsInPeriod.count, notificationsInPeriod.capped)}`,
+    ...(assigned ? [`Assigned to you\n• Updated or newly assigned ${when}: ${assigned.total}`] : []),
+    `${updatedLabel}\n• Updated ${when}: ${updated.total}${created !== null ? `\n• Created ${when}: ${created}` : ""}${unassigned !== null ? `\n• Open with nobody assigned (now): ${unassigned}` : ""}`,
+  ];
+  const title = `What's New — ${period.label} (${period.rangeText})`;
+  const message = caughtUp
+    ? `${title}\nYou're all caught up. Nothing new ${when}, and you have no unread notifications.${unassigned ? `\n• Open with nobody assigned (now): ${unassigned}` : ""}`
+    : `${title}\n\n${sections.join("\n\n")}`;
+  const shown = [...(assigned?.tickets || []), ...updatedShown];
+
   return {
-    message: nothing
-      ? `Nothing new in ${label}. You have no unread notifications and no recently updated tickets.`
-      : `What's new (${label})\n${lines.join("\n")}${latest.length ? `\nLatest notifications:\n${latest.join("\n")}` : ""}${updated.tickets.length ? "\n\nThe most recently updated tickets are shown below." : ""}`,
-    data: { tickets: updated.tickets, total: updated.total, whatsNew: { days, unread, updated: updated.total } },
+    message,
+    data: { digest, headline: caughtUp ? `You're all caught up ${when === "today" ? "for today" : when}.` : `Here's what's new ${when}.` },
     navigationTarget: null,
     suggestedActions: [
       ...(unread ? [{ label: "Show unread notifications", prompt: "Show unread notifications" }] : []),
       ...(unassigned ? [{ label: "Show unassigned tickets", prompt: "Show unassigned tickets" }] : []),
-      ...(assignedToMe ? [{ label: "Tickets assigned to me", prompt: "Show tickets assigned to me" }] : []),
+      ...(assigned?.total ? [{ label: "Tickets assigned to me", prompt: "Show tickets assigned to me" }] : []),
       { label: "My dashboard", prompt: "Show my dashboard summary" },
     ],
-    state: updated.tickets.length ? { frame: { intent: "list_tickets", params: { scope: staff ? "staff" : "mine", filter: "any", mode: "list", page: 1 }, results: updated.tickets.map((t) => t.ticketNumber), at: Date.now() } } : undefined,
+    // "The first one" / "open the second" refer to the tickets in the order they are shown.
+    state: shown.length ? { frame: { intent: "list_tickets", params: { scope: staff ? "staff" : "mine", filter: "any", mode: "list", page: 1 }, results: shown.map((t) => t.ticketNumber), at: Date.now() } } : undefined,
     useModel: false,
-    ticketNumbers: updated.tickets.map((t) => t.ticketNumber),
+    ticketNumbers: shown.map((t) => t.ticketNumber),
   };
 }
 
