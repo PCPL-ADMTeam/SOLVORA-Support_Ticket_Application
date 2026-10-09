@@ -23,7 +23,7 @@ const ASSIGNED_OPTIONS = [
 // to GET /tickets; the backend (ticket.service.js#listTickets) is what
 // actually enforces the role-based authorization scope — this component
 // has no say over what a request is allowed to return.
-export default function TicketFilters({ filters, onChange, showAssigneeFilter, showDepartmentFilter, showAssignedFilter }) {
+export default function TicketFilters({ filters, onChange, showAssigneeFilter, showDepartmentFilter, showAssignedFilter, assignedFilterLabel = "Assigned" }) {
   const { user } = useAuth();
   const [priorities, setPriorities] = useState([]);
   const [agents, setAgents] = useState([]);
@@ -108,7 +108,7 @@ export default function TicketFilters({ filters, onChange, showAssigneeFilter, s
           />
         )}
         {showAssignedFilter && (
-          <TextField size="small" select label="Assigned" value={filters.assigned || ""} onChange={set("assigned")} sx={{ minWidth: 140 }}>
+          <TextField size="small" select label={assignedFilterLabel} value={filters.assigned || ""} onChange={set("assigned")} sx={{ minWidth: 140 }}>
             {ASSIGNED_OPTIONS.map((o) => <MenuItem key={o.value} value={o.value}>{o.label}</MenuItem>)}
           </TextField>
         )}

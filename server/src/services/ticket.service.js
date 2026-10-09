@@ -19,6 +19,14 @@ const {
 } = require("../utils/recipientBuilder");
 const blobStorageService = require("./blobStorage.service");
 const { uploadRoot } = require("../config/multer");
+const {
+  isManagementRole,
+  scopeWhereForUser,
+  scopeWhereForTab,
+  resolveTicketAccess,
+  canViewTicket,
+  canParticipate,
+} = require("../utils/ticketAccess");
 
 // A ticket may have at most this many attachments in total, enforced
 // server-side (see createTicket and addAttachment below) so it can never
@@ -130,15 +138,6 @@ const ticketDetailInclude = {
   },
 };
 
-// Both department-management roles ("MANAGER" and "TEAMLEAD") authorize
-// identically against UserDepartmentAccess — the only difference between
-// them is cardinality (a MANAGER may hold several rows, a TEAMLEAD exactly
-// one) and email TO/CC priority (see utils/recipientBuilder.js), never the
-// authorization shape itself. ADMIN and EMPLOYEE are never "management."
-function isManagementRole(user) {
-  return user.role.name === "MANAGER" || user.role.name === "TEAMLEAD";
-}
-
 // Every department this MANAGER/TEAMLEAD currently has a UserDepartmentAccess
 // row for. Fetched ONCE per request by each top-level service function below
 // and threaded through as a plain id array, rather than making
@@ -151,23 +150,10 @@ async function resolveUserDepartmentIds(user) {
   return userDepartmentAccessService.getUserDepartmentIds(user.id);
 }
 
-// Row-level authorization: what tickets can this user even see/act on.
-// ADMIN -> everything (view only — see the operational checks further down
-// for why ADMIN never reaches assign/reassign/transfer). MANAGER/TEAMLEAD ->
-// every ticket routed to ANY department they currently have
-// UserDepartmentAccess to (a TEAMLEAD's list always has exactly one entry; a
-// MANAGER's may have several — this check is identical either way). EMPLOYEE
-// -> tickets they raised, or that they've been assigned to work on. Used
-// both for list filtering and single-ticket checks.
-function scopeWhereForUser(user, userDepartmentIds = []) {
-  if (user.role.name === "ADMIN") return {};
-  if (isManagementRole(user)) {
-    // No accessible department => no tickets, rather than matching everything.
-    return userDepartmentIds.length ? { toDepartmentId: { in: userDepartmentIds } } : { id: "" };
-  }
-  return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
-}
-
+// Operational ("full") access — gates every mutating action (status,
+// assignment, content edits, transfer, attachment upload/delete). Row-level
+// list scopes and the participant/CC access levels live in
+// utils/ticketAccess.js.
 function assertCanView(user, ticket, userDepartmentIds = []) {
   if (user.role.name === "ADMIN") return;
   if (isManagementRole(user)) {
@@ -178,28 +164,47 @@ function assertCanView(user, ticket, userDepartmentIds = []) {
   throw new ApiError(403, "You can only view tickets you raised or are assigned to");
 }
 
-// Read-only variant of assertCanView, used ONLY by getTicketById. A MANAGER
-// or TEAMLEAD who personally raised a ticket must still be able to open it
-// after it's routed to (or transferred into) a department they don't have
-// access to — being the requester is sufficient to look at your own
-// request's status/history, mirroring the EMPLOYEE-role rule just below.
-// Deliberately NOT folded into assertCanView itself: that function also
-// gates mutating actions (comments/attachments/status changes/transfer),
-// which stay exactly access-scoped even on a ticket raised elsewhere —
-// acting on a department you don't manage is a materially different, larger
-// permission than merely viewing your own request's progress, and this
-// exception grants ONLY that narrower read access, never department-
-// management rights over the ticket's actual department.
-function assertCanViewForRead(user, ticket, userDepartmentIds = []) {
-  if (isManagementRole(user) && ticket.requesterId === user.id) return;
-  assertCanView(user, ticket, userDepartmentIds);
+// Server-side Custom CC membership of THIS authenticated user on THIS
+// ticket (TicketCC's unique [ticketId, userId]) — never derived from
+// anything in the request. Removing the TicketCC row removes the access.
+async function isTicketCcUser(ticketId, userId) {
+  const row = await prisma.ticketCC.findUnique({ where: { ticketId_userId: { ticketId, userId } }, select: { id: true } });
+  return Boolean(row);
+}
+
+// Resolves the caller's access level for one ticket (see
+// utils/ticketAccess.js#resolveTicketAccess). Only queries TicketCC when no
+// stronger relationship already applies.
+async function resolveAccessForTicket(user, ticket, userDepartmentIds = []) {
+  const access = resolveTicketAccess(user, ticket, { userDepartmentIds });
+  if (access === "full" || access === "participant") return access;
+  const isCcUser = await isTicketCcUser(ticket.id, user.id);
+  return resolveTicketAccess(user, ticket, { userDepartmentIds, isCcUser });
+}
+
+// View-only check for ticket details. Includes the pre-existing MANAGER/
+// TEAMLEAD requester read exception, plus Department Tickets (EMPLOYEE in
+// the ticket's department) and Custom CC — none of which grant any
+// operational permission. On denial, assertCanView supplies the same 403
+// message as before.
+async function assertCanViewDetails(user, ticket, userDepartmentIds = []) {
+  const access = await resolveAccessForTicket(user, ticket, userDepartmentIds);
+  if (!canViewTicket(access)) assertCanView(user, ticket, userDepartmentIds);
+  return access;
+}
+
+// Public comment / public attachment download: "full" or "participant".
+async function assertCanParticipate(user, ticket, userDepartmentIds = []) {
+  const access = await resolveAccessForTicket(user, ticket, userDepartmentIds);
+  if (!canParticipate(access)) assertCanView(user, ticket, userDepartmentIds);
+  return access;
 }
 
 // Internal (staff-only) notes are stripped out before a response reaches
 // anyone who isn't actually staff FOR THIS TICKET's own department — an
 // EMPLOYEE requester (unless also the assignee), or a MANAGER/TEAMLEAD
-// viewing solely via the requester exception above (assertCanViewForRead)
-// rather than as this ticket's own department management user. A
+// viewing solely via the requester read exception, Department Tickets, or
+// Custom CC (see assertCanViewDetails) rather than as this ticket's own department management user. A
 // MANAGER/TEAMLEAD who DOES manage this ticket's department, or the person
 // actually assigned to work it, still sees everything, exactly as before.
 // Shared by scrubInternalComments (what the comment list itself shows) and
@@ -402,54 +407,6 @@ async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue
 }
 
 
-// "created"/"assigned" are self-sufficient authorization rules on their
-// own — requesterId/assigneeId always equals the authenticated caller's
-// own id, server-derived, never client-supplied — so they REPLACE the
-// normal role-based scopeWhereForUser rather than being ANDed with it.
-// This matters specifically for MANAGER/TEAMLEAD: scopeWhereForUser
-// restricts them to their own department(s), but "tickets I raised" (the
-// Raised By Me view) must include tickets raised to OTHER departments too —
-// ANDing the two would incorrectly hide those. Note MANAGER has no
-// "assigned" scope in its own UI (Managers are never assignees), but the
-// scope itself stays generic here — it's simply never requested for that
-// role. For ADMIN/EMPLOYEE this produces the exact same result as the old
-// AND-based version: ADMIN's scopeWhereForUser is unrestricted, and an
-// EMPLOYEE's own requesterId/assigneeId is already a subset of their
-// existing requesterId-OR-assigneeId scope. Shared with dashboard.service.js
-// so both mean exactly the same thing for the same scope value — no
-// duplicate/divergent filtering logic.
-function scopeWhereForTab(user, scope, userDepartmentIds = []) {
-  if (scope === "assigned") return { assigneeId: user.id };
-  if (scope === "created") return { requesterId: user.id };
-  // "mine" = raised by me OR assigned to me, as ONE query (never a summed
-  // pair of separate counts) so a ticket matching both is never double
-  // counted — the exact same OR shape scopeWhereForUser already uses for an
-  // EMPLOYEE's own default scope, just made explicitly selectable via
-  // `scope` for any role (most usefully TEAMLEAD, whose own default scope
-  // is department-access-based and unrelated to requesterId/assigneeId).
-  if (scope === "mine") return { OR: [{ requesterId: user.id }, { assigneeId: user.id }] };
-  // "authorized" = global search's own scope: everything the caller is
-  // allowed to VIEW, as distinct from "department" (a MANAGER/TEAMLEAD's
-  // normal list default, scopeWhereForUser below — every accessible
-  // department, not just one) and "mine"/"created"/"assigned" (an explicit
-  // personal tab). For ADMIN/EMPLOYEE, scopeWhereForUser(user) already
-  // covers everything they're allowed to view (unrestricted / raised-OR-
-  // assigned respectively), so this is identical to the default branch for
-  // them. For MANAGER/TEAMLEAD specifically, scopeWhereForUser only covers
-  // their accessible departments and misses a ticket they personally raised
-  // to a department they DON'T have access to — exactly the one extra case
-  // assertCanViewForRead's own read-only exception already grants a single
-  // ticket at a time, mirrored here as a list-query OR so global search can
-  // find that ticket too, never more than what that existing exception
-  // already permits.
-  if (scope === "authorized") {
-    return isManagementRole(user)
-      ? { OR: [scopeWhereForUser(user, userDepartmentIds), { requesterId: user.id }] }
-      : scopeWhereForUser(user, userDepartmentIds);
-  }
-  return scopeWhereForUser(user, userDepartmentIds);
-}
-
 async function listTickets(user, query) {
   const { page, limit, skip, take } = parsePagination(query);
   const userDepartmentIds = await resolveUserDepartmentIds(user);
@@ -537,8 +494,10 @@ async function getTicketById(user, id) {
   const ticket = await prisma.ticket.findUnique({ where: { id }, include: ticketDetailInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   const userDepartmentIds = await resolveUserDepartmentIds(user);
-  assertCanViewForRead(user, ticket, userDepartmentIds);
-  return shapeTicketDetail(scrubInternalComments(ticket, user, userDepartmentIds));
+  const access = await assertCanViewDetails(user, ticket, userDepartmentIds);
+  // viewerAccess ("full" | "participant" | "requester-read") lets the UI hide
+  // controls the backend would reject anyway; it is never trusted back.
+  return { ...shapeTicketDetail(scrubInternalComments(ticket, user, userDepartmentIds)), viewerAccess: access };
 }
 
 async function createTicket(user, payload, files = []) {
@@ -1238,13 +1197,16 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId }, include: ticketListInclude });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   const userDepartmentIds = await resolveUserDepartmentIds(user);
-  assertCanView(user, ticket, userDepartmentIds);
+  // Public comments: operational ("full") access, or "participant" access
+  // (an EMPLOYEE viewing via Department Tickets, or a Custom CC recipient).
+  const access = await assertCanParticipate(user, ticket, userDepartmentIds);
 
   // Internal notes / "first response" credit go to whoever is actually
   // handling the ticket: Admin, Manager, Team Lead, or the EMPLOYEE assigned
   // to work it (the assignee is never staff in this model, but plays the
-  // same role).
-  const isHandler = user.role.name === "ADMIN" || isManagementRole(user) || ticket.assigneeId === user.id;
+  // same role). Participant access never allows internal notes — e.g. a
+  // Manager who is only CC'd on another department's ticket.
+  const isHandler = access === "full" && (user.role.name === "ADMIN" || isManagementRole(user) || ticket.assigneeId === user.id);
   if (isInternal && !isHandler) {
     throw new ApiError(403, "Only a manager, team lead, admin, or the assigned employee can add internal notes");
   }
@@ -1287,8 +1249,10 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
   // failed upload is logged but doesn't undo the comment that was already
   // successfully posted (same "a secondary side-effect failing must not
   // roll back the primary action" precedent used throughout this file).
+  // storeAttachment (not addAttachment): access was already checked above
+  // for this comment, which participants may post with attachments.
   for (const file of files) {
-    await addAttachment(user, ticketId, file, comment.id).catch((err) => {
+    await storeAttachment(user, ticket, file, comment.id).catch((err) => {
       console.error(`[tickets] Failed to save attachment "${file.originalname}" for comment ${comment.id}:`, err.message);
     });
   }
@@ -1363,10 +1327,19 @@ async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, tea
 // upload, the blob is deleted so a failed request never leaves an orphan
 // blob behind (there is nothing in Postgres pointing at it to clean up
 // later otherwise).
+// Standalone uploads (POST /tickets/:id/attachments) and the new ticket's own
+// attachments require operational access — unchanged.
 async function addAttachment(user, ticketId, file, commentId = null) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   assertCanView(user, ticket, await resolveUserDepartmentIds(user));
+  return storeAttachment(user, ticket, file, commentId);
+}
+
+// The upload itself, for a caller that has ALREADY authorized the action
+// (addAttachment above, or addComment for a comment's own files).
+async function storeAttachment(user, ticket, file, commentId = null) {
+  const ticketId = ticket.id;
 
   // Early guard — never spend an Azure upload on a request that's already
   // obviously over either limit (count or combined size).
@@ -1445,7 +1418,10 @@ async function streamAttachment(user, ticketId, attachmentId, res) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
   const userDepartmentIds = await resolveUserDepartmentIds(user);
-  assertCanView(user, ticket, userDepartmentIds);
+  // Anyone who may see the ticket's public conversation (operational or
+  // participant access) may download its public attachments; internal-note
+  // attachments stay gated by canViewInternalNotes below.
+  await assertCanParticipate(user, ticket, userDepartmentIds);
 
   const attachment = await prisma.ticketAttachment.findUnique({
     where: { id: attachmentId },

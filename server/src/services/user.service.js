@@ -311,6 +311,26 @@ async function listAssignableEmployees(actingUser, { departmentId } = {}) {
   const isTeamLeadCaller = actingUser.role.name === "TEAMLEAD";
   const isManagementCaller = actingUser.role.name === "MANAGER" || isTeamLeadCaller;
 
+  // EMPLOYEE — options for the Department Tickets "Assignee" filter only
+  // (employees never assign). Always their OWN department from the server-
+  // side User.departmentId; any client-supplied departmentId is ignored.
+  // Includes the department's Team Leads, who can also be assignees.
+  if (actingUser.role.name === "EMPLOYEE") {
+    if (!actingUser.departmentId) return [];
+    const ownDepartmentId = actingUser.departmentId;
+    return prisma.user.findMany({
+      where: {
+        isActive: true,
+        OR: [
+          { role: { name: "EMPLOYEE" }, departmentId: ownDepartmentId },
+          { role: { name: "TEAMLEAD" }, departmentAccess: { some: { departmentId: ownDepartmentId } } },
+        ],
+      },
+      select: assignableSelect,
+      orderBy: { name: "asc" },
+    });
+  }
+
   if (isManagementCaller && departmentId) {
     if (!(await hasUserDepartmentAccess(actingUser.id, departmentId))) return [];
     const where = isTeamLeadCaller

@@ -29,6 +29,7 @@ import { usersApi } from "../api/users";
 import { departmentsApi } from "../api/departments";
 import { useAuth } from "../context/AuthContext";
 import LoadingState from "../components/common/LoadingState";
+import EmptyState from "../components/common/EmptyState";
 import StatusBadge from "../components/common/StatusBadge";
 import PriorityBadge from "../components/common/PriorityBadge";
 import SafeHtml from "../components/common/SafeHtml";
@@ -108,6 +109,7 @@ export default function TicketDetailPage() {
 
   const [ticket, setTicket] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   // Comments vs Activity History — both already come from the SAME ticket
   // fetch (ticket.comments/ticket.history), so switching tabs is a pure
@@ -207,9 +209,22 @@ export default function TicketDetailPage() {
   }, [ticket]);
 
   const load = useCallback(async () => {
-    const { data } = await ticketsApi.getById(id);
-    setTicket(data.data);
-    setLoading(false);
+    try {
+      const { data } = await ticketsApi.getById(id);
+      setTicket(data.data);
+      setLoadError("");
+    } catch (err) {
+      // e.g. a View Ticket email link opened by someone with no access to
+      // this ticket — show the server's 403/404 message, never a spinner.
+      if (err.response?.status === 403 || err.response?.status === 404) {
+        setTicket(null);
+        setLoadError(err.response.data?.message || "You do not have access to this ticket.");
+      } else {
+        throw err;
+      }
+    } finally {
+      setLoading(false);
+    }
   }, [id]);
 
   useEffect(() => {
@@ -233,7 +248,7 @@ export default function TicketDetailPage() {
   const applyUpdate = async (payload) => {
     try {
       const { data } = await ticketsApi.update(id, payload);
-      setTicket(data.data);
+      setTicket((prev) => ({ ...data.data, viewerAccess: prev?.viewerAccess }));
       enqueueSnackbar("Ticket updated", { variant: "success" });
     } catch (err) {
       enqueueSnackbar(err.response?.data?.message || "Update failed", { variant: "error" });
@@ -389,7 +404,7 @@ export default function TicketDetailPage() {
         toDepartmentId: draftToDepartmentId,
         transferReason: reason,
       });
-      setTicket(data.data);
+      setTicket((prev) => ({ ...data.data, viewerAccess: prev?.viewerAccess }));
       setTransferOpen(false);
       enqueueSnackbar(`Ticket transferred to ${data.data.toDepartment?.name || "the new department"}`, { variant: "success" });
     } catch (err) {
@@ -399,6 +414,7 @@ export default function TicketDetailPage() {
     }
   };
 
+  if (!loading && loadError) return <EmptyState title="Ticket unavailable" subtitle={loadError} />;
   if (loading || !ticket) return <LoadingState minHeight={400} />;
 
   // Every active department is shown as a possible destination except the
@@ -487,7 +503,10 @@ export default function TicketDetailPage() {
                 <CommentThread
                   ticketId={ticket.id}
                   comments={ticket.comments}
-                  isStaff={isStaff}
+                  // Internal-note option only with operational access — not
+                  // for a Manager/Team Lead who is merely CC'd on another
+                  // department's ticket (the backend rejects it too).
+                  isStaff={isStaff && ticket.viewerAccess === "full"}
                   onAddComment={handleAddComment}
                   submitting={commentSubmitting}
                 />

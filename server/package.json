@@ -12,7 +12,8 @@
     "prisma:generate": "prisma generate",
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
-    "test": "jest --runInBand"
+    "test": "jest --runInBand",
+    "test:db": "jest --runInBand"
   },
   "dependencies": {
     "@azure/msal-node": "^6.0.1",
