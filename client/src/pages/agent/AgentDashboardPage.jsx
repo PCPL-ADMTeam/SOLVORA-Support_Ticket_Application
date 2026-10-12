@@ -8,6 +8,7 @@ import PendingActionsIcon from "@mui/icons-material/PendingActions";
 import HourglassBottomIcon from "@mui/icons-material/HourglassBottom";
 import PauseCircleOutlineIcon from "@mui/icons-material/PauseCircleOutline";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
+import ArchiveIcon from "@mui/icons-material/Archive";
 import ApartmentIcon from "@mui/icons-material/Apartment";
 import { subDays } from "date-fns";
 import { dashboardApi } from "../../api/dashboard";
@@ -385,7 +386,7 @@ export default function AgentDashboardPage() {
                     <KpiCard label="Resolved" value={kpis.resolved} color="#0ca30c" icon={<TaskAltIcon />} onClick={() => goToMyFilteredTickets({ status: "RESOLVED" })} />
                   </Box>
                   <Box sx={{ flex: { xs: "1 1 45%", sm: "1 1 30%", md: "1 1 0" }, minWidth: 0 }}>
-                    <KpiCard label="Closed" value={kpis.closed} color="#898781" onClick={() => goToMyFilteredTickets({ status: "CLOSED" })} />
+                    <KpiCard label="Closed" value={kpis.closed} color="#898781" icon={<ArchiveIcon />} onClick={() => goToMyFilteredTickets({ status: "CLOSED" })} />
                   </Box>
                 </Box>
 
@@ -441,7 +442,7 @@ export default function AgentDashboardPage() {
                     <KpiCard label="Resolved" value={kpis.resolved} color="#0ca30c" icon={<TaskAltIcon />} onClick={() => goToDepartmentTickets({ status: "RESOLVED" })} />
                   </Box>
                   <Box sx={{ flex: { xs: "1 1 45%", sm: "1 1 30%", md: "1 1 0" }, minWidth: 0 }}>
-                    <KpiCard label="Closed" value={kpis.closed} color="#898781" onClick={() => goToDepartmentTickets({ status: "CLOSED" })} />
+                    <KpiCard label="Closed" value={kpis.closed} color="#898781" icon={<ArchiveIcon />} onClick={() => goToDepartmentTickets({ status: "CLOSED" })} />
                   </Box>
                 </Box>
 

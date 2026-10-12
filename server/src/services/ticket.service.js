@@ -14,6 +14,7 @@ const {
   buildCreatedRecipients,
   buildStandardRecipients,
   buildAssignedOrCommentRecipients,
+  buildCommentRecipients,
   buildRequesterOnlyRecipients,
   buildSelfAssignedRecipients,
 } = require("../utils/recipientBuilder");
@@ -26,6 +27,7 @@ const {
   resolveTicketAccess,
   canViewTicket,
   canParticipate,
+  isDepartmentEmployeeViewer,
 } = require("../utils/ticketAccess");
 
 // A ticket may have at most this many attachments in total, enforced
@@ -1265,21 +1267,28 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
 
   // Public comments notify the ticket's normal recipient group — internal
   // notes never leave staff (skipped entirely below — no email for
-  // anyone). Uses the SAME shape as TICKET_ASSIGNED (see
-  // buildAssignedOrCommentRecipients): TO the current assigned EMPLOYEE
-  // ONLY, CC the requester + current department's active Team Leads/
-  // Managers + Custom CC. The comment's own author gets no special
-  // TO/CC treatment beyond whichever of those groups they already belong
-  // to — there is deliberately no "comment author -> TO" rule. If the
-  // ticket currently has no assignee, `userIds` is empty and (per the
-  // guard below, matching notification.service.js#notify's own existing
-  // behavior) no email is sent for this event at all — nobody is ever
-  // promoted into TO to work around that. An attachment-only public
+  // anyone). Assigned: TO the assignee, CC the requester + current
+  // department's active Team Leads/Managers + Custom CC. Unassigned: TO the
+  // requester, CC the Team Leads/Managers + Custom CC (see
+  // recipientBuilder.js#buildCommentRecipients). The comment's own author
+  // gets no special TO/CC treatment beyond whichever of those groups they
+  // already belong to. `userIds` is empty only if the ticket somehow has
+  // neither an assignee nor a requester. An attachment-only public
   // comment still triggers exactly this one email — there is no separate
   // "attachment added" event, and addAttachment() itself never sends its
   // own notification.
   if (!isInternal) {
-    const { userIds, ccUserIds } = await buildAssignedOrCommentRecipients(ticket);
+    // TO = assignee, or the requester when unassigned (see
+    // recipientBuilder.js#buildCommentRecipients).
+    const { userIds, ccUserIds } = await buildCommentRecipients(ticket);
+    // A commenter whose ONLY access is Department Tickets (an EMPLOYEE of the
+    // ticket's department — not requester/assignee/Team Lead/Manager/Custom
+    // CC) is CC'd on this one email so they see the replies to their own
+    // comment. Derived from the authenticated user + DB, never the request;
+    // in memory only (never written to TicketCC), and only for this event.
+    const isDepartmentCommenter = access === "participant" && isDepartmentEmployeeViewer(user, ticket);
+    const commentCcUserIds =
+      isDepartmentCommenter && !userIds.includes(user.id) && !ccUserIds.includes(user.id) ? [...ccUserIds, user.id] : ccUserIds;
     if (userIds.length) {
       await notificationService.notify({
         eventKey: "TICKET_COMMENT_ADDED",
@@ -1288,7 +1297,7 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
         type: "NEW_COMMENT",
         ticket,
         comment: finalComment,
-        ccUserIds,
+        ccUserIds: commentCcUserIds,
       });
     }
   }

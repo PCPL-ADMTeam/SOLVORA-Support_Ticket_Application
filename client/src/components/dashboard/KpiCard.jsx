@@ -20,7 +20,7 @@ export default function KpiCard({ label, value, color = "#c81e2a", icon, onClick
       }}
     >
       {/* Icon slot always reserves the same 44x44 width — even for cards
-          with no icon (e.g. "Closed") — so the value/label text lines up
+          with no icon — so the value/label text lines up
           identically across every card in the row instead of shifting left
           on cards that happen not to have one. */}
       <Box

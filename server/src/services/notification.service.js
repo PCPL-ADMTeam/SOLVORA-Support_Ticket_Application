@@ -12,6 +12,14 @@ const { buildInAppNotificationContent } = require("../utils/inAppNotificationCon
 // in-app notification and the ticket operation that triggered it still
 // succeed even before templates are seeded/configured. This is not "the"
 // content source; the DB template is.
+// A resolved address is only used if it is a non-empty, single
+// "local@domain" string — an empty or malformed User/Entra value is
+// skipped (like an unresolvable one) rather than handed to Graph, where it
+// would fail the whole message for every other recipient.
+function isUsableEmail(value) {
+  return typeof value === "string" && /^[^\s@,;<>]+@[^\s@,;<>]+\.[^\s@,;<>]+$/.test(value.trim());
+}
+
 function fallbackContent(eventKey, ticket) {
   const label = eventKey ? eventKey.replace(/_/g, " ").toLowerCase() : "ticket update";
   return {
@@ -98,13 +106,17 @@ async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comme
     const seen = new Set();
     for (const userId of primaryIds) {
       const email = await emailService.resolveUserEmail(userId);
-      if (!email) continue;
+      if (!isUsableEmail(email)) continue;
       const key = email.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);
       toEmails.push(email);
     }
-    if (!toEmails.length) return;
+    // Never send with an empty To — and say so, rather than skipping silently.
+    if (!toEmails.length) {
+      console.warn(`[notifications] "${eventKey}" email not sent: no valid To address for user(s) ${primaryIds.join(", ")}`);
+      return;
+    }
 
     const cc = await resolveCcEmails(ccUserIds, seen);
     const fileAttachments = await buildEmailFileAttachments(attachments);
@@ -160,7 +172,7 @@ async function resolveCcEmails(ccUserIds, toEmailsSeen) {
     if (!ccUserId) continue;
     try {
       const ccEmail = await emailService.resolveUserEmail(ccUserId);
-      if (!ccEmail) continue;
+      if (!isUsableEmail(ccEmail)) continue;
       const key = ccEmail.toLowerCase();
       if (seen.has(key)) continue;
       seen.add(key);

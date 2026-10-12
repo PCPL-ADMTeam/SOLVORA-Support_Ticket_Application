@@ -298,9 +298,23 @@ describeDb("Ticket access — Employee Ticket Log, Department Tickets, Custom CC
       const call = notificationService.notify.mock.calls[0][0];
       expect(call.eventKey).toBe("TICKET_COMMENT_ADDED");
       expect(call.userIds).toEqual([U.empA2.id]); // TO = assignee
-      expect(call.ccUserIds).toEqual(expect.arrayContaining([U.empA1.id, U.tlA.id, U.empB.id, U.mgrB.id]));
+      // Existing recipients (requester, Team Lead, Custom CC) + the department commenter.
+      expect(call.ccUserIds.sort()).toEqual([U.empA1.id, U.tlA.id, U.empB.id, U.mgrB.id, U.empInactive.id, U.empA3.id].sort());
+      expect(call.ccUserIds).not.toContain(U.empA2.id);
       const view = await ticketService.getTicketById(U.empA1, T.T1.id);
       expect(view.comments.some((c) => c.id === comment.id)).toBe(true);
+    });
+
+    test("comment on an UNASSIGNED ticket: To = requester, CC = Team Leads + Managers + Custom CC", async () => {
+      const comment = await ticketService.addComment(U.empA3, T.T2.id, { body: "<p>unassigned comment</p>", isInternal: false });
+      expect(await prisma.ticketComment.count({ where: { id: comment.id } })).toBe(1);
+      expect(notificationService.notify).toHaveBeenCalledTimes(1);
+      const call = notificationService.notify.mock.calls[0][0];
+      expect(call.eventKey).toBe("TICKET_COMMENT_ADDED");
+      expect(call.userIds).toEqual([U.empA2.id]); // T2's requester
+      // dept A has one Team Lead, no Manager, no Custom CC — plus the department commenter
+      expect(call.ccUserIds).toEqual([U.tlA.id, U.empA3.id]);
+      expect(call.ccUserIds).not.toContain(U.empA2.id);
     });
 
     test("department visibility grants no management operations", async () => {
@@ -314,6 +328,40 @@ describeDb("Ticket access — Employee Ticket Log, Department Tickets, Custom CC
       await expectForbidden(ticketService.addAttachment(U.empA3, T.T2.id, { originalname: "a.txt", size: 1, buffer: Buffer.from("a") }));
       const t2 = await prisma.ticket.findUnique({ where: { id: T.T2.id } });
       expect(t2).toMatchObject({ status: "IN_PROGRESS", assigneeId: null, title: title("T2"), toDepartmentId: D.A.id });
+    });
+
+    test("department commenter CC is in-memory only — never saved as Custom CC", async () => {
+      expect(await prisma.ticketCC.count({ where: { userId: U.empA3.id } })).toBe(0);
+      const t1 = await ticketService.getTicketById(U.empA1, T.T1.id);
+      expect(t1.ccUsers.map((u) => u.id)).not.toContain(U.empA3.id);
+    });
+
+    test("commenters with any other access path are NOT added by this rule", async () => {
+      // Requester (full access), Team Lead (full), and a cross-department Custom CC
+      // user (participant via CC, not department) — CC is exactly the normal list.
+      // (T2's requester is empA2 — the To recipient, never added to CC.)
+      for (const key of ["empA2", "tlA", "empB2"]) {
+        if (key === "empB2") await prisma.ticketCC.create({ data: { ticketId: T.T2.id, userId: U.empB2.id } });
+        notificationService.notify.mockClear();
+        await ticketService.addComment(U[key], T.T2.id, { body: `<p>${key}</p>`, isInternal: false });
+        const { userIds, ccUserIds } = notificationService.notify.mock.calls[0][0];
+        expect(userIds).toEqual([U.empA2.id]);
+        const expectedCc = key === "empB2" ? [U.tlA.id, U.empB2.id] : [U.tlA.id];
+        expect(ccUserIds).toEqual(expectedCc);
+      }
+      await prisma.ticketCC.delete({ where: { ticketId_userId: { ticketId: T.T2.id, userId: U.empB2.id } } });
+    });
+
+    test("department commenter is not added to later, non-comment notifications", async () => {
+      notificationService.notify.mockClear();
+      await ticketService.updateTicket(U.tlA, T.T2.id, { status: "ON_HOLD", onHoldReason: "waiting" });
+      await ticketService.updateTicket(U.tlA, T.T2.id, { status: "IN_PROGRESS" });
+      expect(notificationService.notify).toHaveBeenCalledTimes(2);
+      for (const [call] of notificationService.notify.mock.calls) {
+        expect(call.eventKey).toBe("TICKET_STATUS_CHANGED");
+        expect(call.userIds).not.toContain(U.empA3.id);
+        expect(call.ccUserIds).not.toContain(U.empA3.id);
+      }
     });
 
     test("employee cannot open another department's ticket", async () => {
