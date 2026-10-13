@@ -4,7 +4,7 @@ const ApiError = require("../../utils/ApiError");
 const { recordAudit } = require("../../utils/audit");
 const { ChatError, CODES } = require("../chatbot.errors");
 const { recordChatAudit } = require("../chatbot.audit");
-const { ACTIONS } = require("./registry");
+const { ACTIONS, assigneeOptions } = require("./registry");
 const { actionAllowed, permissionsFor } = require("../permissions");
 
 const TTL_MS = 10 * 60 * 1000;
@@ -85,7 +85,8 @@ async function proposeAction(ctx, parsed, meta = {}) {
   });
   await audit(scope.user, conversationId, "ACTION_PROPOSED", row.id, "SUCCESS");
   // The raw token is returned ONCE, to this admin's browser, and never stored.
-  return { id: row.id, action: parsed.action, title: def.title, summary: prepared.summary, impact: prepared.impact, expiresAt, confirmationToken };
+  // `edit` (some actions): what the preview's Edit may change, for a NEW preview. Names only; nothing is trusted from it.
+  return { id: row.id, action: parsed.action, title: def.title, summary: prepared.summary, impact: prepared.impact, expiresAt, confirmationToken, ...(prepared.edit ? { edit: prepared.edit } : {}) };
 }
 
 async function loadOwnPending(user, actionId, { token, conversationId, typed } = {}) {
@@ -224,7 +225,6 @@ async function cancelAction(user, actionId, proof = {}) {
   if (row.action === "raise_ticket_from_draft" && row.params?.draftId) {
     const store = require("../ticketDraft/draftStore");
     await store.setStatus(row.params.draftId, "CANCELLED").catch(() => {});
-    await store.releaseFiles(row.params.draftId).catch(() => {});
   }
   const message = row.action === "raise_ticket_from_draft" ? "Okay, I've cancelled the ticket. Nothing was created." : "Cancelled. Nothing was changed.";
   await saveResultMessage(row, message);
@@ -262,4 +262,12 @@ async function precheckAction(ctx, parsed) {
   await def.prepare({ actorId: ctx.scope.userId, user: ctx.scope.user, scope: ctx.scope, audit: async () => {} }, filled);
 }
 
-module.exports = { precheckAction, proposeAction, confirmAction, confirmTyped, cancelAction, cancelPendingInConversation, hasPendingInConversation, TTL_MS };
+// "Assign ticket N" with nobody named: the request is checked like any action (role permission, ticket in
+// scope; otherwise the usual refusal) before the people who can take the ticket are offered. Reads only.
+async function assigneeChoices(ctx, parsed) {
+  requireActionPermission(ctx.scope.user, parsed.action);
+  const audit = (a, rt, rid, res) => recordChatAudit({ userId: ctx.scope.userId, conversationId: ctx.conversationId, action: a, resourceType: rt, resourceId: rid, result: res });
+  return assigneeOptions({ actorId: ctx.scope.userId, user: ctx.scope.user, scope: ctx.scope, audit }, parsed.args.ticket);
+}
+
+module.exports = { assigneeChoices, precheckAction, proposeAction, confirmAction, confirmTyped, cancelAction, cancelPendingInConversation, hasPendingInConversation, TTL_MS };

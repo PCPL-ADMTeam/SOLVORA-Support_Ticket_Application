@@ -5,15 +5,58 @@ import { focusRing, reducedMotion } from "../theme/chatStyles";
 // Shared pieces for Solvy's structured answers. Everything here renders TEXT (React-escaped), never
 // HTML, and lays out in a single column on narrow screens so nothing scrolls sideways.
 
-// The outer card that holds one structured answer.
-export function CardFrame({ label, children, sx }) {
+// The outer card that holds one structured answer. With a `title` it gets the themed header every answer
+// shares: an icon tile in the role's colour, a title that says what the card shows, a one-line subtitle
+// (scope, count, ticket) and an optional badge (period, count, status). The body sits below it.
+export function CardFrame({ label, icon: Icon, title, subtitle, badge, children, sx, bodySx }) {
   return (
     <Box
       component="section"
-      aria-label={label}
-      sx={{ mt: 1, p: 1.5, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: "14px", color: "var(--sv-text)", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", overflowWrap: "anywhere", ...sx }}
+      aria-label={label || title}
+      sx={{ mt: 1, bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)", borderRadius: "14px", boxShadow: "var(--sv-card-shadow)", overflow: "hidden", color: "var(--sv-text)", minWidth: 0, maxWidth: "100%", boxSizing: "border-box", overflowWrap: "anywhere", ...sx }}
     >
+      {title && (
+        <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 1, px: 1.5, py: 1.1, bgcolor: "var(--sv-accent-soft)", borderBottom: "1px solid var(--sv-border)" }}>
+          {Icon && (
+            <Box aria-hidden sx={{ width: 32, height: 32, flexShrink: 0, borderRadius: "10px", display: "grid", placeItems: "center", color: "var(--sv-on-accent)", background: "var(--sv-accent-gradient)" }}>
+              <Icon sx={{ fontSize: 18 }} />
+            </Box>
+          )}
+          <Box sx={{ minWidth: 0, flex: "1 1 140px" }}>
+            <Typography component="h4" variant="subtitle2" fontWeight={800} sx={{ color: "var(--sv-text)", lineHeight: 1.25, wordBreak: "break-word" }}>
+              {title}
+            </Typography>
+            {subtitle && (
+              <Typography variant="caption" sx={{ display: "block", color: "var(--sv-muted)", lineHeight: 1.35, wordBreak: "break-word" }}>
+                {subtitle}
+              </Typography>
+            )}
+          </Box>
+          {badge}
+        </Box>
+      )}
+      <Box sx={{ p: 1.5, ...bodySx }}>{children}</Box>
+    </Box>
+  );
+}
+
+// A small rounded label for the header badge ("3 unread", "12 tickets").
+export function CountBadge({ children }) {
+  return (
+    <Box component="span" sx={{ px: 1, py: 0.25, borderRadius: 99, fontSize: 12, fontWeight: 800, color: "var(--sv-accent-ink)", bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-accent-ink)", whiteSpace: "nowrap" }}>
       {children}
+    </Box>
+  );
+}
+
+// A tinted callout: ok (green), blocked (amber), info (accent). The icon and the words carry the meaning.
+const TONES = { ok: "var(--sv-success)", blocked: "var(--sv-warning)", error: "var(--sv-error)", info: "var(--sv-accent-ink)" };
+export function Callout({ tone = "info", icon: Icon, children, label }) {
+  const color = TONES[tone] || TONES.info;
+  return (
+    <Box role="note" aria-label={label} sx={{ display: "flex", alignItems: "flex-start", gap: 1, p: 1.1, borderRadius: "10px", border: `1px solid ${color}`, borderLeft: `4px solid ${color}`, bgcolor: "var(--sv-bg)" }}>
+      {Icon && <Icon aria-hidden sx={{ fontSize: 18, mt: 0.15, color }} />}
+      <Box sx={{ minWidth: 0, flex: 1, color: "var(--sv-text)" }}>{children}</Box>
     </Box>
   );
 }
@@ -92,7 +135,7 @@ export function StatList({ children, label }) {
 // A small number tile; a colour, when given, is an accent only (the label always carries the meaning).
 export function StatTile({ label, value, color, muted = false }) {
   return (
-    <Box component="li" sx={{ listStyle: "none", minWidth: 0, p: 1, bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)", borderLeft: `4px solid ${color || "var(--sv-accent-ink)"}`, borderRadius: "10px", opacity: muted ? 0.8 : 1 }}>
+    <Box component="li" sx={{ listStyle: "none", minWidth: 0, p: 1, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderLeft: `4px solid ${color || "var(--sv-accent-ink)"}`, borderRadius: "10px", opacity: muted ? 0.8 : 1 }}>
       <Typography component="div" sx={{ fontSize: 20, fontWeight: 800, lineHeight: 1.1, color: "var(--sv-text)", fontVariantNumeric: "tabular-nums" }}>
         {value}
       </Typography>

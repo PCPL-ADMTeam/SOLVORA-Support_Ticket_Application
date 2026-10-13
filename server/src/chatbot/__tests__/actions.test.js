@@ -289,15 +289,22 @@ describe("injection cannot trigger changes", () => {
 });
 
 describe("reports", () => {
-  test("headcount, manager assignments, users by role are admin-only", async () => {
+  test("employee counts by department: every department for an Admin, only their own for staff, refused for an Employee", async () => {
     const hc = await ask(users.admin, "Show employee count by department");
-    expect(hc.intent).toBe("department_headcount");
-    expect(hc.message).toContain("IT Support: 2 employees, 0 managers, 1 team lead");
-    expect(hc.message).toContain("Finance: 1 employee, 1 manager, 0 team leads");
+    expect(hc.intent).toBe("people_directory");
+    expect(hc.message).toContain("• Finance: 1");
+    expect(hc.message).toContain("• IT Support: 2");
+    expect(hc.message).toContain("Total employees: 3");
+    expect((await ask(users.mgrD2, "Show employee count by department")).data.people.departments.map((d) => d.name)).toEqual(["Finance"]);
+    expect((await ask(users.tlD1, "Show employee count by department")).data.people.departments.map((d) => d.name)).toEqual(["IT Support"]);
+    expect((await ask(users.empA, "Show employee count by department")).error.code).toBe("CHAT_ACCESS_DENIED");
+  });
+
+  test("manager assignments and users by role are admin-only", async () => {
     const ma = await ask(users.admin, "Show manager assignments");
     expect(ma.message).toMatch(/IT Support\n {2}Managers: none\n {2}Team Leads: Tina Lead/);
     expect((await ask(users.admin, "how many users by role")).data.roles[0].count).toBeGreaterThan(0);
-    for (const q of ["Show employee count by department", "Show manager assignments", "how many users by role"]) {
+    for (const q of ["Show manager assignments", "how many users by role"]) {
       for (const u of [users.empA, users.tlD1, users.mgrD2]) expect((await ask(u, q)).error.code).toBe("CHAT_ACCESS_DENIED");
     }
   });

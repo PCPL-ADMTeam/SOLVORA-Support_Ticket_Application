@@ -209,7 +209,9 @@ describe("MANAGER (Finance only)", () => {
 
   test("a manager cannot assign tickets to people outside the allocated department", async () => {
     const r = await ask(users.mgrD2, "assign ticket 2627003 to Alice Employee");
-    expect(r.message).toBe('I couldn\'t find a person named "Alice Employee" in your departments.');
+    expect(r.message).toBe('I couldn\'t find a person named "Alice Employee" in your departments. These people can be assigned ticket 2627003:');
+    // The people offered instead are the ones who may take this ticket: Finance employees other than its current assignee (Dan).
+    expect(r.suggestedActions.map((a) => a.label)).toEqual(["Sam Smith"]);
     expect(JSON.stringify(r)).not.toMatch(/IT Support|u_empA/); // no hint that the person exists elsewhere
   });
 });
@@ -232,7 +234,8 @@ describe("TEAM LEAD (IT Support only)", () => {
 
     // Someone in another department: not found, with no hint they exist.
     const other = await ask(users.tlD1, "assign ticket 2627001 to Dan Finance");
-    expect(other.message).toBe('I couldn\'t find a person named "Dan Finance" in your departments.');
+    expect(other.message).toBe('I couldn\'t find a person named "Dan Finance" in your departments. These people can be assigned ticket 2627001:');
+    expect(other.suggestedActions.map((a) => a.label)).not.toContain("Dan Finance");
     // A Manager is not an eligible assignee (never in this app).
     prismaMock.__db.access.push({ userId: users.mgrD2.id, departmentId: D1.id });
     const mgr = await ask(users.tlD1, "assign ticket 2627001 to Mark Manager");
@@ -240,8 +243,17 @@ describe("TEAM LEAD (IT Support only)", () => {
     // A deactivated person.
     prismaMock.__db.users.find((u) => u.id === "u_empB").isActive = false;
     expect((await ask(users.tlD1, "assign ticket 2627001 to Bob Employee")).error.code).toBe("CHAT_INVALID_ASSIGNEE");
-    // Yourself (use the Assign button on the ticket page).
-    expect((await ask(users.tlD1, "assign ticket 2627001 to Tina Lead")).error.code).toBe("CHAT_INVALID_ASSIGNEE");
+    // Yourself: a Team Lead's "Assign to Me", exactly as on the ticket page (preview first, assignToMe on confirm).
+    const self = await ask(users.tlD1, "assign ticket 2627001 to Tina Lead");
+    expect(self.pendingAction.summary).toBe("Reassign ticket 2627001 from Carol Worker to yourself.");
+    await confirm(users.tlD1, self.pendingAction.id);
+    expect(spies.updateTicket).toHaveBeenLastCalledWith(users.tlD1, "id_2627001", { assignToMe: true });
+  });
+
+  test("a Manager is never an assignee, not even through 'assign to me'", async () => {
+    const r = await ask(users.mgrD2, "assign ticket 2627003 to me");
+    expect(r.error.code).toBe("CHAT_INVALID_ROLE_OPERATION");
+    expect(r.pendingAction).toBeNull();
   });
 
   test("another Team Lead of the same department is eligible (the app allows it for Team Leads only)", async () => {

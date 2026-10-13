@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import { Box, Button, Chip, Paper, Stack, Typography } from "@mui/material";
 import { focusRing, reducedMotion } from "./theme/chatStyles";
 
@@ -9,8 +9,70 @@ const DONE = {
   FAILED: { label: "Not done", color: "error" },
   HISTORY: { label: "From an earlier chat", color: "default" },
   SUPERSEDED: { label: "Being changed", color: "default" },
+  REPLACED: { label: "Replaced by your edit", color: "default" },
   CONFIRMING: { label: "In progress", color: "info" },
 };
+
+const field = { width: "100%", boxSizing: "border-box", font: "inherit", fontSize: 14, color: "var(--sv-text)", background: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: 10, padding: "8px 10px" };
+const fieldLabel = { display: "block", mb: 0.5, color: "var(--sv-text)", fontWeight: 600 };
+
+// Edit for an assignment, in the card: another eligible person (or a typed name or email) and the note.
+// "Update preview" asks for a NEW preview of it; nothing is changed until that preview is confirmed, and
+// the server checks the chosen person again exactly as for a typed request.
+function AssignEditor({ edit, busy, onSubmit, onBack }) {
+  const uid = useId();
+  const names = [...new Set([edit.assignee !== "me" ? edit.assignee : null, ...(edit.options || [])].filter(Boolean))];
+  const [who, setWho] = useState(edit.assignee || names[0] || "");
+  const [other, setOther] = useState("");
+  const [note, setNote] = useState(edit.note || "");
+  const target = other.trim() || who;
+  const submit = (e) => {
+    e.preventDefault();
+    if (!target || busy) return;
+    const cleanNote = note.replace(/\s+/g, " ").trim();
+    onSubmit(`Assign ticket ${edit.ticketNumber} to ${target}${cleanNote ? ` with note: ${cleanNote}` : ""}`);
+  };
+  return (
+    <Box component="form" onSubmit={submit} aria-label="Edit the assignment" sx={{ mt: 1.25, p: 1.25, borderRadius: "10px", bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)", display: "grid", gap: 1.1 }}>
+      <Box>
+        <Typography component="label" htmlFor={`${uid}-who`} variant="caption" sx={fieldLabel}>
+          Assign to
+        </Typography>
+        <select id={`${uid}-who`} style={field} value={who} onChange={(e) => setWho(e.target.value)} disabled={Boolean(other.trim())}>
+          {edit.canSelfAssign && <option value="me">Me (Assign to Me)</option>}
+          {names.map((n) => (
+            <option key={n} value={n}>
+              {n}
+            </option>
+          ))}
+        </select>
+      </Box>
+      <Box>
+        <Typography component="label" htmlFor={`${uid}-other`} variant="caption" sx={fieldLabel}>
+          Or someone else <span style={{ fontWeight: 400, color: "var(--sv-muted)" }}>(name or email)</span>
+        </Typography>
+        <input id={`${uid}-other`} style={field} value={other} maxLength={120} placeholder="Type a name or email" onChange={(e) => setOther(e.target.value)} />
+      </Box>
+      <Box>
+        <Typography component="label" htmlFor={`${uid}-note`} variant="caption" sx={fieldLabel}>
+          Note for the assignee <span style={{ fontWeight: 400, color: "var(--sv-muted)" }}>(optional, included in the email)</span>
+        </Typography>
+        <textarea id={`${uid}-note`} rows={2} style={{ ...field, resize: "vertical" }} value={note} maxLength={1000} onChange={(e) => setNote(e.target.value)} />
+      </Box>
+      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap" useFlexGap>
+        <Button type="submit" variant="contained" size="small" disableElevation disabled={!target || busy} sx={{ background: "var(--sv-accent-gradient)", color: "var(--sv-on-accent)", borderRadius: "10px", textTransform: "none", fontWeight: 700, ...focusRing }}>
+          Update preview
+        </Button>
+        <Button type="button" size="small" onClick={onBack} disabled={busy} sx={{ color: "var(--sv-accent-ink)", borderRadius: "10px", textTransform: "none", ...focusRing }}>
+          Back
+        </Button>
+      </Stack>
+      <Typography variant="caption" sx={{ color: "var(--sv-muted)" }}>
+        A new preview is shown. Nothing changes until you confirm it.
+      </Typography>
+    </Box>
+  );
+}
 
 // Preview of a change the assistant has PREPARED but not made. Nothing happens
 // until the admin presses Confirm, which calls the authenticated confirm
@@ -20,8 +82,11 @@ export default function ActionConfirmCard({ action, state, onConfirm, onCancel, 
   const busy = Boolean(state?.busy);
   // Discarding a ticket that has been filled in asks first: what was entered would be lost.
   const [discarding, setDiscarding] = useState(false);
+  // An assignment is edited in the card itself (another person, the note); other changes go back to the composer.
+  const [editing, setEditing] = useState(false);
   const isTicket = action.title === "Raise ticket";
   const outcome = status ? DONE[status] : null;
+  const editsInCard = action.edit?.kind === "assign";
 
   return (
     <Paper
@@ -50,6 +115,8 @@ export default function ActionConfirmCard({ action, state, onConfirm, onCancel, 
 
       {outcome ? (
         <Chip size="small" label={outcome.label} color={outcome.color} sx={{ mt: 1 }} role="status" />
+      ) : editing ? (
+        <AssignEditor edit={action.edit} busy={busy} onSubmit={(text) => onEdit(action, text)} onBack={() => setEditing(false)} />
       ) : (
         <Stack direction="row" spacing={1} sx={{ mt: 1.5 }} alignItems="center" flexWrap="wrap" useFlexGap>
           <Button
@@ -91,7 +158,7 @@ export default function ActionConfirmCard({ action, state, onConfirm, onCancel, 
               variant="text"
               size="small"
               disabled={busy}
-              onClick={() => onEdit(action)}
+              onClick={() => (editsInCard ? setEditing(true) : onEdit(action))}
               aria-label="Edit this request"
               sx={{ color: "var(--sv-accent-ink)", borderRadius: "10px", ...focusRing }}
             >

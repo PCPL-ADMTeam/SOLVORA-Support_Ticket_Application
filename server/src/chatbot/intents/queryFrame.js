@@ -18,15 +18,17 @@ const { extractDateRange } = require("../entities/dates");
 
 const GUIDANCE = /^(how (do|can|to|does|should|would)|where|what is|what's|what does|explain|can i|tell me about|steps)/;
 const TICKET_WORD = /\b(tickets?|requests?|cases?)\b/;
-const PEOPLE_WORD = /\b(people|persons?|employees?|users?|staff|members?|managers?|team ?leads?|leads?)\b/;
+const PEOPLE_WORD = /\b(people|persons?|employees?|users?|staff|members?|managers?|team ?leads?|leads?|admins?|administrators?|everyone|everybody)\b/;
 const ASK = /\b(who|show|list|give|display|see|view|get|find|which|what|how many|count|number of|tell|names?|are there|do i have|have i|any)\b/;
-// Questions other rules own (reports, history, guidance about features).
-const OTHER_OWNER = /(department.?wise|which (?:department|dept)|\b(?:most|highest|fewest|least|lowest|largest|biggest|maximum)\b|summar|statistic|stats|metric|trend|breakdown|report|each department|per department|by department|overdue|\bsla\b|escalat|unassigned|stale|histor|timeline|assignments?\b|dashboard|password|profile|notification)/;
+// Questions other rules own (reports, history, guidance about features). "Reported" is a ticket's raising, not a report:
+// "what tickets have I reported", "what tickets are reported in Hardware" are ticket lists.
+const OTHER_OWNER = /(department.?wise|which (?:department|dept)|\b(?:most|highest|fewest|least|lowest|largest|biggest|maximum)\b|summar|statistic|stats|metric|trend|breakdown|report(?!ed\b)|each department|per department|by department|overdue|\bsla\b|escalat|unassigned|stale|histor|timeline|assignments?\b|dashboard|password|profile|notification)/;
 
 const ROLE_WORDS = [
   ["MANAGER", /\bmanagers?\b/],
   ["TEAMLEAD", /\bteam ?leads?\b|\bleads?\b/],
   ["EMPLOYEE", /\bemployees?\b|\bagents?\b/],
+  ["ADMIN", /\badmins?\b|\badministrators?\b/],
 ];
 const VERBS = new Set(["show", "list", "give", "find", "get", "me", "all", "display", "see", "view", "what", "are", "is", "who", "whats", "the", "of", "for", "tell", "about", "details", "info", "on", "please", "any"]);
 
@@ -60,6 +62,8 @@ function relationToMe(raw) {
   // "the raised tickets" / "created tickets" on their own mean the ones I raised (unless a person is named).
   if (/\b(?:raised|created|submitted|logged|filed)\s+(?:tickets?|requests?)\b/.test(m) && !/\bby\s+(?!me\b|myself)\S/.test(m)) return "requester";
   if (/\bassigned\s+(?:tickets?|requests?)\b/.test(m) && !/\bassigned(?:\s+(?:tickets?|requests?))?\s+(?:to|for)\s+(?!me\b|myself|my\b)\S/.test(m)) return "assignee";
+  // "Associated with me", "related to me", "involving me": raised by me OR assigned to me (checked before "with me" below).
+  if (/\b(?:associated|related|linked|connected|involved)\s+(?:with|to)\s+(?:me|myself)\b|\b(?:involving|concerning)\s+(?:me|myself)\b|\bi(?:'m| am)\s+involved\b/.test(m)) return "either";
   if (/\bam i (?:handling|working|responsible)|\b(?:i need|do i need|i have|i must|i should) to (?:work|handle|look)|\bresponsible for|\bassigned\s+(?:to|for)\s+(?:me|myself)\b|\bassigned\s+to\s+my\b|\b(?:on|with)\s+me\b|\bmy\s+assigned\b|\bi\s+(?:am|'m|have been)\s+(?:assigned|handling|working)\b|\bi'm\s+(?:handling|working)\b/.test(m)) return "assignee";
   if (/\b(?:my|mine)\b|\b(?:i|i've)\s+have\b|\btickets?\s+i\b|\bdo\s+i\s+have\b|\bhave\s+i\b/.test(m)) return "either";
   return null;
@@ -89,12 +93,16 @@ function ticketFrame(m, role) {
     }
   }
 
+  // "My department('s) tickets", "in my departments", "my team's", "our department": the departments this user may
+  // see (department access is decided by the ticket tool from the authenticated user, never from these words).
+  const myDepartment = !person && !department && /\b(?:my|our)\s+(?:own\s+)?(?:departments?|depts?|team)(?:'s)?\b/.test(m);
+
   const mode = /\b(how many|count|number of|total number)\b/.test(m) ? "count" : "list";
   const tx = m.match(/\b(?:about|regarding|containing|mentioning|matching|with the word|named)\s+["']?([^"'?.!]+?)["']?\s*[?.!]*$/);
-  const claims = Boolean(hasDate || tx || mine || person || department || subject || mode === "count" || STATUS_OR_PRIORITY.test(m) || DATE_WORD.test(m));
+  const claims = Boolean(hasDate || tx || mine || person || department || subject || myDepartment || mode === "count" || STATUS_OR_PRIORITY.test(m) || DATE_WORD.test(m));
   if (!claims) return null;
   // A short noun phrase ("resolved tickets", "critical tickets", "Jamie tickets") is a request for that list.
-  const nounPhrase = /\btickets?[?.!]*$/.test(m) && m.split(/\s+/).length <= 8 && Boolean(STATUS_OR_PRIORITY.test(m) || mine || person || department);
+  const nounPhrase = /\btickets?[?.!]*$/.test(m) && m.split(/\s+/).length <= 8 && Boolean(STATUS_OR_PRIORITY.test(m) || mine || person || department || myDepartment);
   if (!ASK.test(m) && !nounPhrase && !/^(?:my\s+)?tickets?\b/.test(m) && !/^my\b/.test(m)) return null;
 
   let filter = "any";
@@ -103,9 +111,12 @@ function ticketFrame(m, role) {
 
   const pr = m.match(/\b(low|medium|high|critical)\s+(?:priority\s+)?tickets?\b|\b(low|medium|high|critical)\s+priority\b|\bpriority\s+(low|medium|high|critical)\b/);
   const flag = mine && mine !== "either" ? mine : null; // requester | assignee
-  const scope = role === "EMPLOYEE" || mine ? "mine" : "staff";
-  const params = { scope, filter, mode, title: scope === "mine" ? "Your tickets" : "Tickets" };
+  // Raised by / assigned to me -> my own tickets. "My department" -> the department view: for an Employee the ticket
+  // tool refuses it (the handler then explains what they can see) instead of silently showing their own tickets.
+  const scope = mine ? "mine" : myDepartment ? "staff" : role === "EMPLOYEE" ? "mine" : "staff";
+  const params = { scope, filter, mode, title: scope === "mine" ? "My Tickets" : myDepartment ? "My Department's Tickets" : "Tickets" };
   if (flag) params.mine = flag;
+  if (myDepartment && scope === "staff") params.myDepartment = true;
   // "show me the closed ticket reasons": the same list, with each ticket's recorded reason.
   if (/\b(reasons?|resolution notes?)\b/.test(m)) params.withReasons = true;
   if (tx) params.text = tx[1].trim().slice(0, 100);
@@ -116,18 +127,34 @@ function ticketFrame(m, role) {
   return { intent: "list_tickets", params };
 }
 
+// People questions other rules own (ticket reports, rankings, workload, settings). A department-wise breakdown OF
+// PEOPLE is a people question, so it is not in this list (OTHER_OWNER, for tickets, has it).
+const PEOPLE_OWNED_ELSEWHERE = /(summar|statistic|stats|metric|trend|\breport\b|overdue|\bsla\b|escalat|unassigned|stale|histor|timeline|assignments?\b|dashboard|password|profile|notification|workload|\b(?:most|highest|fewest|least|lowest|largest|biggest|maximum)\b|which (?:department|dept)|\b(?:by|per|each) roles?\b|\brole.?wise\b|\badmin (?:page|portal|panel|settings?|console)\b)/;
+// "the complete BI/Copilot team", "the whole team", "team members": all the people of a department.
+const TEAM_AS_PEOPLE = /\b(?:complete|whole|entire|full)\b.*\bteam\b|\bteam members?\b/;
+const COUNT_WORDS = /\b(how many|counts?|number of|number and|total|headcount)\b/;
+// "...and their names", "count them and list them", "along with names", "number and names of".
+const NAME_WORDS = /\bnames?\b|\b(?:list|show|name|give)\s+(?:me\s+)?(?:them|those|their)\b|\band\s+(?:list|show)\b|\balong with\b|\bwho are they\b/;
+
 function peopleFrame(m) {
   // "Show employee Nobody": one named person, not a directory listing (the person lookup handles it).
   if (/^(?:show|find|get|look up|who is)(?: me)?(?: the)? (?:employee|user|person|colleague|member) (?!in\b|of\b|for\b|each\b|every\b|all\b|list\b|names?\b|count\b|details\b)[a-z][a-z.'-]*(?: [a-z][a-z.'-]*){0,2}\s*[?.!]*$/.test(m)) return null;
   const whoManages = /\bwho\s+(?:manages|runs|heads|looks after)\b/.test(m);
-  if ((!PEOPLE_WORD.test(m) && !whoManages) || TICKET_WORD.test(m) || !ASK.test(m) || OTHER_OWNER.test(m)) return null;
+  if ((!PEOPLE_WORD.test(m) && !whoManages && !TEAM_AS_PEOPLE.test(m)) || TICKET_WORD.test(m) || !ASK.test(m) || PEOPLE_OWNED_ELSEWHERE.test(m)) return null;
   let roles = rolesIn(m);
   // "who manages X" / "who leads X" asks for the managers, whatever else was said.
-  if (!roles.length && /\bwho\s+(?:manages|runs|heads|looks after)\b/.test(m)) roles = ["MANAGER"];
-  const mode = /\b(how many|count|number of|total)\b/.test(m) ? "count" : "list";
-  // "how many employees do we have" (no department) belongs to the headcount report.
-  if (mode === "count" && !departmentRef(m) && !/\b(?:in|of|for|from)\s+\S+/.test(m)) return null;
-  return { intent: "people_directory", params: { roleFilters: roles, mode, all: /\b(each|every|all)\b/.test(m) && /\bdepartments?\b/.test(m) } };
+  if (!roles.length && whoManages) roles = ["MANAGER"];
+  // "everyone", "all people", "including every role": no role filter at all.
+  if (/\b(everyone|everybody|every role|all roles|all (?:the )?people|whole team|complete team|entire team|full team)\b/.test(m) || TEAM_AS_PEOPLE.test(m)) roles = roles.filter((r) => r === "ADMIN" && /\badmins?\b|\badministrators?\b/.test(m));
+  // A breakdown by role: asked for, or several roles counted together. A breakdown is always counts.
+  const askedBreakdown = /\bbreakdown\b|\bbreak down\b|\bdepartment.?wise\b/.test(m);
+  // Count, names, or both: "how many employees", "employee names", "count and names".
+  const counting = COUNT_WORDS.test(m) || askedBreakdown;
+  const mode = counting ? (NAME_WORDS.test(m) ? "both" : "count") : "list";
+  // Every department the user may see: "each department", "every department", "department-wise", "across departments".
+  const all = (/\b(each|every|all|per|by|across)\b/.test(m) && /\bdepartments?\b/.test(m)) || /\bdepartment.?wise\b/.test(m);
+  const breakdown = askedBreakdown || (counting && roles.filter((r) => r !== "ADMIN").length > 1);
+  return { intent: "people_directory", params: { roleFilters: roles, mode, all, ...(breakdown ? { breakdown: true } : {}) } };
 }
 
 // A bare name ("show Manoj", "who is Manoj Kumar") that nothing else claimed.
@@ -144,7 +171,7 @@ function dashboardFrame(m, role) {
   const mine = /\b(my|me|mine|i|i've|i have)\b/.test(m);
   const summaryWords = /\b(dashboard|summary|statistics|stats|overview|breakdown|by priority|by status|numbers|totals?)\b/;
   const ticketish = /\b(tickets?|requests?|dashboard)\b/.test(m);
-  if (!ticketish || /\b(department|team|everyone|overall|company|each|per)\b/.test(m)) return null;
+  if (!ticketish || /\b(departments?|depts?|teams?|everyone|overall|company|each|per)\b/.test(m)) return null;
   const rel = relationToMe(m);
   const view = /\b(how many|count|number of|total number)\b/.test(m) ? "count" : "summary";
   const relParam = rel === "requester" ? "created" : rel === "assignee" ? "assigned" : "both";
@@ -186,6 +213,11 @@ function parseFrame(message, role) {
   if (/\b(?:latest|most recent|newest|last)(?: raised| created)? ticket\b/.test(m) && !/\b\d{5,}\b/.test(m)) {
     const mine = role === "EMPLOYEE" || /\bmy\b/.test(m);
     return { intent: "list_tickets", params: { scope: mine ? "mine" : "staff", filter: "any", mode: "list", latest: true, title: mine ? "Your latest ticket" : "Latest ticket" } };
+  }
+  // "What is the total number of employees in Cloud?" counts people; it is not a how-to question.
+  if (GUIDANCE.test(m) && !TICKET_WORD.test(m) && COUNT_WORDS.test(m)) {
+    const people = peopleFrame(m);
+    if (people) return people;
   }
   if (GUIDANCE.test(m)) return null;
   // "Show tickets" with nothing else: which tickets? (Admins just get the list.)

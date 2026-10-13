@@ -170,7 +170,7 @@ each(STAFF, (role) => {
   add(role, "EMPLOYEE_DATA", "Who is the manager of BI/Copilot?", { say: "Who is the manager of BI/Copilot?", outcome: "DATA", has: ["Jayakumar J"], not: ["Pavithran", "Srihari"] });
   add(role, "EMPLOYEE_DATA", "Who are the Team Leads in BI/Copilot?", { say: "Who are the Team Leads in BI/Copilot?", outcome: "DATA", has: ["Pavithran M"], not: ["Jayakumar", "Srihari"] });
   add(role, "EMPLOYEE_DATA", "Show employees in BI/Copilot", { say: "Show employees in BI/Copilot", outcome: "DATA", has: ["Srihari", "Manoj Kumar R", "Jamie User"], not: ["Jayakumar", "Pavithran"] });
-  add(role, "EMPLOYEE_DATA", "How many people are in BI/Copilot?", { say: "How many people are in BI/Copilot?", outcome: "DATA", has: () => [peopleIn("dept_bi").length + " people"] });
+  add(role, "EMPLOYEE_DATA", "How many people are in BI/Copilot?", { say: "How many people are in BI/Copilot?", outcome: "DATA", has: () => ["People in BI/Copilot", "Total people: " + peopleIn("dept_bi").length] });
   add(role, "EMPLOYEE_DATA", "Find Jamie", { say: "Find Jamie", outcome: "DATA", check: (r) => lacks(r, ["Jamie User"]), checkType: "INTENT", suggest: "Show employees in BI/Copilot" });
   add(role, "EMPLOYEE_DATA", "Show Jamie's department", { say: "Show Jamie's department", outcome: "DATA", check: (r) => lacks(r, ["BI/Copilot"]), checkType: "INTENT", suggest: "Show employees in BI/Copilot" });
 });
@@ -285,7 +285,9 @@ add("EMPLOYEE", "AUTHORIZATION", "Employee cannot close a ticket they only raise
 // ============================================================================================
 add("ADMIN", "AUTHORIZATION", "Admin cannot assign a ticket (the application does not allow it)", { say: "Assign ticket 2600270 to Jamie User", outcome: "DENIED", check: (r, ctx) => noWrite(ctx) });
 add("ADMIN", "AUTHORIZATION", "Admin cannot reassign a ticket", { say: "Reassign ticket 2600269 to Jamie User", outcome: "DENIED", check: (r, ctx) => noWrite(ctx) });
-add("ADMIN", "AUTHORIZATION", "Admin cannot transfer a ticket", { say: "Transfer ticket 2600270 to Hardware", outcome: "DENIED", check: (r, ctx) => noWrite(ctx) });
+// Admins cannot transfer: the answer says so, names who can and shows how; nothing is proposed or changed.
+add("ADMIN", "AUTHORIZATION", "Admin cannot transfer a ticket (told who can, and how)", { say: "Transfer ticket 2600270 to Hardware", outcome: "DATA", intent: "transfer_guidance", has: ["Administrators can't transfer tickets"], check: (r, ctx) => noWrite(ctx) || (r.pendingAction ? "a transfer was proposed" : null) });
+add("ADMIN", "GUIDANCE", "A loose or misspelt transfer request explains how to transfer", { say: "2600270 tranfser to Hardware", outcome: "DATA", intent: "transfer_guidance", has: ["Steps:"], check: (r, ctx) => noWrite(ctx) || (r.data.guide?.target === "Hardware" ? null : "the destination was not read") });
 add("ADMIN", "AUTHORIZATION", "Admin cannot raise a ticket", { say: "Raise a ticket", outcome: "DENIED", check: (r, ctx) => noWrite(ctx) });
 add("ADMIN", "WORKFLOW", "Admin can add a comment to any ticket (preview, then confirm)", { say: "add a comment on ticket 2600280: checked by admin", outcome: "PREVIEW", confirm: (r, ctx) => (wasCalled(ctx.spies.addComment, (u, id, body) => id === idOf("2600280") && body.body === "checked by admin") ? null : "addComment was not called with the confirmed comment") });
 add("ADMIN", "WORKFLOW", "Admin can change a ticket's status (preview only, nothing changes before confirm)", { say: "set ticket 2600270 to on hold because waiting for the vendor", outcome: "PREVIEW", check: (r, ctx) => noWrite(ctx) });

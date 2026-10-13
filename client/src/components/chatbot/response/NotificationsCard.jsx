@@ -2,7 +2,7 @@ import { Box, Stack, Typography } from "@mui/material";
 import { format, formatDistanceToNow } from "date-fns";
 import NotificationsNoneIcon from "@mui/icons-material/NotificationsNone";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import { CardFrame, CardTitle, EmptyLine } from "./parts";
+import { CardFrame, CountBadge, EmptyLine } from "./parts";
 import { focusRing, reducedMotion } from "../theme/chatStyles";
 
 // "STATUS_CHANGED" -> "Status changed".
@@ -28,16 +28,7 @@ export default function NotificationsCard({ notifications, onNavigate }) {
   if (!notifications?.items) return null;
   const { items, unread, shown, matching } = notifications;
   return (
-    <CardFrame label="Notifications">
-      <CardTitle
-        badge={
-          <Box component="span" sx={{ px: 1, py: 0.25, borderRadius: 99, fontSize: 12, fontWeight: 700, color: "var(--sv-accent-ink)", bgcolor: "var(--sv-accent-soft)" }}>
-            {unread} unread
-          </Box>
-        }
-      >
-        Notifications
-      </CardTitle>
+    <CardFrame label="Notifications" icon={NotificationsNoneIcon} title="Notifications" subtitle={`${shown} shown${matching > shown ? ` of ${matching}` : ""}, newest first`} badge={<CountBadge>{unread} unread</CountBadge>}>
       {!items.length ? (
         <EmptyLine>No notifications to show.</EmptyLine>
       ) : (
@@ -47,7 +38,7 @@ export default function NotificationsCard({ notifications, onNavigate }) {
               component="li"
               key={n.id}
               aria-label={`${n.isRead ? "" : "Unread: "}${n.title}`}
-              sx={{ listStyle: "none", p: 1.1, borderRadius: "12px", bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)", borderLeft: `4px solid ${n.isRead ? "var(--sv-border)" : "var(--sv-accent-ink)"}` }}
+              sx={{ listStyle: "none", p: 1.1, borderRadius: "12px", bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderLeft: `4px solid ${n.isRead ? "var(--sv-border)" : "var(--sv-accent-ink)"}` }}
             >
               <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
                 <NotificationsNoneIcon aria-hidden sx={{ fontSize: 16, color: "var(--sv-muted)" }} />

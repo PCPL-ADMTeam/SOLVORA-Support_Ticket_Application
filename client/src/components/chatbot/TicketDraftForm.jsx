@@ -2,10 +2,10 @@ import { useEffect, useId, useRef, useState } from "react";
 import { Box, IconButton, Typography } from "@mui/material";
 import FlagOutlinedIcon from "@mui/icons-material/FlagOutlined";
 import ApartmentOutlinedIcon from "@mui/icons-material/ApartmentOutlined";
-import AttachFileIcon from "@mui/icons-material/AttachFile";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import OpenInNewIcon from "@mui/icons-material/OpenInNew";
 import CloseIcon from "@mui/icons-material/Close";
 import { focusRing, reducedMotion } from "./theme/chatStyles";
-import { AttachmentChip, totalsText } from "./DraftAttachments";
 
 const countWords = (t) => (t.trim() ? t.trim().split(/\s+/).length : 0);
 
@@ -24,25 +24,36 @@ function Field({ id, label, optional, children }) {
   );
 }
 
-// An image copied to the clipboard (Ctrl+V) becomes a File; text is left alone so it can still be pasted.
-function imagesFromClipboard(e) {
-  return Array.from(e.clipboardData?.items || [])
-    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-    .map((item, i, all) => {
-      const blob = item.getAsFile();
-      if (!blob) return null;
-      const ext = (item.type.split("/")[1] || "png").replace("jpeg", "jpg");
-      return new File([blob], `pasted-image-${Date.now()}${all.length > 1 ? `-${i + 1}` : ""}.${ext}`, { type: item.type });
-    })
-    .filter(Boolean);
+// Files are not taken in the chat: a short note, with the Create Ticket page for a ticket that needs them.
+function NoFilesNote({ draft, onNavigate }) {
+  return (
+    <Box role="note" aria-label="About attachments" sx={{ display: "flex", alignItems: "flex-start", gap: 1, p: 1.1, borderRadius: "10px", bgcolor: "var(--sv-accent-soft)", border: "1px dashed var(--sv-accent-ink)" }}>
+      <InfoOutlinedIcon aria-hidden sx={{ fontSize: 18, mt: 0.15, color: "var(--sv-accent-ink)" }} />
+      <Box sx={{ minWidth: 0 }}>
+        <Typography variant="body2" sx={{ color: "var(--sv-text)" }}>
+          {draft.filesNote || "You can raise a ticket here without attachments. To attach files, use the Create Ticket page instead."}
+        </Typography>
+        {draft.createPage && (
+          <Box
+            component="button"
+            type="button"
+            onClick={() => onNavigate?.(draft.createPage)}
+            sx={{ mt: 0.5, p: 0, display: "inline-flex", alignItems: "center", gap: 0.5, font: "inherit", fontSize: 13, fontWeight: 700, cursor: "pointer", color: "var(--sv-accent-ink)", bgcolor: "transparent", border: 0, textDecoration: "underline", textUnderlineOffset: 3, ...focusRing }}
+          >
+            {draft.createPage.label}
+            <OpenInNewIcon aria-hidden sx={{ fontSize: 14 }} />
+          </Box>
+        )}
+      </Box>
+    </Box>
+  );
 }
 
-// The ticket, in ONE form: title, priority, department, problem summary, people in CC and files. "Review Ticket"
-// sends it all at once; nothing is created until Raise Ticket on the review. It stays in place while files are
-// added or removed, so nothing typed is lost.
-export default function TicketDraftForm({ draft, previews = {}, tools, onSend, disabled }) {
+// The ticket, in ONE form: title, priority, department, problem summary and people in CC. "Review Ticket"
+// sends it all at once; nothing is created until Raise Ticket on the review. No files: the note links to the
+// Create Ticket page for a ticket that needs them.
+export default function TicketDraftForm({ draft, tools, onSend, onNavigate, disabled }) {
   const uid = useId();
-  const pickerRef = useRef(null);
   const [title, setTitle] = useState(draft.title || "");
   const [priority, setPriority] = useState(draft.priority || "");
   const [department, setDepartment] = useState(draft.department || "");
@@ -51,17 +62,15 @@ export default function TicketDraftForm({ draft, previews = {}, tools, onSend, d
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
   const [error, setError] = useState("");
-  const [fileError, setFileError] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmCancel, setConfirmCancel] = useState(false);
   const searchSeq = useRef(0);
 
-  const files = draft.attachments || [];
   const maxWords = draft.maxWords || 50;
   const words = countWords(summary);
   const off = Boolean(disabled || busy);
   const ready = title.trim() && priority && department && summary.trim() && words <= maxWords;
-  const dirty = Boolean(title.trim() || priority || department || summary.trim() || cc.length || files.length);
+  const dirty = Boolean(title.trim() || priority || department || summary.trim() || cc.length);
 
   // The people search runs a moment after typing stops, and a late answer never replaces a newer one.
   useEffect(() => {
@@ -78,30 +87,6 @@ export default function TicketDraftForm({ draft, previews = {}, tools, onSend, d
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query]);
-
-  const addFiles = async (list) => {
-    if (!list.length || off) return;
-    setFileError("");
-    const r = await tools.upload(list, { inline: true });
-    if (r?.error) setFileError(r.error);
-  };
-  const removeFile = async (id) => {
-    setFileError("");
-    const r = await tools.remove(id, { inline: true });
-    if (r?.error) setFileError(r.error);
-  };
-  const openFile = async (id) => {
-    const r = await tools.open(id);
-    if (r?.error) setFileError(r.error);
-  };
-
-  // Ctrl+V anywhere in the form: an image goes to the attachments, never into the summary text.
-  const onPaste = (e) => {
-    const images = imagesFromClipboard(e);
-    if (!images.length) return;
-    e.preventDefault();
-    addFiles(images);
-  };
 
   const pick = (u) => {
     setCc((prev) => (prev.some((c) => c.id === u.id) ? prev : [...prev, { id: u.id, name: u.name, email: u.email }]));
@@ -129,7 +114,8 @@ export default function TicketDraftForm({ draft, previews = {}, tools, onSend, d
   };
 
   return (
-    <Box component="form" onSubmit={submit} onPaste={onPaste} aria-label="Raise a ticket form" sx={{ display: "grid", gap: 1.25 }}>
+    <Box component="form" onSubmit={submit} aria-label="Raise a ticket form" sx={{ display: "grid", gap: 1.25 }}>
+      <NoFilesNote draft={draft} onNavigate={onNavigate} />
       <Field id={`${uid}-title`} label="Title">
         <Box sx={fieldBox}>
           <input id={`${uid}-title`} style={inputStyle} value={title} maxLength={200} placeholder="Enter a short issue title" onChange={(e) => setTitle(e.target.value)} />
@@ -169,46 +155,6 @@ export default function TicketDraftForm({ draft, previews = {}, tools, onSend, d
           {words}/{maxWords} words
         </Typography>
       </Field>
-
-      <Box role="group" aria-label="Attachments">
-        <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 1, mb: 0.5 }}>
-          <Typography variant="caption" sx={{ color: "var(--sv-text)", fontWeight: 600 }}>
-            Attachments <span style={{ fontWeight: 400, color: "var(--sv-muted)" }}>(optional) · {totalsText(files, draft.limits)}</span>
-          </Typography>
-          <Box component="button" type="button" onClick={() => pickerRef.current?.click()} disabled={off} sx={{ ...smallBtn, display: "inline-flex", alignItems: "center", gap: 0.5 }}>
-            <AttachFileIcon sx={{ fontSize: 16 }} />
-            Add files
-          </Box>
-        </Box>
-        <input
-          ref={pickerRef}
-          type="file"
-          multiple
-          hidden
-          data-testid="form-file-input"
-          onChange={(e) => {
-            const picked = Array.from(e.target.files || []);
-            e.target.value = "";
-            addFiles(picked);
-          }}
-        />
-        {files.length > 0 ? (
-          <Box component="ul" aria-label="Attached files" sx={{ listStyle: "none", m: 0, p: 0, display: "grid", gap: 0.75 }}>
-            {files.map((f) => (
-              <AttachmentChip key={f.id} file={f} previewUrl={previews[f.id]} onOpen={openFile} onRemove={removeFile} disabled={off} />
-            ))}
-          </Box>
-        ) : (
-          <Typography variant="caption" sx={{ color: "var(--sv-muted)" }}>
-            Choose files, or copy an image and press Ctrl+V here (up to {draft.limits?.maxFiles || 5} files, {draft.limits?.maxMb || 10} MB in total).
-          </Typography>
-        )}
-        {fileError && (
-          <Typography role="alert" variant="caption" sx={{ display: "block", mt: 0.5, color: "var(--sv-error)" }}>
-            {fileError}
-          </Typography>
-        )}
-      </Box>
 
       <Box role="group" aria-label="People in CC">
         <Typography component="label" htmlFor={`${uid}-cc`} variant="caption" sx={{ display: "block", mb: 0.5, color: "var(--sv-text)", fontWeight: 600 }}>

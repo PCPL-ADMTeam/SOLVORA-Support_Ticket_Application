@@ -44,7 +44,7 @@ function matchField(value, cond) {
       if (!same) return false;
     }
     if ("contains" in cond && !String(value ?? "").toLowerCase().includes(String(cond.contains).toLowerCase())) return false;
-    if ("startsWith" in cond && !String(value ?? "").startsWith(cond.startsWith)) return false;
+    if ("startsWith" in cond && !(cond.mode === "insensitive" ? String(value ?? "").toLowerCase().startsWith(String(cond.startsWith).toLowerCase()) : String(value ?? "").startsWith(cond.startsWith))) return false;
     if ("gte" in cond && !(norm(value) >= norm(cond.gte))) return false;
     if ("lt" in cond && !(norm(value) < norm(cond.lt))) return false;
     if ("gt" in cond && !(norm(value) > norm(cond.gt))) return false;

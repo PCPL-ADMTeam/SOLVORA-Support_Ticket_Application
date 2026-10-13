@@ -268,7 +268,9 @@ async function sendMessage(user, { message, conversationId, pageTicketId, timeZo
           const reply = accessReply(scope.role, await visibleDepartmentNames(ctx).catch(() => []));
           if (err.roleReply || err.message === USER_MESSAGES[CODES.ACCESS_DENIED]) result.message = reply.message;
           result.suggestedActions = reply.prompts.map((p) => ({ label: p, prompt: p }));
-          result.message = `${result.message}\n\nTry:\n${reply.prompts.map((p) => `• ${p}`).join("\n")}`;
+          // A refusal that names its own next steps lists those, the same ones offered as buttons below.
+          const prompts = err.suggestions?.length ? err.suggestions.map((s) => s.prompt) : reply.prompts;
+          result.message = `${result.message}\n\nTry:\n${prompts.map((p) => `• ${p}`).join("\n")}`;
         }
         // Several matches: remember the candidates (ids stay on the server) and let the user pick.
         if (err.suggestions?.length) result.suggestedActions = err.suggestions;
@@ -561,7 +563,7 @@ async function draftContext(user, conversationId) {
   const convo = await loadOwnedConversation(user, conversationId, { requireActive: true });
   const scope = await resolveRoleScope(user);
   const draft = await require("./ticketDraft/draftStore").getActive(user.id, convo.id);
-  if (!draft) throw new ChatError(CODES.ACTION_INVALID, { message: 'There is no ticket being raised right now. Say "raise a ticket" to start one, then attach your files.' });
+  if (!draft) throw new ChatError(CODES.ACTION_INVALID, { message: 'There is no ticket being raised right now. Say "raise a ticket" to start one.' });
   return { ctx: { scope, conversationId: convo.id, method: "rule" }, draft };
 }
 
@@ -571,37 +573,6 @@ async function saveDraftReply(user, ctx, r) {
   });
   await prisma.chatConversation.update({ where: { id: ctx.conversationId }, data: { lastMessageAt: new Date() } });
   return { conversationId: ctx.conversationId, messageId: assistant.id, responseType: "text", intent: "ticket_draft", message: r.message, data: r.data || {}, suggestedActions: r.suggestedActions || [], navigationTarget: null, pendingAction: r.data?.pendingAction || null, error: null };
-}
-
-// While the form is open (not yet at the review) files are added in place: the form's own list changes and no
-// chat message is created. At the review they go through the normal path, which builds a fresh review.
-async function addDraftFiles(user, { conversationId, files, quiet = false }) {
-  return guarded(async () => {
-    if (!files?.length) throw new ChatError(CODES.ACTION_INVALID, { message: "I didn't receive a file. Please try attaching it again." });
-    const { ctx, draft } = await draftContext(user, conversationId);
-    const store = require("./ticketDraft/draftStore");
-    const updated = await store.addFiles(draft, files);
-    if (quiet && draft.step !== "REVIEW") {
-      return { quiet: true, data: { ticketDraft: await require("./ticketDraft/flow").view(ctx, updated) } };
-    }
-    const names = files.map((f) => f.originalname).join(", ");
-    const r = await require("./ticketDraft/flow").afterFilesChanged(ctx, updated, `Added ${names}.`);
-    return saveDraftReply(user, ctx, r);
-  });
-}
-
-async function removeDraftFile(user, { conversationId, attachmentId, quiet = false }) {
-  return guarded(async () => {
-    const { ctx, draft } = await draftContext(user, conversationId);
-    const store = require("./ticketDraft/draftStore");
-    const removed = await store.removeFile(draft, attachmentId);
-    if (quiet && draft.step !== "REVIEW") {
-      const fresh = await store.getActive(user.id, ctx.conversationId);
-      return { quiet: true, data: { ticketDraft: await require("./ticketDraft/flow").view(ctx, fresh) } };
-    }
-    const r = await require("./ticketDraft/flow").afterFilesChanged(ctx, draft, `Removed ${removed.fileName}.`);
-    return saveDraftReply(user, ctx, r);
-  });
 }
 
 // The form's "Review Ticket": all fields at once. Validated and turned into the review; nothing is created.
@@ -621,16 +592,6 @@ async function searchDraftCc(user, { conversationId, q }) {
     if (term.length < 2) return { users: [] };
     const found = await require("../services/user.service").searchActiveEmployees(term);
     return { users: found.filter((u) => u.id !== user.id).slice(0, 8).map((u) => ({ id: u.id, name: u.name, email: u.email, department: u.department?.name || null })) };
-  });
-}
-
-// One attachment of the ticket being raised, for the owner's own preview ("open in a new tab").
-async function getDraftFile(user, { conversationId, attachmentId }) {
-  return guarded(async () => {
-    const { draft } = await draftContext(user, conversationId);
-    const row = await prisma.chatDraftAttachment.findFirst({ where: { id: attachmentId, draftId: draft.id } });
-    if (!row) throw new ChatError(CODES.ACTION_INVALID, { message: "I couldn't find that attachment on your ticket." });
-    return { fileName: row.fileName, mimeType: row.mimeType, buffer: Buffer.from(row.data) };
   });
 }
 
@@ -670,11 +631,8 @@ module.exports = {
   deleteAllConversations,
   resetConversation,
   submitFeedback,
-  addDraftFiles,
-  removeDraftFile,
   submitDraftForm,
   searchDraftCc,
-  getDraftFile,
   confirmAction,
   cancelAction,
   aiDiagnostics,

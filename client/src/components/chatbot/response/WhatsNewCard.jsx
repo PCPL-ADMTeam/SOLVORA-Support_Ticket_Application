@@ -5,7 +5,8 @@ import AssignmentIndOutlinedIcon from "@mui/icons-material/AssignmentIndOutlined
 import ConfirmationNumberOutlinedIcon from "@mui/icons-material/ConfirmationNumberOutlined";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import OpenInNewIcon from "@mui/icons-material/OpenInNew";
-import { CardAction, CardFrame, CardTitle, EmptyLine, PeriodBadge, Section, StatList, StatRow } from "./parts";
+import AutoAwesomeIcon from "@mui/icons-material/AutoAwesome";
+import { CardAction, CardFrame, EmptyLine, PeriodBadge, Section, StatList, StatRow } from "./parts";
 import { TicketRow } from "../TicketListCard";
 import { focusRing } from "../theme/chatStyles";
 
@@ -41,7 +42,7 @@ function NotificationPeek({ items, onNavigate }) {
   return (
     <Box component="ul" aria-label="Latest notifications" sx={{ m: 0, mt: 0.75, p: 0, display: "grid", gap: 0.5 }}>
       {items.map((n, i) => (
-        <Box component="li" key={`${n.at}-${i}`} sx={{ listStyle: "none", display: "flex", alignItems: "flex-start", gap: 1, p: 1, borderRadius: "10px", bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)" }}>
+        <Box component="li" key={`${n.at}-${i}`} sx={{ listStyle: "none", display: "flex", alignItems: "flex-start", gap: 1, p: 1, borderRadius: "10px", bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)" }}>
           <Box aria-hidden sx={{ mt: 0.75, width: 8, height: 8, borderRadius: "50%", flexShrink: 0, bgcolor: n.isRead ? "transparent" : "var(--sv-accent-ink)", border: "1px solid var(--sv-accent-ink)" }} />
           <Box sx={{ minWidth: 0, flex: 1 }}>
             <Typography variant="body2" fontWeight={600} sx={{ wordBreak: "break-word" }}>
@@ -83,11 +84,10 @@ export default function WhatsNewCard({ digest, onNavigate, onSend, disabled }) {
   const inPeriod = `${notifications.inPeriod}${notifications.inPeriodCapped ? "+" : ""}`;
 
   return (
-    <CardFrame label="What's New">
-      <CardTitle badge={<PeriodBadge period={period} />}>What&apos;s New</CardTitle>
+    <CardFrame label="What's New" icon={AutoAwesomeIcon} title="What's New" subtitle="Your notifications and ticket updates" badge={<PeriodBadge period={period} />}>
 
       {caughtUp ? (
-        <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 1.25, borderRadius: "10px", bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)" }}>
+        <Stack direction="row" spacing={1} alignItems="center" sx={{ p: 1.25, borderRadius: "10px", bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)" }}>
           <TaskAltIcon aria-hidden sx={{ color: "var(--sv-success)" }} />
           <Box>
             <Typography variant="body2" fontWeight={700}>

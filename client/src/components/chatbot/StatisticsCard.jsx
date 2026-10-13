@@ -1,68 +1,40 @@
-import { Box, Paper, Typography } from "@mui/material";
-import { statusColors } from "../../theme/theme";
-import { PeriodBadge } from "./response/parts";
+import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
+import { statusColor, priorityColor } from "./TicketChips";
+import { CardFrame, PeriodBadge, Section, StatList, StatRow, StatTile, TileGrid } from "./response/parts";
 
 const STATUS_LABELS = { OPEN: "Open", IN_PROGRESS: "In Progress", ON_HOLD: "On Hold", RESOLVED: "Resolved", CLOSED: "Closed", REOPENED: "Reopened" };
 
-// A single KPI tile: big number, small label. The status color is a thin accent
-// bar plus the label text, never the only carrier of meaning.
-function Kpi({ label, value, color }) {
-  return (
-    <Box sx={{ bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)", borderRadius: "12px", p: 1.25, borderLeft: `4px solid ${color || "var(--sv-accent-ink)"}`, minWidth: 0 }}>
-      <Typography component="div" sx={{ fontSize: 22, fontWeight: 800, lineHeight: 1.1, color: "var(--sv-text)" }}>
-        {value}
-      </Typography>
-      <Typography variant="caption" sx={{ color: "var(--sv-muted)" }}>
-        {label}
-      </Typography>
-    </Box>
-  );
-}
-
-// A label and its number on one line, for the activity figures under the tiles.
-function Line({ label, value }) {
-  return (
-    <Box component="li" sx={{ listStyle: "none", display: "flex", gap: 1, py: 0.25 }}>
-      <Typography variant="caption" sx={{ flex: 1, color: "var(--sv-muted)" }}>
-        {label}
-      </Typography>
-      <Typography variant="caption" fontWeight={800} sx={{ color: "var(--sv-text)", fontVariantNumeric: "tabular-nums" }}>
-        {value}
-      </Typography>
-    </Box>
-  );
-}
-
+// Ticket statistics for the user's scope: status tiles (every ticket in scope, whatever its age, so the
+// card says "All time"), priorities, then the recent-activity figures, each with its own period in words.
 export default function StatisticsCard({ statistics }) {
   if (!statistics) return null;
   return (
-    <Paper variant="outlined" sx={{ p: 1.5, mt: 1, bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)", borderRadius: "14px", color: "var(--sv-text)" }} aria-label="Ticket statistics">
-      <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 0.75 }}>
-        <Typography variant="subtitle2" fontWeight={700}>
-          {statistics.label}: {statistics.total} tickets
-        </Typography>
-        {/* The status counts cover every ticket in scope, whatever its age. */}
-        <PeriodBadge period="All time" />
-      </Box>
-      <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(104px, 100%), 1fr))", gap: 1, mt: 1 }}>
-        {Object.entries(statistics.byStatus).map(([status, count]) => (
-          <Kpi key={status} label={STATUS_LABELS[status] || status} value={count} color={statusColors[status]?.color} />
-        ))}
-      </Box>
-      {statistics.byPriority?.length > 0 && (
-        <Box sx={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(min(104px, 100%), 1fr))", gap: 1, mt: 1 }}>
-          {statistics.byPriority.map((p) => (
-            <Kpi key={p.priority} label={`${p.priority} priority`} value={p.count} />
+    <CardFrame label="Ticket statistics" icon={InsightsOutlinedIcon} title={`${statistics.label} statistics`} subtitle={`${statistics.total} ticket${statistics.total === 1 ? "" : "s"} in total`} badge={<PeriodBadge period="All time" />}>
+      <Section title="By status">
+        <TileGrid label="Tickets by status">
+          {Object.entries(statistics.byStatus).map(([status, count]) => (
+            <StatTile key={status} label={STATUS_LABELS[status] || status} value={count} color={statusColor(status)} muted={count === 0} />
           ))}
-        </Box>
+        </TileGrid>
+      </Section>
+      {statistics.byPriority?.length > 0 && (
+        <Section title="By priority">
+          <TileGrid label="Tickets by priority">
+            {statistics.byPriority.map((p) => (
+              <StatTile key={p.priority} label={`${p.priority} priority`} value={p.count} color={priorityColor(p.priority)} muted={p.count === 0} />
+            ))}
+          </TileGrid>
+        </Section>
       )}
-      <Box component="ul" aria-label="Recent activity" sx={{ m: 0, mt: 1, p: 0 }}>
-        {typeof statistics.openUnassigned === "number" && <Line label="Open with no assignee" value={statistics.openUnassigned} />}
-        {typeof statistics.openInactiveOver7Days === "number" && <Line label="Open with no update for over 7 days" value={statistics.openInactiveOver7Days} />}
-        <Line label="Created in the last 7 days" value={statistics.createdLast7Days} />
-        <Line label="Created in the 7 days before that" value={statistics.createdPrevious7Days} />
-        <Line label="Created in the last 30 days" value={statistics.createdLast30Days} />
-      </Box>
-    </Paper>
+      <Section title="Recent activity">
+        <StatList label="Recent activity">
+          {typeof statistics.openUnassigned === "number" && <StatRow label="Open with no assignee" value={statistics.openUnassigned} />}
+          {typeof statistics.openInactiveOver7Days === "number" && <StatRow label="Open with no update for over 7 days" value={statistics.openInactiveOver7Days} />}
+          <StatRow label="Created in the last 7 days" value={statistics.createdLast7Days} />
+          <StatRow label="Created in the 7 days before that" value={statistics.createdPrevious7Days} />
+          <StatRow label="Created in the last 30 days" value={statistics.createdLast30Days} />
+        </StatList>
+      </Section>
+    </CardFrame>
   );
 }

@@ -38,8 +38,8 @@ function departmentRef(m) {
   hit = m.match(new RegExp(`((?:${WORD}\\s+){0,3}${WORD})\\s+(?:department|dept)\\s+tickets?\\b`));
   name = hit && clean(hit[1]);
   if (name) return name;
-  // "tickets in/of/for/from <name>" (no trailing "department")
-  hit = m.match(new RegExp(`\\btickets?\\s+(?:(?:are|is|were|do we have|does|did)\\s+)?(?:in|of|for|from|under|to)\\s+(?:the\\s+)?((?:${WORD}\\s+){0,2}${WORD})\\s*[?.!]*$`));
+  // "tickets in/of/for/from <name>" (no trailing "department"); also "tickets (are) reported/raised in <name>"
+  hit = m.match(new RegExp(`\\btickets?\\s+(?:(?:are|is|were|do we have|does|did)\\s+)?(?:(?:reported|raised|logged|submitted|created|filed|opened)\\s+)?(?:in|of|for|from|under|to)\\s+(?:the\\s+)?((?:${WORD}\\s+){0,2}${WORD})\\s*[?.!]*$`));
   name = hit && clean(hit[1]);
   return name || null;
 }

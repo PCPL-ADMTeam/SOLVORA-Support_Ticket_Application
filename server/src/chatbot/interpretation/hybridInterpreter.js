@@ -150,7 +150,9 @@ async function decide({ message: original, scope, state = {}, lastTicketNumber, 
   // question ("show my tickets") moves on.
   // A bare ticket number answers "Which ticket number?" instead of starting a lookup.
   const bareTicketAnswer = state.clarification?.field === "ticket" && /^#?\s?[A-Za-z]{0,4}-?\d{3,12}[.!?]*$/.test(message.trim());
-  const freeTextAnswer = bareTicketAnswer || (state.clarification && ["reason", "comment", "description", "title"].includes(state.clarification.field) && !/^(?:show|list|who|how many|what|when|which|cancel|never ?mind)\b/i.test(message.trim()));
+  // A short reply to "who should it be assigned to?" (a name, an email, "me") is that answer, never a new question.
+  const assigneeAnswer = state.clarification?.field === "assignee" && message.trim().split(/\s+/).length <= 5 && !/^(?:show|list|who|how many|what|when|which|cancel|never ?mind)\b/i.test(message.trim());
+  const freeTextAnswer = bareTicketAnswer || assigneeAnswer || (state.clarification && ["reason", "comment", "description", "title"].includes(state.clarification.field) && !/^(?:show|list|who|how many|what|when|which|cancel|never ?mind)\b/i.test(message.trim()));
   if (state.clarification && (det.confidence !== "high" || freeTextAnswer)) {
     const cont = applyClarification(message, state.clarification);
     if (cont?.aiIntentId) {

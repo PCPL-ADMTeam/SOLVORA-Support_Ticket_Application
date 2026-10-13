@@ -129,11 +129,18 @@ const listDepartments = {
 // Names and role labels of ACTIVE people in departments the caller may see:
 // ADMIN every department; MANAGER/TEAMLEAD only departments they have access to;
 // EMPLOYEE is denied by the tool policy. Never emails, ids or anything else.
-const MEMBER_CAP = 50;
-const ROLE_LABELS = { MANAGER: "Manager", TEAMLEAD: "Team Lead", EMPLOYEE: "Employee" };
+//
+// Who belongs to a department is the application's own rule (department.service#toDepartmentShape):
+// Managers and Team Leads through their department access, Employees through their home department
+// (an Admin belongs to no department). Each person is counted ONCE, by user id, so a person reached
+// through two relations never inflates a count. `counts` are the exact numbers per role and `total` is
+// the exact number for the requested role(s); `members` is the list to show, shortened to MEMBER_CAP,
+// so a shortened list is never mistaken for the total.
+const MEMBER_CAP = 100;
+const ROLE_LABELS = { MANAGER: "Manager", TEAMLEAD: "Team Lead", EMPLOYEE: "Employee", ADMIN: "Admin" };
 const getDepartmentMembers = {
   name: "get_department_members",
-  description: "Active people (name and role only) in the authorized department(s) named in the question.",
+  description: "Active people (name and role only) in the authorized department(s) named in the question, with exact counts per role.",
   inputSchema: {
     question: { type: "string", max: 300 },
     all: { type: "enum", values: ["yes"] },
@@ -147,33 +154,52 @@ const getDepartmentMembers = {
       where,
       select: {
         name: true,
-        users: { where: { isActive: true }, select: { name: true, role: { select: { name: true } } } },
-        userAccess: { where: { user: { isActive: true } }, select: { user: { select: { name: true, role: { select: { name: true } } } } } },
+        users: { where: { isActive: true }, select: { id: true, name: true, role: { select: { name: true } } } },
+        userAccess: { where: { user: { isActive: true } }, select: { user: { select: { id: true, name: true, role: { select: { name: true } } } } } },
       },
       orderBy: { name: "asc" },
     });
     const allNames = rows.map((r) => r.name);
     const wanted = input.all ? allNames : matchDepartments(input.question || "", allNames);
     const only = input.roleFilter && input.roleFilter !== "ALL" ? input.roleFilter : null;
+    const order = { MANAGER: 0, TEAMLEAD: 1, EMPLOYEE: 2 };
 
     const departments = rows
       .filter((r) => wanted.includes(r.name))
       .map((r) => {
-        // Employees come from User.departmentId; Managers/Team Leads from
-        // UserDepartmentAccess (the app's source of truth for those roles).
         const people = new Map();
-        for (const u of r.users) if (u.role.name !== "ADMIN") people.set(`${u.role.name}:${u.name}`, { name: u.name, role: ROLE_LABELS[u.role.name] || u.role.name, key: u.role.name });
-        for (const a of r.userAccess) people.set(`${a.user.role.name}:${a.user.name}`, { name: a.user.name, role: ROLE_LABELS[a.user.role.name] || a.user.role.name, key: a.user.role.name });
-        const order = { Manager: 0, "Team Lead": 1, Employee: 2 };
-        const members = [...people.values()]
+        const add = (u, key) => {
+          const id = u.id || `${key}:${u.name}`;
+          if (!people.has(id)) people.set(id, { name: u.name, role: ROLE_LABELS[key], key });
+        };
+        for (const a of r.userAccess) if (a.user.role.name === "MANAGER" || a.user.role.name === "TEAMLEAD") add(a.user, a.user.role.name);
+        for (const u of r.users) if (u.role.name === "EMPLOYEE") add(u, "EMPLOYEE");
+        const everyone = [...people.values()];
+        const counts = { MANAGER: 0, TEAMLEAD: 0, EMPLOYEE: 0 };
+        for (const p of everyone) counts[p.key] += 1;
+        const members = everyone
           .filter((m) => !only || m.key === only)
-          .sort((x, y) => (order[x.role] ?? 3) - (order[y.role] ?? 3) || x.name.localeCompare(y.name))
+          .sort((x, y) => order[x.key] - order[y.key] || x.name.localeCompare(y.name))
           .map(({ name, role }) => ({ name, role }));
-        return { name: r.name, total: members.length, members: members.slice(0, MEMBER_CAP) };
+        return { name: r.name, total: members.length, counts, members: members.slice(0, MEMBER_CAP) };
       });
 
     await ctx.audit("TOOL_DEPARTMENT_MEMBERS", "Department", null, "SUCCESS");
     return { departments, availableDepartments: allNames };
+  },
+};
+
+// Active Administrator accounts (names only). Administrators belong to no department, so they are never in
+// a department list; only an Administrator may list them (tool policy).
+const getAdminUsers = {
+  name: "get_admin_users",
+  description: "Active Administrator accounts (names only). Admin only.",
+  inputSchema: {},
+  async run(ctx) {
+    const rows = await prisma.user.findMany({ where: { isActive: true, role: { name: "ADMIN" } }, select: { id: true, name: true } });
+    const admins = rows.map((r) => ({ name: r.name, role: ROLE_LABELS.ADMIN })).sort((a, b) => a.name.localeCompare(b.name));
+    await ctx.audit("TOOL_ADMIN_USERS", "User", null, "SUCCESS");
+    return { total: admins.length, admins: admins.slice(0, MEMBER_CAP) };
   },
 };
 
@@ -221,6 +247,7 @@ module.exports = {
     getSlaInformation,
     listDepartments,
     getDepartmentMembers,
+    getAdminUsers,
   ],
   CAPABILITIES,
 };

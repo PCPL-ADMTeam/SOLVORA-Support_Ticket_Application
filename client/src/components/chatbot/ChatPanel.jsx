@@ -13,9 +13,9 @@ import { popIn, reducedMotion, srOnly } from "./theme/chatStyles";
 // delegated up so the panel stays router-agnostic and easy to test.
 // `role` / `firstName` are display-only (theme + greeting).
 const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavigate, role, firstName, expanded = false, onToggleExpand }, ref) {
-  const { messages, loading, failure, intro, introError, loadIntro, send, retry, reset, sendFeedback, actionState, confirmAction, cancelAction, history, historyError, historyPage, loadHistory, openConversation, deleteConversation, deleteConversations, deleteAllConversations, conversationId, draftView, draftKey, previews, uploadFiles, removeAttachment, reviewDraft, searchDraftCc, openAttachment, supersedeAction } = chat;
-  // What the ticket form needs from the chat: files in place, the review, CC people and opening a file.
-  const draftTools = { upload: uploadFiles, remove: removeAttachment, review: reviewDraft, searchCc: searchDraftCc, open: openAttachment };
+  const { messages, loading, failure, intro, introError, loadIntro, send, retry, reset, sendFeedback, actionState, confirmAction, cancelAction, discardForEdit, history, historyError, historyPage, loadHistory, openConversation, deleteConversation, deleteConversations, deleteAllConversations, conversationId, draftKey, reviewDraft, searchDraftCc, supersedeAction } = chat;
+  // What the ticket form needs from the chat: the review and the CC people search.
+  const draftTools = { review: reviewDraft, searchCc: searchDraftCc };
   const [draft, setDraft] = useState("");
   const [showHistory, setShowHistory] = useState(false);
   const inputRef = useRef(null);
@@ -55,17 +55,23 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
     setTimeout(() => inputRef.current?.focus(), 0);
   };
 
-  // Edit a proposal: discard it on the server (nothing was changed) and put the
-  // original request back in the composer so details can be added and re-sent.
-  const editAction = async (action, index) => {
-    // A ticket review is not re-typed: the assistant asks what to change and keeps everything else.
+  // Edit a proposal. Nothing was changed by it, so it is withdrawn quietly (no "Cancelled" reply):
+  //  - a ticket review: the assistant brings the form back with everything kept;
+  //  - an edit made in the card itself (an assignment: another person, the note): a fresh preview of it;
+  //  - anything else: the original request goes back into the composer to be corrected and re-sent.
+  const editAction = async (action, index, change) => {
     if (action.title === "Raise ticket") {
       supersedeAction(action.id);
       send("I want to edit the ticket");
       return;
     }
+    if (change) {
+      await discardForEdit(action, "REPLACED");
+      send(change);
+      return;
+    }
     const original = messages.slice(0, index).reverse().find((m) => m.role === "user")?.text || "";
-    await cancelAction(action);
+    await discardForEdit(action);
     setDraft(original);
     setTimeout(() => inputRef.current?.focus(), 0);
   };
@@ -129,7 +135,7 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
         {!showHistory && !messages.length && <ChatWelcome intro={intro} introError={introError} onRetry={loadIntro} onSelect={send} disabled={loading} firstName={firstName} role={role} />}
 
         {!showHistory && messages.map((m, i) => (
-          <ChatMessage key={m.key} message={m} onNavigate={onNavigate} onSend={send} onFeedback={sendFeedback} disabled={loading} actionState={actionState} onConfirmAction={confirmAction} onCancelAction={cancelAction} onEditAction={(a) => editAction(a, i)} previews={previews} onRemoveAttachment={removeAttachment} activeDraftKey={draftKey} draftTools={draftTools} firstName={firstName} />
+          <ChatMessage key={m.key} message={m} onNavigate={onNavigate} onSend={send} onFeedback={sendFeedback} disabled={loading} actionState={actionState} onConfirmAction={confirmAction} onCancelAction={cancelAction} onEditAction={(a, change) => editAction(a, i, change)} activeDraftKey={draftKey} draftTools={draftTools} firstName={firstName} />
         ))}
 
         {!showHistory && loading && <TypingIndicator />}
@@ -142,7 +148,7 @@ const ChatPanel = forwardRef(function ChatPanel({ chat, panelId, onClose, onNavi
         {status}
       </Box>
 
-      <ChatInput placeholder={messages.length ? "Ask about tickets..." : "Ask about tickets, people or departments..."} value={draft} onChange={setDraft} onSubmit={submit} inputRef={inputRef} loading={loading} canAttach={Boolean(draftView)} onFiles={uploadFiles} />
+      <ChatInput placeholder={messages.length ? "Ask about tickets..." : "Ask about tickets, people or departments..."} value={draft} onChange={setDraft} onSubmit={submit} inputRef={inputRef} loading={loading} />
     </Paper>
   );
 });

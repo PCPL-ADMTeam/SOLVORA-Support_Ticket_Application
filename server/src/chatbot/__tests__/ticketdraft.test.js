@@ -11,7 +11,6 @@ const { users, seedDefault, prismaMock } = require("../testkit/fixtures");
 
 const db = prismaMock.__db;
 let create;
-const file = (name, size = 2048, type = "image/png") => ({ originalname: name, mimetype: type, size, buffer: Buffer.alloc(Math.min(size, 64)) });
 
 const ask = (user, message, conversationId) => service.sendMessage(user, { message, conversationId });
 const lastDraft = (r) => r.data?.ticketDraft;
@@ -188,69 +187,28 @@ describe("validation uses the application's own rules", () => {
   });
 });
 
-describe("attachments (the ticket service's 5 files / 10 MB rules)", () => {
+describe("no attachments in the chat", () => {
   async function draft() {
     const r = await ask(users.empA, "Raise a high priority ticket for Finance. Title: Printer broken. The printer jams.");
     return r.conversationId;
   }
 
-  test("if file storage drops the files, the result says so instead of claiming they were saved", async () => {
-    prismaMock.ticketAttachment = { count: jest.fn().mockResolvedValue(0) };
+  test("at the review, asking to attach a file points to the Create Ticket page; 'yes' still raises it, with no files", async () => {
     const cid = await draft();
-    await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png"), file("b.png")] });
+    const files = await ask(users.empA, "attach a screenshot", cid);
+    expect(files.message).toMatch(/Files can't be attached in the chat/);
+    expect(files.navigationTarget).toMatchObject({ path: "/portal/new-ticket", label: "Open Create Ticket page" });
     const r = await ask(users.empA, "yes", cid);
     expect(r.message).toMatch(/Ticket number: 2600099/);
-    expect(r.message).toMatch(/None of your 2 attachments could be saved/);
+    expect(r.message).not.toMatch(/attachment/i);
+    expect(create.mock.calls[0][2]).toEqual([]);
   });
 
-  test("when every file is saved there is no warning", async () => {
-    prismaMock.ticketAttachment = { count: jest.fn().mockResolvedValue(1) };
+  test("'remove the attachment' does not pretend there are files", async () => {
     const cid = await draft();
-    await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png")] });
-    const r = await ask(users.empA, "yes", cid);
-    expect(r.message).not.toMatch(/could be saved/);
-  });
-
-  test("add, show in the review, remove one, then raise: the files are passed to createTicket", async () => {
-    prismaMock.ticketAttachment = { count: jest.fn().mockResolvedValue(1) };
-    const cid = await draft();
-    let r = await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("screenshot.png"), file("log.txt", 100, "text/plain")] });
-    expect(r.message).toMatch(/Added screenshot.png, log.txt\./);
-    expect(r.data.ticketDraft.attachments.map((a) => a.name)).toEqual(["screenshot.png", "log.txt"]);
-    expect(r.message).toMatch(/Attachments: 1\. screenshot.png \(2 KB\); 2\. log.txt/);
-    r = await service.removeDraftFile(users.empA, { conversationId: cid, attachmentId: r.data.ticketDraft.attachments[1].id });
-    expect(r.data.ticketDraft.attachments.map((a) => a.name)).toEqual(["screenshot.png"]);
-    await ask(users.empA, "yes", cid);
-    const files = create.mock.calls[0][2];
-    expect(files.map((f) => f.originalname)).toEqual(["screenshot.png"]);
-    expect(Buffer.isBuffer(files[0].buffer)).toBe(true);
-    expect(db.draftFiles).toHaveLength(0); // the stored bytes are released once the ticket exists
-  });
-
-  test("remove by words", async () => {
-    const cid = await draft();
-    await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png"), file("b.png")] });
-    const x = await ask(users.empA, "Remove the attachment", cid);
-    expect(x.message).toMatch(/Which attachment should I remove\?/);
-    const y = await ask(users.empA, "2", cid);
-    expect(y.data.ticketDraft.attachments.map((a) => a.name)).toEqual(["a.png"]);
-    const z = await ask(users.empA, "remove a.png", cid);
-    expect(z.data.ticketDraft.attachments).toEqual([]);
-  });
-
-  test("more than 5 files, and more than 10 MB combined, are refused with the ticket service's limits", async () => {
-    const cid = await draft();
-    await expect(service.addDraftFiles(users.empA, { conversationId: cid, files: Array.from({ length: 6 }, (_, i) => file(`f${i}.png`)) })).rejects.toMatchObject({ message: expect.stringContaining("Maximum 5 attachments are allowed per ticket") });
-    await expect(service.addDraftFiles(users.empA, { conversationId: cid, files: [file("big1.pdf", 6 * 1048576, "application/pdf"), file("big2.pdf", 5 * 1048576, "application/pdf")] })).rejects.toMatchObject({ message: expect.stringContaining("cannot exceed 10 MB combined") });
-    expect(db.draftFiles).toHaveLength(0);
-  });
-
-  test("files can only be added to the signed-in user's own open draft", async () => {
-    await expect(service.addDraftFiles(users.empA, { conversationId: "c000000000000000000099999", files: [file("x.png")] })).rejects.toMatchObject({ code: "CHAT_CONVERSATION_NOT_FOUND" });
-    const cid = await draft();
-    await expect(service.addDraftFiles(users.empB, { conversationId: cid, files: [file("x.png")] })).rejects.toMatchObject({ code: "CHAT_CONVERSATION_NOT_FOUND" });
-    const none = await ask(users.empB, "hello");
-    await expect(service.addDraftFiles(users.empB, { conversationId: none.conversationId, files: [file("x.png")] })).rejects.toMatchObject({ message: expect.stringContaining("no ticket being raised") });
+    const r = await ask(users.empA, "Remove the attachment", cid);
+    expect(r.message).toMatch(/Files can't be attached in the chat/);
+    expect(r.data.ticketDraft.attachments).toBeUndefined();
   });
 });
 

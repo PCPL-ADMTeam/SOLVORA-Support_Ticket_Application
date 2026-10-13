@@ -1539,5 +1539,7 @@ module.exports = {
   scopeWhereForTab,
   resolveUserDepartmentIds,
   isManagementRole,
+  // Read-only use by the chatbot to tell a user whether they may transfer a ticket (the same rule transferDepartment enforces).
+  assertCanTransferDepartment,
   VALID_TRANSITIONS,
 };

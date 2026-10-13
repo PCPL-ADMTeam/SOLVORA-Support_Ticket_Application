@@ -16,7 +16,7 @@ const HOME = {
       ACTION("Notifications", "Show my notifications", "notifications"),
     ],
     capabilities: [
-      { title: "Tickets", items: ["View your tickets", "Check a ticket's status, priority and assignee", "View tickets assigned to you", "Raise a ticket, with attachments"] },
+      { title: "Tickets", items: ["View your tickets", "Check a ticket's status, priority and assignee", "View tickets assigned to you", "Raise a ticket (without attachments; files go on the Create Ticket page)"] },
       { title: "Notifications", items: ["View your notifications"] },
       { title: "Guidance", items: ["Ask how to use Solvora"] },
     ],

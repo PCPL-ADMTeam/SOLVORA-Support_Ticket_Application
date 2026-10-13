@@ -2,7 +2,8 @@ import { Box, Typography } from "@mui/material";
 import UploadFileOutlinedIcon from "@mui/icons-material/UploadFileOutlined";
 import AssignmentIndOutlinedIcon from "@mui/icons-material/AssignmentIndOutlined";
 import FlagOutlinedIcon from "@mui/icons-material/FlagOutlined";
-import { CardFrame, CardTitle, PeriodBadge, Section, StatTile, TileGrid } from "./parts";
+import InsightsOutlinedIcon from "@mui/icons-material/InsightsOutlined";
+import { CardFrame, PeriodBadge, Section, StatTile, TileGrid } from "./parts";
 import { priorityColor, statusColor } from "../TicketChips";
 
 const ICONS = { created: UploadFileOutlinedIcon, assigned: AssignmentIndOutlinedIcon };
@@ -14,8 +15,7 @@ export default function SummaryReportCard({ report }) {
   if (!report?.sections?.length) return null;
   const withPriorities = report.sections.filter((s) => s.byPriority?.length);
   return (
-    <CardFrame label={report.title || "Ticket summary"}>
-      <CardTitle badge={<PeriodBadge period={report.period} />}>{report.title || "Ticket summary"}</CardTitle>
+    <CardFrame label={report.title || "Ticket summary"} icon={InsightsOutlinedIcon} title={report.title || "Ticket summary"} subtitle="Status and priority counts, as on your Dashboard" badge={<PeriodBadge period={report.period} />}>
       {report.sections.map((s) => (
         <Section key={s.key} icon={ICONS[s.key]} title={s.label} count={s.total}>
           {s.total === 0 ? (
@@ -42,7 +42,7 @@ export default function SummaryReportCard({ report }) {
               )}
               <Box component="ul" aria-label={`${s.label} by priority`} sx={{ m: 0, mt: 0.25, p: 0, display: "flex", flexWrap: "wrap", gap: 0.75 }}>
                 {s.byPriority.map((p) => (
-                  <Box component="li" key={p.priority} sx={{ listStyle: "none", display: "inline-flex", alignItems: "center", gap: 0.75, px: 1, py: 0.35, borderRadius: 99, border: "1px solid var(--sv-border)", bgcolor: "var(--sv-surface)", fontSize: 13 }}>
+                  <Box component="li" key={p.priority} sx={{ listStyle: "none", display: "inline-flex", alignItems: "center", gap: 0.75, px: 1, py: 0.35, borderRadius: 99, border: "1px solid var(--sv-border)", bgcolor: "var(--sv-bg)", fontSize: 13 }}>
                     <Box aria-hidden component="span" sx={{ width: 8, height: 8, borderRadius: "50%", bgcolor: priorityColor(p.priority) }} />
                     <span>{p.priority}</span>
                     <Box component="span" sx={{ fontWeight: 800, fontVariantNumeric: "tabular-nums" }}>

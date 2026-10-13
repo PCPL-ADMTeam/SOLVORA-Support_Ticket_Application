@@ -63,14 +63,15 @@ const CASES = [
   { name: "Admin: who are the employees in BI/Copilot", role: "ADMIN", steps: [{ say: "who are the employees in BI/Copilot", has: ["Srihari", "Manoj Kumar R"], not: ["Jayakumar", "Pavithran"] }] },
   { name: "Admin: who manages Hardware", role: "ADMIN", steps: [{ say: "who manages Hardware", has: ["Hari Manager — Manager"], not: ["Hema", "Manoj"] }] },
   { name: "Admin: show people in Cloud", role: "ADMIN", steps: [{ say: "show people in Cloud", has: ["Cora Cloud"], not: ["Srihari", "Hari Manager"] }] },
-  { name: "Admin: how many people are in Hardware", role: "ADMIN", steps: [{ say: "how many people are in Hardware", has: ["Hardware has 3 people."], not: ["Hari Manager"] }] },
-  { name: "Admin: how many managers in Hardware", role: "ADMIN", steps: [{ say: "how many managers are in Hardware", has: ["Hardware has 1 manager."] }] },
+  { name: "Admin: how many people are in Hardware", role: "ADMIN", steps: [{ say: "how many people are in Hardware", has: ["People in Hardware", "Total people: 3"], not: ["Hari Manager"] }] },
+  { name: "Admin: how many managers in Hardware", role: "ADMIN", steps: [{ say: "how many managers are in Hardware", has: ["Managers in Hardware", "Total managers: 1"] }] },
   { name: "Manager: sees only own department", role: "MANAGER", steps: [{ say: "who are the team leads in BI/Copilot", has: ["Pavithran M"] }, { say: "who are the team leads in Hardware", not: ["Hema", "Hari"] }] },
   { name: "Employee: people lookups are denied", role: "EMPLOYEE", steps: [{ say: "who are the managers in BI/Copilot", code: "CHAT_ACCESS_DENIED", not: ["Jayakumar"] }] },
 
   // ---- ambiguity: never guess ----
   { name: "Admin: show Manoj asks which one", role: "ADMIN", steps: [{ say: "show Manoj", has: ["Manoj Kumar R", "Manoj Kumar S"], noTickets: true }] },
-  { name: "Admin: show manager asks which department", role: "ADMIN", steps: [{ say: "show manager", has: ["Which department"] }] },
+  // A role with no department: that role in every department (no "which department?" question).
+  { name: "Admin: show manager lists every department's managers", role: "ADMIN", steps: [{ say: "show manager", has: ["Managers in all departments", "Hari Manager"], not: ["Which department"] }] },
   { name: "Admin: show people asks which department", role: "ADMIN", steps: [{ say: "show people", has: ["Which department"] }] },
   { name: "Admin: show tickets still answers (all tickets in scope)", role: "ADMIN", steps: [{ say: "show tickets", intent: "list_tickets" }] },
 

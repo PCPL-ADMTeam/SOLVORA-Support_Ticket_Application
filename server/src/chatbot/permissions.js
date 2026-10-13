@@ -70,6 +70,8 @@ const TOOL_POLICY = {
   get_sla_information: ALL,
   list_departments: { ADMIN: ["departments.read.all"], MANAGER: ["departments.read.allocated"], TEAMLEAD: ["departments.read.allocated"], EMPLOYEE: ["departments.read.own"] },
   get_department_members: { ADMIN: ["departments.members.read.all"], MANAGER: ["users.read.allocatedDepartments"], TEAMLEAD: ["users.read.allocatedDepartments"] },
+  // Administrators are in no department; only an Administrator may list them.
+  get_admin_users: { ADMIN: ["users.read.all"] },
   search_authorized_tickets: READ_TICKETS,
   get_authorized_ticket: READ_TICKETS,
   summarize_authorized_ticket: READ_TICKETS,

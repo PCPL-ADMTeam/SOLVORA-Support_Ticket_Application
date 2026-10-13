@@ -1,5 +1,7 @@
 import { Box, Typography } from "@mui/material";
-import { CardFrame, CardTitle, PeriodBadge, StatTile, TileGrid } from "./parts";
+import BarChartIcon from "@mui/icons-material/BarChart";
+import GroupsOutlinedIcon from "@mui/icons-material/GroupsOutlined";
+import { CardFrame, PeriodBadge, StatTile, TileGrid } from "./parts";
 import { priorityColor, statusColor } from "../TicketChips";
 
 // Dashboard numbers for the user's own scope (from the dashboard service): tickets by priority, by status,
@@ -8,13 +10,7 @@ export default function OverviewCard({ overview }) {
   if (!overview) return null;
   const { kind, title, scope, period, total, rows = [], columns = [], note } = overview;
   return (
-    <CardFrame label={title}>
-      <CardTitle badge={<PeriodBadge period={period} />}>{title}</CardTitle>
-      <Typography variant="caption" display="block" sx={{ mt: -0.5, mb: 1, color: "var(--sv-muted)" }}>
-        {scope}
-        {typeof total === "number" ? ` · ${total} ticket${total === 1 ? "" : "s"} in total` : ""}
-      </Typography>
-
+    <CardFrame label={title} icon={kind === "workload" ? GroupsOutlinedIcon : BarChartIcon} title={title} subtitle={`${scope}${typeof total === "number" ? ` · ${total} ticket${total === 1 ? "" : "s"} in total` : ""}`} badge={<PeriodBadge period={period} />}>
       {(kind === "priority" || kind === "status") && (
         <TileGrid label={title}>
           {rows.map((r) => (
@@ -26,7 +22,7 @@ export default function OverviewCard({ overview }) {
       {kind === "workload" && (
         <Box component="ul" aria-label={title} sx={{ m: 0, p: 0, display: "grid", gap: 0.75 }}>
           {rows.map((r) => (
-            <Box component="li" key={r.label} sx={{ listStyle: "none", p: 1, borderRadius: "10px", bgcolor: "var(--sv-surface)", border: "1px solid var(--sv-border)" }}>
+            <Box component="li" key={r.label} sx={{ listStyle: "none", p: 1, borderRadius: "10px", bgcolor: "var(--sv-bg)", border: "1px solid var(--sv-border)" }}>
               <Typography variant="body2" fontWeight={700} sx={{ wordBreak: "break-word" }}>
                 {r.label}
               </Typography>

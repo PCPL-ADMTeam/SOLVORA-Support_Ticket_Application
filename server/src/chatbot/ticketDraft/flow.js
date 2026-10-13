@@ -12,20 +12,31 @@ const draftStore = require("./draftStore");
 const { parseSlots, splitNames } = require("./slots");
 
 // The conversational "Raise a Ticket". It only COLLECTS the details (title, priority, department,
-// custom CC, problem summary, attachments), one message at a time or all at once, and shows a
-// review. The ticket itself is created by ticket.service.createTicket, the same function the
-// Raise a Ticket page uses, when the user confirms the review (see the raise_ticket_from_draft
-// action). Priorities, departments and people are always looked up from the database; the
-// "From Department" is derived by the ticket service's own rule, never typed or trusted.
+// custom CC, problem summary), one message at a time or all at once, and shows a review. The ticket
+// itself is created by ticket.service.createTicket, the same function the Raise a Ticket page uses,
+// when the user confirms the review (see the raise_ticket_from_draft action). Priorities,
+// departments and people are always looked up from the database; the "From Department" is derived
+// by the ticket service's own rule, never typed or trusted.
+//
+// Files are NOT taken in the chat: a ticket raised here has no attachments. The form says so and
+// links to the role's own Raise a Ticket page for a ticket that needs files.
 
 const MAX_TITLE = 200;
 const say = (message, extra = {}) => ({ message, data: {}, navigationTarget: null, suggestedActions: [], useModel: false, ticketNumbers: [], ...extra });
 const chips = (labels, prefix = "") => labels.slice(0, 8).map((l) => ({ label: l, prompt: `${prefix}${l}` }));
 
+// The Raise a Ticket page of each role that may raise tickets (Admins cannot).
+const CREATE_PAGE = { EMPLOYEE: "/portal/new-ticket", MANAGER: "/agent/new-ticket", TEAMLEAD: "/agent/new-ticket" };
+const createPageLink = (role) => (CREATE_PAGE[role] ? { type: "route", path: CREATE_PAGE[role], label: "Open Create Ticket page" } : null);
+const NO_FILES_NOTE = "You can raise a ticket here without attachments. To attach files, use the Create Ticket page instead.";
+
 const CANCEL = /^(?:please\s+)?(?:cancel|never ?mind|nevermind|stop|abort|discard|forget it|drop it)\b|\b(?:cancel|discard|drop|abort)\s+(?:the|this|my)\s+(?:ticket|request|draft)\b|^no,?\s*(?:please\s+)?(?:don'?t|do not)\s+(?:create|raise|submit)\b/i;
 const CONFIRM = /^(?:yes|yep|yeah|y|ok|okay|sure|confirm|confirmed|go ahead|do it|proceed|raise it|create it|submit|submit it|please do|yes,?\s*(?:please\s+)?(?:raise|create|submit)(?:\s+it)?)\b[.!\s]*$/i;
 const NO = /^(?:no|nope|nah|none|nothing|skip|not now|no thanks|no thank you|done|that'?s all|that is all|finished)\b[.!\s]*$/i;
-const YES = /^(?:yes|yep|yeah|y|ok|okay|sure|please|i do|yes please)\b[.!\s]*$/i;
+// "Attach a file", "add a screenshot", "upload an image": files are not taken in the chat.
+const WANTS_FILES = /\b(?:attach\w*|upload\w*|screenshots?|files?|images?|photos?|documents?|pdfs?)\b/i;
+// The same, said as a request ("can I attach a screenshot?"), so it is not taken as a title or summary.
+const ASKS_TO_ATTACH = /^(?:(?:can|could|may|how)\s+(?:i|we|do i|do we|to)\s+|i\s+(?:want|need|would like|wish)\s+to\s+|please\s+|let me\s+)?(?:attach|upload|add|include|send)\b.{0,30}\b(?:files?|screenshots?|images?|photos?|documents?|pdfs?|attachments?)\b|^(?:add\s+)?attachments?\s*[?.!]*$/i;
 
 const priorityNames = async () => (await prisma.priority.findMany({ select: { name: true }, orderBy: { level: "asc" } })).map((p) => p.name);
 const departmentNames = async () => (await prisma.department.findMany({ select: { name: true }, orderBy: { name: "asc" } })).map((d) => d.name);
@@ -59,15 +70,14 @@ async function view(ctx, draft) {
     summary: f.problemSummary || null,
     words: f.problemSummary ? countWords(f.problemSummary) : 0,
     maxWords: MAX_PROBLEM_SUMMARY_WORDS,
-    attachments: (draft.attachments || []).map((a) => ({ id: a.id, name: a.fileName, size: a.size, mimeType: a.mimeType })),
-    limits: { maxFiles: ticketService.MAX_ATTACHMENTS_PER_TICKET, maxMb: ticketService.MAX_ATTACHMENTS_TOTAL_SIZE_MB },
+    // No files in the chat: where to go instead for a ticket that needs them.
+    filesNote: NO_FILES_NOTE,
+    createPage: createPageLink(ctx.scope.role),
     ccUsers: (f.ccUsers || []).map((u) => ({ id: u.id, name: u.name, email: u.email || null })),
     // The form is showing until the review: the real priorities and departments to pick from.
     ...(draft.step !== "REVIEW" ? { options: { priorities: await priorityNames(), departments: await departmentNames() } } : {}),
   };
 }
-
-const sizeText = (b) => (b >= 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.max(1, Math.round(b / 1024))} KB`);
 
 async function reviewText(ctx, draft) {
   const v = await view(ctx, draft);
@@ -80,8 +90,12 @@ async function reviewText(ctx, draft) {
     `Department: ${v.department}`,
     `Custom CC: ${v.cc.length ? v.cc.join(", ") : "None"}`,
     `Problem Summary: ${v.summary}`,
-    `Attachments: ${v.attachments.length ? v.attachments.map((a, i) => `${i + 1}. ${a.name} (${sizeText(a.size)})`).join("; ") : "None"}`,
   ].join("\n");
+}
+
+// "Can I attach a screenshot?": not here. Say where, keep the ticket as it is.
+async function filesReply(ctx, draft) {
+  return say(`Files can't be attached in the chat. ${NO_FILES_NOTE}`, { data: { ticketDraft: await view(ctx, draft) }, navigationTarget: createPageLink(ctx.scope.role) });
 }
 
 // ---- applying what was said ---------------------------------------------------
@@ -155,28 +169,27 @@ async function applySlots(ctx, draft, slots) {
     else problems.push(`${name} is not in the CC list.`);
   }
   if (slots.noCc) f.ccDone = true;
-  if (slots.noFiles) f.attachDone = true;
   return { notes, problems };
 }
 
 // ---- what to ask next --------------------------------------------------------
-function nextStep(f, draft) {
+function nextStep(f) {
   if (!f.title) return "TITLE";
   if (!f.priorityId) return "PRIORITY";
   if (!f.toDepartmentId) return "DEPARTMENT";
   if (!f.problemSummary) return "SUMMARY";
-  // Custom CC and attachments are optional and live in the form and the review: never a separate question.
+  // Custom CC is optional and lives in the form and the review: never a separate question.
   return "REVIEW";
 }
 
 async function prompt(ctx, draft, step, { first = false } = {}) {
   const f = draft.fields;
-  // Optional questions (CC, files) follow only the first time through; after a review, an edit goes straight back to it.
+  // An optional question (CC) follows only the first time through; after a review, an edit goes straight back to it.
   if (!f.reviewedOnce) f.asked = true;
   const base = { data: { ticketDraft: await view(ctx, { ...draft, step }) } };
   switch (step) {
     case "TITLE":
-      return say(first ? "Sure. I'll help you raise a support ticket. Fill in the form below: title, priority, department and problem summary. CC people and files are optional. What is the issue title?" : "What is the issue title?", base);
+      return say(first ? `Sure. I'll help you raise a support ticket. Fill in the form below: title, priority, department and problem summary. CC people are optional. What is the issue title?\n\n${NO_FILES_NOTE}` : "What is the issue title?", first ? { ...base, navigationTarget: createPageLink(ctx.scope.role) } : base);
     case "PRIORITY": {
       const names = await priorityNames();
       return say(`What priority should this ticket have? (${names.join(", ")})`, base);
@@ -189,8 +202,6 @@ async function prompt(ctx, draft, step, { first = false } = {}) {
       return say(`Please describe the problem (up to ${MAX_PROBLEM_SUMMARY_WORDS} words).`, base);
     case "CC":
       return say("Do you want to add anyone in CC? Give their names or email addresses (several are fine, separated by commas), or say no.", { ...base, suggestedActions: [{ label: "No CC", prompt: "No custom CC" }] });
-    case "ATTACH":
-      return say(`Do you want to attach any files? Use the attach button, or paste a screenshot here (up to ${ticketService.MAX_ATTACHMENTS_PER_TICKET} files, ${ticketService.MAX_ATTACHMENTS_TOTAL_SIZE_MB} MB in total). Say no to continue without files.`, { ...base, suggestedActions: [{ label: "No attachments", prompt: "No attachments" }] });
     default:
       return null;
   }
@@ -218,7 +229,7 @@ async function review(ctx, draft) {
 
 // Save, then either ask the next question or show the review.
 async function advance(ctx, draft, { preface = "", first = false } = {}) {
-  const step = nextStep(draft.fields, draft);
+  const step = nextStep(draft.fields);
   const saved = await draftStore.save(draft.id, { fields: draft.fields, step });
   if (step === "REVIEW") {
     const r = await review(ctx, saved);
@@ -267,7 +278,6 @@ const FIELD_WORDS = [
   ["TITLE", /\b(?:title|subject)\b/i],
   ["SUMMARY", /\b(?:problem|summary|description|details?|issue)\b/i],
   ["CC", /\bcc\b/i],
-  ["ATTACH", /\b(?:attachments?|screenshots?|files?|images?)\b/i],
 ];
 
 async function handleTurn(ctx, draft, rawMessage) {
@@ -278,7 +288,6 @@ async function handleTurn(ctx, draft, rawMessage) {
   if (CANCEL.test(message)) {
     await dropPending(ctx);
     await draftStore.setStatus(draft.id, "CANCELLED");
-    await draftStore.releaseFiles(draft.id);
     return say("Okay, I've cancelled the ticket. Nothing was created.", { data: { ticketDraftClosed: true } });
   }
 
@@ -293,7 +302,7 @@ async function handleTurn(ctx, draft, rawMessage) {
   if (draft.step === "REVIEW" && /^(?:no|nope|nah)\b[.!\s]*$/i.test(message)) {
     await dropPending(ctx);
     await draftStore.save(draft.id, { step: "REVIEW" });
-    return say("Okay, I haven't created it. Tell me what to change (title, priority, department, CC, problem summary or attachments), or say cancel.");
+    return say("Okay, I haven't created it. Tell me what to change (title, priority, department, CC or problem summary), or say cancel.");
   }
 
   // Not about the ticket at all (a question about other data): leave the draft and answer normally.
@@ -318,23 +327,18 @@ async function handleTurn(ctx, draft, rawMessage) {
     const rest = f.choice.rest || [];
     delete f.choice;
     if (rest.length) {
-      const again = await applySlots(ctx, draft, { title: null, priority: null, departmentText: null, description: null, ccAdd: rest, ccRemove: [], noCc: false, noFiles: false });
+      const again = await applySlots(ctx, draft, { title: null, priority: null, departmentText: null, description: null, ccAdd: rest, ccRemove: [], noCc: false });
       if (again.ask) return choicePrompt(ctx, draft, [`CC ${opt.name}`, ...again.notes]);
     }
     return advance(ctx, draft, { preface: `Got it: CC ${opt.name}.` });
   }
 
-  // A pending choice among attachments to remove.
-  if (f.removing) {
-    const n = message.match(/^(?:option\s*|number\s*|#)?(\d{1,2})\.?$/);
-    const target = n ? (draft.attachments || [])[Number(n[1]) - 1] : null;
-    delete f.removing;
-    if (target) {
-      await dropPending(ctx);
-      await draftStore.removeFile(draft, target.id);
-      const fresh = await draftStore.save(draft.id, { fields: f });
-      return advance(ctx, fresh, { preface: `Removed ${target.fileName}.` });
-    }
+  // A message about files (and nothing else the ticket could use): point to the Create Ticket page.
+  // Checked before anything is changed, so the ticket and its review stay exactly as they are.
+  // While the title or summary is being asked for, only a clear request counts ("Unable to upload documents" is a title).
+  const answeringText = draft.step === "TITLE" || draft.step === "SUMMARY";
+  if (ASKS_TO_ATTACH.test(message) || (!answeringText && WANTS_FILES.test(message) && message.split(/\s+/).length <= 12 && !/\b(?:title|priority|department|summary|cc)\b/i.test(message))) {
+    return filesReply(ctx, draft);
   }
 
   await dropPending(ctx);
@@ -345,7 +349,7 @@ async function handleTurn(ctx, draft, rawMessage) {
   if (wasEdit) {
     const hit = FIELD_WORDS.find(([, re]) => re.test(message));
     const hasValue = Boolean(slots.title || slots.priority || slots.departmentText || slots.description || slots.ccAdd.length || slots.ccRemove.length);
-    if (hit && !hasValue && hit[0] !== "ATTACH" && hit[0] !== "CC") {
+    if (hit && !hasValue && hit[0] !== "CC") {
       const asked = { TITLE: "title", PRIORITY: "priority", DEPARTMENT: "department", SUMMARY: "problem summary" }[hit[0]];
       if (hit[0] === "TITLE") delete f.title;
       if (hit[0] === "PRIORITY") (delete f.priorityId, delete f.priorityName);
@@ -363,23 +367,6 @@ async function handleTurn(ctx, draft, rawMessage) {
       return prompt(ctx, { ...draft, step: "CC" }, "CC");
     }
     if (!hit) return formReply(ctx, draft, "Okay, edit your ticket in the form below. Everything you entered is kept.");
-  }
-
-  // Removing an attachment by words.
-  if (/\b(?:remove|delete|drop|take off)\b/i.test(message) && /\b(?:attachments?|screenshots?|files?|images?)\b|\.\w{2,4}\b/i.test(message)) {
-    const files = draft.attachments || [];
-    if (!files.length) return say("There are no attachments on this ticket.", { data: { ticketDraft: await view(ctx, draft) } });
-    const byName = files.find((a) => message.toLowerCase().includes(a.fileName.toLowerCase()));
-    const num = message.match(/\b(\d{1,2})\b/);
-    const target = byName || (num ? files[Number(num[1]) - 1] : null) || (files.length === 1 ? files[0] : null);
-    if (!target) {
-      f.removing = true;
-      await draftStore.save(draft.id, { fields: f });
-      return say(`Which attachment should I remove? Reply with the number.\n${files.map((a, i) => `${i + 1}. ${a.fileName}`).join("\n")}`, { data: { ticketDraft: await view(ctx, draft) } });
-    }
-    await draftStore.removeFile(draft, target.id);
-    const fresh = await draftStore.save(draft.id, { fields: f });
-    return advance(ctx, fresh, { preface: `Removed ${target.fileName}.` });
   }
 
   // The step's own answer, when the message did not name the field.
@@ -400,12 +387,8 @@ async function handleTurn(ctx, draft, rawMessage) {
     else slots.ccAdd = splitNames(message);
   }
   // The form is open and the message names nothing it could use: point at the form rather than guess.
-  if (step === "FORM" && !slots.title && !slots.priority && !slots.departmentText && !slots.description && !slots.ccAdd.length && !slots.ccRemove.length && !slots.noCc && !slots.noFiles) {
+  if (step === "FORM" && !slots.title && !slots.priority && !slots.departmentText && !slots.description && !slots.ccAdd.length && !slots.ccRemove.length && !slots.noCc) {
     return formReply(ctx, draft, 'Please use the form below, or tell me what to change (for example: "priority high").');
-  }
-  if (step === "ATTACH") {
-    if (NO.test(message) || slots.noFiles) f.attachDone = true;
-    else if (YES.test(message)) return say(`Use the attach button (or paste a screenshot) to add files. Say done when you have finished, or no to continue without files.`, { data: { ticketDraft: await view(ctx, draft) } });
   }
 
   const { notes, problems, ask } = await applySlots(ctx, draft, slots);
@@ -450,7 +433,7 @@ async function submitForm(ctx, draft, payload = {}) {
   const missing = [["Title", title], ["Priority", priority], ["Department", department], ["Problem Summary", summary]].filter(([, v]) => !v).map(([l]) => l);
   if (missing.length) throw invalid(`Please fill in: ${missing.join(", ")}.`);
   const ccUsers = await resolveCcIds(ctx, payload.ccUserIds);
-  const { problems } = await applySlots(ctx, draft, { title, priority, departmentText: department, description: summary, ccAdd: [], ccRemove: [], noCc: false, noFiles: false });
+  const { problems } = await applySlots(ctx, draft, { title, priority, departmentText: department, description: summary, ccAdd: [], ccRemove: [], noCc: false });
   f.ccUsers = ccUsers;
   // What was valid is kept, so nothing the user entered is lost when one field is refused.
   await draftStore.save(draft.id, { fields: f });
@@ -458,12 +441,4 @@ async function submitForm(ctx, draft, payload = {}) {
   return advance(ctx, draft, {});
 }
 
-// Called after files were added or removed through the upload endpoint.
-async function afterFilesChanged(ctx, draft, preface) {
-  await dropPending(ctx);
-  const fresh = await draftStore.getActive(ctx.scope.userId, ctx.conversationId);
-  fresh.fields.attachDone = true;
-  return advance(ctx, fresh, { preface });
-}
-
-module.exports = { start, handleTurn, afterFilesChanged, view, submitForm, formReply };
+module.exports = { start, handleTurn, view, submitForm, formReply, NO_FILES_NOTE };

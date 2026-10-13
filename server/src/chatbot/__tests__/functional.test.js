@@ -165,7 +165,7 @@ describe("ticket information", () => {
   test("no-result response", async () => {
     const r = await ask(users.empA, "Show my pending tickets");
     expect(r.error.code).toBe("CHAT_NO_RESULTS");
-    expect(r.message).toBe("I didn't find any matching tickets.");
+    expect(r.message).toBe("I couldn't find any pending tickets raised by you or assigned to you.");
   });
 
   test("invalid ticket ids", async () => {
@@ -325,17 +325,20 @@ describe("department members (scoped)", () => {
     expect(out).not.toMatch(/Gone|@example\.test|email/i);
   });
 
-  test("'each department' lists every department; no department named asks which one", async () => {
+  test("'each department' lists every department; a role with no department means every department", async () => {
     const all = await ask(users.admin, "show me the employee names in each department?");
     expect(all.data.departmentMembers.map((d) => d.name)).toEqual(["Finance", "IT Support"]);
     const none = await ask(users.admin, "show me the employee names");
-    expect(none.message).toMatch(/Which department/);
-    expect(none.message).toContain("Finance");
+    expect(none.message).toMatch(/^Employees in all departments/);
+    expect(none.data.departmentMembers.map((d) => d.name)).toEqual(["Finance", "IT Support"]);
+    // Neither a role nor a department: still asks which one.
+    expect((await ask(users.admin, "show people")).message).toMatch(/Which department/);
   });
 
-  test("short names need an exact match ('it' must not match 'Finance')", async () => {
+  test("short names need an exact match ('it' must not match 'Finance'); an unknown department is said", async () => {
     const r = await ask(users.admin, "show people in hr");
-    expect(r.message).toMatch(/Which department/);
+    expect(r.message).toMatch(/I couldn't find a department called "hr"/);
+    expect(r.message).not.toMatch(/Dan Finance|Alice/);
   });
 
   test("an employee is refused: no names, no navigation, denial audited", async () => {

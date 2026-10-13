@@ -203,7 +203,7 @@ keeps the complete plain-text version (copied by the Copy button and stored in t
 | `summaryReport` | Ticket summary | `title`, `period`, `sections[{ key: created / assigned, label, total, byStatus[{ status, label, count }], byPriority[{ priority, count }] }]`. Statuses and priorities are exactly the ones the dashboard service returns; each section has its own priorities. |
 | `overview` | Priority / status summary, workload | `kind` (priority, status, workload), `title`, `scope`, `period` ("All time"), `total`, `rows`, `columns`. |
 | `notifications.items` | Notification list | `id, type, title, message, isRead, at, ticketNumber, ticketRouteId`. `ticketRouteId` is null when the ticket is no longer in the user's scope. |
-| `listing` | Ticket list | `showing` ("1–5 of 12"), `filters[]`, `notes[]`, next to the existing `tickets` and `total`. |
+| `listing` | Ticket list | `title` (see Ticket views below), `showing` ("1–5 of 12"), `filters[]`, `notes[]`, next to the existing `tickets` and `total`. |
 | `person`, `departmentMembers`, `departments` | People and departments | Names, roles and departments only (never e-mails or ids). |
 
 Date windows: "today", "yesterday", "this week" and named dates start at midnight in the user's time zone. The
@@ -211,13 +211,53 @@ ticket summary's "Last N days" is exactly N x 24 hours back, as the Dashboard pa
 send only the number of days, which the dashboard service does not apply to its counts, so "last 30 days" was all
 time). What's New with no range means today plus the six days before it.
 
+### Ticket views
+
+Every ticket list is one of these views. Each is a separate filter on `search_authorized_tickets`, applied inside the
+signed-in user's own scope (the role and departments come from the authenticated user, never from the message).
+`total` is the count of that same query.
+
+| View | Example questions | Filter | Title | Who can use it |
+|---|---|---|---|---|
+| My Tickets | "Show my tickets", "What tickets are associated with me?" | requester = me OR assignee = me (the portal's "My Tickets" tab) | My Tickets | Employee, Team Lead, Manager |
+| Assigned to me | "Show tickets assigned to me", "What tickets am I handling?" | assignee = me | Tickets Assigned to Me | Employee, Team Lead (a Manager is never an assignee) |
+| Raised by me | "Show tickets raised by me", "What issues have I reported?" | requester = me | Tickets Raised by Me | Employee, Team Lead, Manager |
+| My department | "Show my department's tickets", "Show open tickets in my department" | the departments the user has access to | My Department's Tickets (Admin: All Tickets) | Team Lead, Manager, Admin |
+| A named department | "Show tickets in Hardware", "What issues are reported in Hardware?" | that department, still inside the user's scope | Tickets in Hardware (Employee: My Tickets in Hardware) | all roles |
+
+Status, priority and date words narrow a view ("My Open Tickets", "My Department's High Priority Tickets").
+An Employee who asks for department tickets gets `CHAT_ACCESS_DENIED` with an explanation and links to their own
+views (the ticket tool refuses the department scope and audits it). An Admin's own views are always empty (Admins
+don't raise tickets and are never assigned), and the reply says so.
+
+After every list, count or empty result, `suggestedActions` offers up to three other views the role can use (for
+example after My Tickets: Assigned to Me, Raised by Me, My Department's Tickets), then narrowing steps such as
+"Only open". Each suggestion is a normal question, so it runs the same filter as typing it.
+
 ## Raising a ticket (drafts)
 
 | Method and path | Purpose |
 |---|---|
-| `POST /chatbot/drafts/attachments` | multipart: `conversationId`, `files`. Adds files to the open ticket draft (5 files / 10 MB rules). Returns the next assistant message and the updated `data.ticketDraft`. |
-| `DELETE /chatbot/drafts/attachments/:attachmentId?conversationId=` | Removes one file from the draft. |
+| `POST /chatbot/drafts/review` | The form's "Review Ticket": title, priority, department, problem summary and CC user ids at once. Returns the review. |
+| `GET /chatbot/drafts/cc-search?conversationId=&q=` | People to CC (active users, never the requester), while a ticket is being raised. |
 
-Messages that belong to the flow carry `data.ticketDraft` (title, priority, fromDepartment, department, cc, summary,
-words, attachments, limits). The review also carries `data.pendingAction` (title "Raise ticket"); confirming it calls
-the existing ticket service. See `chatbot-raise-ticket.md`.
+Files are not taken in the chat: a ticket raised here has no attachments (the former
+`/chatbot/drafts/attachments` endpoints are removed and answer 404). The form says so and links to the role's own
+Create Ticket page (`data.ticketDraft.filesNote`, `data.ticketDraft.createPage`); asking to attach a file during the
+chat gets the same answer and link, and leaves the ticket as it was.
+
+Messages that belong to the flow carry `data.ticketDraft` (title, priority, fromDepartment, department, cc, ccUsers,
+summary, words, filesNote, createPage, and `options` while the form is open). The review also carries
+`data.pendingAction` (title "Raise ticket"); confirming it calls the existing ticket service. See
+`chatbot-raise-ticket.md`.
+
+## Transferring a ticket (how-to)
+
+"How do I transfer a ticket", "2600011 transfer to Hardware" (also misspelt, e.g. "tranfser"), "transfer department
+to Hardware" and "change the department of ticket N" answer with `intent: "transfer_guidance"` and `data.guide`:
+`{ title, ticket (if named and visible), target, targetNote, access: { tone: ok | blocked | info, text }, steps, notes }`.
+Whether the user may transfer that ticket is `ticket.service.assertCanTransferDepartment` (the rule the transfer itself
+enforces): Administrators never; Managers and Team Leads for their departments; Employees only while the ticket is
+assigned to them. Nothing is changed by the answer. A role that may transfer is offered "Transfer ticket N to X", which
+is the existing confirm-first action (reason, preview, then Confirm). A ticket the user can't see gets the usual
+neutral "not found or no permission" answer. "Transfer Ravi to Finance" (moving a person) is not affected.

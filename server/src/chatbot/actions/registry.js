@@ -68,6 +68,25 @@ const TICKET_SELECT = {
   toDepartment: { select: { name: true } },
 };
 
+// The people who may be assigned a ticket by this user: the service's own rule (assertValidAssignee) read
+// as a list: active employees of the ticket's department, and for a Team Lead also the other Team Leads of
+// it. Only used to OFFER names; the service checks the chosen person again when the assignment is made.
+async function eligibleAssignees(ctx, ticket) {
+  if (!ticket.toDepartmentId) return [];
+  const employees = await prisma.user.findMany({ where: { isActive: true, departmentId: ticket.toDepartmentId, role: { name: "EMPLOYEE" } }, select: { id: true, name: true }, orderBy: { name: "asc" }, take: 8 });
+  const leads =
+    ctx.scope.role === "TEAMLEAD"
+      ? await prisma.user.findMany({ where: { isActive: true, id: { not: ctx.scope.userId }, role: { name: "TEAMLEAD" }, departmentAccess: { some: { departmentId: ticket.toDepartmentId } } }, select: { id: true, name: true }, orderBy: { name: "asc" }, take: 4 })
+      : [];
+  return [...employees, ...leads].filter((u) => u.id !== ticket.assigneeId).slice(0, 8);
+}
+
+// "Assign ticket N" with nobody named: the ticket (checked as for any action) and who can take it.
+async function assigneeOptions(ctx, ticketRef) {
+  const ticket = await loadTicket(ctx, ticketRef);
+  return { ticketNumber: ticket.ticketNumber, people: await eligibleAssignees(ctx, ticket), canSelfAssign: ctx.scope.role === "TEAMLEAD" && ticket.assigneeId !== ctx.scope.userId };
+}
+
 // The ticket, only if it is inside the caller's authorized scope. Anything else
 // (missing, or exists but not theirs) throws the SAME neutral error.
 async function loadTicket(ctx, ref) {
@@ -405,10 +424,9 @@ const ACTIONS = {
         const live = await prisma.user.findMany({ where: { id: { in: cc.map((u) => u.id) }, isActive: true }, select: { id: true } });
         if (live.length !== cc.length) throw invalid("One or more of the people you chose for CC are no longer active. Please change the CC list.");
       }
-      const n = draft.attachments.length;
       return {
         params: { draftId: draft.id },
-        summary: `Raise the ticket "${f.title}" to ${dept.name} with ${priority.name} priority${cc.length ? `, CC ${cc.map((u) => u.name).join(", ")}` : ""}${n ? `, with ${n} attachment${n === 1 ? "" : "s"}` : ""}.`,
+        summary: `Raise the ticket "${f.title}" to ${dept.name} with ${priority.name} priority${cc.length ? `, CC ${cc.map((u) => u.name).join(", ")}` : ""}.`,
         impact: ["The ticket is raised in your name, exactly as from the Raise a Ticket page.", `The ${dept.name} department's Team Leads and Managers are notified, as for any new ticket.`, ...(cc.length ? [`${cc.map((u) => u.name).join(", ")} will be copied on its emails.`] : [])],
       };
     },
@@ -417,26 +435,16 @@ const ACTIONS = {
       const draft = await store.loadOwned(ctx.actorId, p.draftId);
       if (!draft || draft.status !== "ACTIVE") throw invalid("That ticket draft is no longer available.");
       const f = draft.fields;
-      const files = await store.loadFiles(draft.id);
-      const t = await services.ticket().createTicket(ctx.user, { title: f.title, problemSummary: f.problemSummary, priorityId: f.priorityId, toDepartmentId: f.toDepartmentId, ccUserIds: (f.ccUsers || []).map((u) => u.id) }, files);
+      // A ticket raised in the chat has no attachments (files are added on the Create Ticket page or the ticket page).
+      const t = await services.ticket().createTicket(ctx.user, { title: f.title, problemSummary: f.problemSummary, priorityId: f.priorityId, toDepartmentId: f.toDepartmentId, ccUserIds: (f.ccUsers || []).map((u) => u.id) }, []);
       await store.setStatus(draft.id, "CREATED");
-      await store.releaseFiles(draft.id);
-      // The ticket service saves each file best-effort (a storage failure never undoes the ticket),
-      // so check what actually reached the ticket and say so plainly if any file did not.
-      let warning = "";
-      if (files.length) {
-        const saved = await prisma.ticketAttachment.count({ where: { ticketId: t.id } });
-        if (saved < files.length) {
-          warning = `\n\n⚠ ${saved === 0 ? "None of your" : `Only ${saved} of your`} ${files.length} attachment${files.length === 1 ? "" : "s"} could be saved to the ticket (file storage is unavailable). Please add ${saved === 0 ? "them" : "the rest"} again from the ticket page once it is fixed.`;
-        }
-      }
       return {
         message: `Your ticket has been raised successfully. Ticket number: ${t.ticketNumber}.
 
 Title: ${f.title}
 Department: ${f.toDepartmentName}
 Priority: ${f.priorityName}
-Status: ${STATUS_LABEL[t.status] || t.status}${warning}`,
+Status: ${STATUS_LABEL[t.status] || t.status}`,
         ticketId: t.id,
         ticketNumber: t.ticketNumber,
       };
@@ -492,32 +500,69 @@ Status: ${STATUS_LABEL[t.status] || t.status}${warning}`,
     },
   },
 
+  // Same rules and the same service call as the ticket page's Assign Ticket dialog: Managers and Team
+  // Leads of the ticket's department only (Admins and Employees never; checked again by the service);
+  // the assignee is an active employee of that department, or for a Team Lead another Team Lead of it;
+  // a Team Lead may "Assign to Me", a Manager is never an assignee. The optional note is the dialog's
+  // optional instructions and goes into the assignment email, exactly as from the page.
   assign_ticket: {
     title: "Assign ticket",
     async prepare(ctx, args) {
       const ticket = await loadTicket(ctx, args.ticket);
       if (ticket.status === "CLOSED") throw new ChatError(CODES.INVALID_TICKET_TRANSITION, { message: `Ticket ${ticket.ticketNumber} is closed. Reopen it before assigning it.` });
-      // People are found only inside the caller's departments; a name elsewhere looks like no name at all.
-      const assignee = await resolveUserArg(args, "assignee", cleanName, scopedDeptIds(ctx));
-      if (!assignee.isActive) throw new ChatError(CODES.INVALID_ASSIGNEE, { message: `${assignee.name}'s account is not active, so they can't be assigned tickets.` });
-      if (assignee.id === ctx.actorId) throw new ChatError(CODES.INVALID_ASSIGNEE, { message: "I can't assign a ticket to you. Use the Assign Ticket button on the ticket page for that." });
+      const note = args.note ? cleanText(args.note, "note", { max: 1000 }) : "";
+      const offer = async () => (await eligibleAssignees(ctx, ticket)).map((u) => ({ label: u.name, prompt: `Assign ticket ${ticket.ticketNumber} to ${u.name}` }));
+
+      // "Assign it to me": the page's Assign to Me, for a Team Lead only.
+      const toSelf = /^(?:me|myself)$/i.test(String(args.assignee || "").trim());
+      let assignee = null;
+      if (!toSelf) {
+        try {
+          // People are found only inside the caller's departments; a name elsewhere looks like no name at all.
+          assignee = await resolveUserArg(args, "assignee", cleanName, scopedDeptIds(ctx));
+        } catch (err) {
+          // Nobody by that name: say so, and offer the people who can be assigned this ticket.
+          if (err instanceof ChatError && !err.choices?.length) throw new ChatError(err.code, { message: `${err.message} These people can be assigned ticket ${ticket.ticketNumber}:`, suggestions: await offer() });
+          throw err;
+        }
+      }
+      // What the preview's Edit offers: the eligible people (names only) and the note, for a new preview.
+      const editFor = async (current) => ({ kind: "assign", ticketNumber: ticket.ticketNumber, assignee: current, note, options: (await eligibleAssignees(ctx, ticket)).map((u) => u.name), canSelfAssign: ctx.scope.role === "TEAMLEAD" && ticket.assigneeId !== ctx.actorId });
+      if (toSelf || assignee.id === ctx.actorId) {
+        if (ctx.scope.role !== "TEAMLEAD") throw new ChatError(CODES.INVALID_ROLE_OPERATION, { message: "Managers can't be assigned tickets in Solvora. Assign it to an employee of the ticket's department." });
+        if (ticket.assigneeId === ctx.actorId) throw invalid(`Ticket ${ticket.ticketNumber} is already assigned to you.`);
+        return {
+          edit: await editFor("me"),
+          params: { ticketId: ticket.id, ticketNumber: ticket.ticketNumber, assignToMe: true, assigneeName: "you", from: ticket.assignee?.name || null },
+          summary: `${ticket.assignee ? `Reassign ticket ${ticket.ticketNumber} from ${ticket.assignee.name} to yourself` : `Assign ticket ${ticket.ticketNumber} to yourself`}.`,
+          impact: ["You become responsible for the ticket.", "The requester and the department's Managers and Team Leads are notified, as with Assign to Me on the ticket page.", "The change is recorded in the ticket's activity history."],
+        };
+      }
+      if (!assignee.isActive) throw new ChatError(CODES.INVALID_ASSIGNEE, { message: `${assignee.name}'s account is not active, so they can't be assigned tickets.`, suggestions: await offer() });
       let eligible = assignee.role.name === "EMPLOYEE" && assignee.departmentId === ticket.toDepartmentId;
       if (!eligible && ctx.scope.role === "TEAMLEAD" && assignee.role.name === "TEAMLEAD") {
         eligible = await services.access().hasAccess(assignee.id, ticket.toDepartmentId);
       }
       if (!eligible) {
-        throw new ChatError(CODES.INVALID_ASSIGNEE, { message: `${assignee.name} can't be assigned this ticket: only active employees of ${ticket.toDepartment?.name || "the ticket's department"}${ctx.scope.role === "TEAMLEAD" ? " (or another Team Lead of that department)" : ""} are eligible.` });
+        throw new ChatError(CODES.INVALID_ASSIGNEE, { message: `${assignee.name} can't be assigned this ticket: only active employees of ${ticket.toDepartment?.name || "the ticket's department"}${ctx.scope.role === "TEAMLEAD" ? " (or another Team Lead of that department)" : ""} are eligible.`, suggestions: await offer() });
       }
       if (ticket.assigneeId === assignee.id) throw invalid(`Ticket ${ticket.ticketNumber} is already assigned to ${assignee.name}.`);
       return {
-        params: { ticketId: ticket.id, ticketNumber: ticket.ticketNumber, assigneeId: assignee.id, assigneeName: assignee.name, from: ticket.assignee?.name || null },
-        summary: `${ticket.assignee ? "Reassign" : "Assign"} ticket ${ticket.ticketNumber} ${ticket.assignee ? `from ${ticket.assignee.name} ` : ""}to ${assignee.name}.`,
-        impact: [`${assignee.name} becomes responsible for the ticket and is notified.`, ticket.assignee ? `${ticket.assignee.name} is no longer the assignee.` : "The ticket currently has no assignee.", "The change is recorded in the ticket's activity history."],
+        edit: await editFor(assignee.name),
+        params: { ticketId: ticket.id, ticketNumber: ticket.ticketNumber, assigneeId: assignee.id, assigneeName: assignee.name, from: ticket.assignee?.name || null, ...(note ? { assignmentComment: note } : {}) },
+        summary: `${ticket.assignee ? "Reassign" : "Assign"} ticket ${ticket.ticketNumber} ${ticket.assignee ? `from ${ticket.assignee.name} ` : ""}to ${assignee.name}${note ? `, with the note: "${note}"` : ""}.`,
+        impact: [
+          `${assignee.name} becomes responsible for the ticket and gets the ${ticket.assignee ? "reassignment" : "assignment"} email${note ? " with your note" : ""}; the requester is copied, as from the ticket page.`,
+          ticket.assignee ? `${ticket.assignee.name} is no longer the assignee.` : "The ticket currently has no assignee.",
+          "The change is recorded in the ticket's activity history.",
+        ],
       };
     },
     async execute(ctx, p) {
-      await services.ticket().updateTicket(ctx.user, p.ticketId, { assigneeId: p.assigneeId });
-      return `Ticket ${p.ticketNumber} was assigned to ${p.assigneeName}.`;
+      // The ticket page's own call: { assignToMe } for a Team Lead's self-assignment, else { assigneeId, assignmentComment }.
+      const payload = p.assignToMe ? { assignToMe: true } : { assigneeId: p.assigneeId, ...(p.assignmentComment ? { assignmentComment: p.assignmentComment } : {}) };
+      await services.ticket().updateTicket(ctx.user, p.ticketId, payload);
+      return p.assignToMe ? `Ticket ${p.ticketNumber} is now assigned to you.` : `Ticket ${p.ticketNumber} was assigned to ${p.assigneeName}.`;
     },
   },
 
@@ -628,4 +673,4 @@ const REDIRECTS = {
 // Roles that may attempt an action (from the deny-by-default policy).
 for (const [name, def] of Object.entries(ACTIONS)) def.roles = actionRoles(name);
 
-module.exports = { ACTIONS, REDIRECTS, MAX_NAME: NAME_MAX, STATUS_LABEL };
+module.exports = { ACTIONS, REDIRECTS, MAX_NAME: NAME_MAX, STATUS_LABEL, assigneeOptions };

@@ -11,11 +11,8 @@ vi.mock("../../../api/chatbot", () => ({
     sendFeedback: vi.fn(),
     confirmAction: vi.fn(),
     cancelAction: vi.fn(),
-    uploadDraftFiles: vi.fn(),
-    removeDraftFile: vi.fn(),
     reviewDraft: vi.fn(),
     searchDraftCc: vi.fn(),
-    fetchDraftFile: vi.fn(),
     listConversations: vi.fn(),
     resumeConversation: vi.fn(),
     getConversation: vi.fn(),
@@ -236,17 +233,20 @@ describe("cards and navigation", () => {
     await openPanel(user);
     await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "Show my open tickets{Enter}");
 
-    const list = await screen.findByRole("list", { name: "Matching tickets" });
-    expect(within(list).getByText("#2627001")).toBeInTheDocument();
-    expect(within(list).getByText("In Progress")).toBeInTheDocument();
-    expect(within(list).getByText("High")).toBeInTheDocument();
-    expect(within(list).getByText("Printer on floor 2")).toBeInTheDocument();
+    const card = await screen.findByRole("region", { name: "Ticket 2627001" });
+    expect(within(card).getByRole("heading", { name: "Ticket #2627001" })).toBeInTheDocument();
+    expect(within(card).getByText("In Progress")).toBeInTheDocument();
+    expect(within(card).getByText("High")).toBeInTheDocument();
+    expect(within(card).getByText("Printer on floor 2")).toBeInTheDocument();
+    // A missing value is named in words, never left blank or guessed.
+    expect(within(card).getByText("Carol")).toBeInTheDocument();
+    expect(within(card).getAllByText("Not recorded").length).toBeGreaterThanOrEqual(1);
 
-    await user.click(within(list).getByRole("button", { name: "Open ticket 2627001" }));
+    await user.click(within(card).getByRole("button", { name: "Open ticket 2627001" }));
     expect(screen.getByTestId("where")).toHaveTextContent("/tickets/cuid-1");
   });
 
-  test("summary card renders missing fields as Not available and separates suggestions from facts", async () => {
+  test("ticket details card names missing fields in plain words and separates suggestions from facts", async () => {
     const summary = {
       ticketId: "2627002",
       ticketRouteId: "cuid-2",
@@ -271,11 +271,15 @@ describe("cards and navigation", () => {
     await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "Summarize ticket 2627002{Enter}");
 
     const card = await screen.findByLabelText("Summary of ticket 2627002");
-    expect(within(card).getAllByText("Not available").length).toBeGreaterThanOrEqual(3);
-    expect(within(card).getByText("Pending (from recorded data)")).toBeInTheDocument();
+    expect(within(card).getByRole("heading", { name: "Ticket #2627002" })).toBeInTheDocument();
+    expect(within(card).getByText("VPN problem")).toBeInTheDocument();
+    expect(within(card).getByText("Not assigned yet")).toBeInTheDocument();
+    expect(within(card).getByText("Not set")).toBeInTheDocument();
+    expect(within(card).getByText("No update recorded yet.")).toBeInTheDocument();
+    expect(within(card).getByText("What's pending")).toBeInTheDocument();
     expect(within(card).getByText("No assignee is recorded for this ticket.")).toBeInTheDocument();
     expect(within(card).getByText("Suggestion (not a recorded fact)")).toBeInTheDocument();
-    expect(within(card).getByText("Not tracked")).toBeInTheDocument();
+    expect(within(card).getByText("SLA and due dates are not tracked in this application.")).toBeInTheDocument();
   });
 
   test("assistant text is rendered as text, not HTML", async () => {
@@ -610,82 +614,29 @@ describe("after a change is confirmed", () => {
   });
 });
 
-describe("raising a ticket with files", () => {
-  const draft = (over = {}) => ({
-    id: "d1", status: "ACTIVE", step: "ATTACH", title: "VPN down", priority: "High", fromDepartment: "IT Support", department: "Finance", cc: [], summary: "Cannot connect.", words: 2, maxWords: 50,
-    attachments: [], limits: { maxFiles: 5, maxMb: 10 }, ...over,
-  });
-  const start = (data = {}) => reply({ message: "Do you want to attach any files?", data: { ticketDraft: draft(), ...data } });
-  const png = (name = "shot.png", size = 2048) => new File([new Uint8Array(size)], name, { type: "image/png" });
+describe("raising a ticket: no attachments in the chat", () => {
+  const draft = (over = {}) => ({ id: "d1", status: "ACTIVE", step: "REVIEW", title: "VPN down", priority: "High", fromDepartment: "IT Support", department: "Finance", cc: [], summary: "Cannot connect.", words: 2, maxWords: 50, ...over });
 
-  async function open(user) {
-    chatbotApi.sendMessage.mockResolvedValue(start());
-    await openPanel(user);
-    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
-    await screen.findByText("Do you want to attach any files?");
-  }
-
-  test("the attach button is only available while a ticket is being raised", async () => {
+  test("there is no attach button, and a pasted image is not attached", async () => {
+    chatbotApi.sendMessage.mockResolvedValue(reply({ message: "Fill in the form below.", data: { ticketDraft: draft({ step: "TITLE", options: { priorities: ["High"], departments: ["Finance"] } }) } }));
     const { user } = setup();
     await openPanel(user);
-    expect(await screen.findByRole("button", { name: /Attach a file \(available while raising a ticket\)/ })).toBeDisabled();
-    await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "raise a ticket{Enter}");
-    chatbotApi.sendMessage.mockResolvedValue(start());
-    await user.clear(screen.getByRole("textbox", { name: "Message to the assistant" }));
-    await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "go{Enter}");
-    expect(await screen.findByRole("button", { name: "Attach files to the ticket" })).toBeEnabled();
+    const box = await screen.findByRole("textbox", { name: "Message to the assistant" });
+    expect(screen.queryByRole("button", { name: /attach/i })).not.toBeInTheDocument();
+    await user.type(box, "raise a ticket{Enter}");
+    await screen.findByRole("form", { name: "Raise a ticket form" });
+    expect(screen.queryByRole("button", { name: /attach|add files/i })).not.toBeInTheDocument();
+    expect(screen.queryByTestId("ticket-file-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("form-file-input")).not.toBeInTheDocument();
+    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => new File(["x"], "clip.png", { type: "image/png" }) }] } });
+    expect(chatbotApi.sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  test("a chosen file is uploaded with the conversation id, shown with a remove button, and can be removed", async () => {
-    URL.createObjectURL = vi.fn(() => "blob:preview");
+  test("the review has Raise Ticket, Edit and Cancel", async () => {
+    chatbotApi.sendMessage.mockResolvedValue(reply({ message: "Ticket Review", data: { ticketDraft: draft(), pendingAction: { id: "act-9", title: "Raise ticket", summary: "Raise the ticket", impact: [], confirmationToken: "t".repeat(20) } } }));
     const { user } = setup();
-    await open(user);
-    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { messageId: "m9", message: "Added shot.png.", data: { ticketDraft: draft({ attachments: [{ id: "a1", name: "shot.png", size: 2048, mimeType: "image/png" }] }) }, suggestedActions: [] } } });
-    await user.upload(screen.getByTestId("ticket-file-input"), png());
-    expect(await screen.findByText("Added shot.png.")).toBeInTheDocument();
-    const form = chatbotApi.uploadDraftFiles.mock.calls[0][0];
-    expect(form.get("conversationId")).toBe("conv-1");
-    expect(form.getAll("files")[0].name).toBe("shot.png");
-    expect(await screen.findByAltText("Preview of shot.png")).toBeInTheDocument();
-
-    chatbotApi.removeDraftFile.mockResolvedValue({ data: { data: { messageId: "m10", message: "Removed shot.png.", data: { ticketDraft: draft() }, suggestedActions: [] } } });
-    await user.click(screen.getByRole("button", { name: "Remove attachment shot.png" }));
-    expect(chatbotApi.removeDraftFile).toHaveBeenCalledWith("a1", "conv-1", true);
-    expect(await screen.findByText("Removed shot.png.")).toBeInTheDocument();
-  });
-
-  test("a pasted screenshot becomes an attachment, not text in the message box", async () => {
-    const { user } = setup();
-    await open(user);
-    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { messageId: "m9", message: "Added pasted-image.png.", data: { ticketDraft: draft() }, suggestedActions: [] } } });
-    const box = screen.getByRole("textbox", { name: "Message to the assistant" });
-    const file = png("clip.png");
-    fireEvent.paste(box, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] } });
-    await waitFor(() => expect(chatbotApi.uploadDraftFiles).toHaveBeenCalledTimes(1));
-    expect(chatbotApi.uploadDraftFiles.mock.calls[0][0].getAll("files")[0].name).toMatch(/^pasted-image-\d+\.png$/);
-    expect(box).toHaveValue("");
-  });
-
-  test("more than 5 files, or more than 10 MB, is refused before upload with the ticket page's wording", async () => {
-    const { user } = setup();
-    await open(user);
-    const six = Array.from({ length: 6 }, (_, i) => png(`f${i}.png`));
-    await user.upload(screen.getByTestId("ticket-file-input"), six);
-    expect(await screen.findByText(/Maximum 5 attachments are allowed per ticket/)).toBeInTheDocument();
-    await user.upload(screen.getByTestId("ticket-file-input"), new File([new Uint8Array(11 * 1024 * 1024)], "huge.png", { type: "image/png" }));
-    expect(await screen.findByText(/Attachments cannot exceed 10 MB combined per ticket/)).toBeInTheDocument();
-    expect(chatbotApi.uploadDraftFiles).not.toHaveBeenCalled();
-  });
-
-  test("a server refusal is shown, and the review has Raise Ticket, Edit and Cancel", async () => {
-    const { user } = setup();
-    await open(user);
-    chatbotApi.uploadDraftFiles.mockRejectedValue(apiError("CHAT_ACTION_INVALID", "Maximum 5 attachments are allowed per ticket.", 400));
-    await user.upload(screen.getByTestId("ticket-file-input"), png());
-    expect(await screen.findByText("Maximum 5 attachments are allowed per ticket.")).toBeInTheDocument();
-
-    chatbotApi.sendMessage.mockResolvedValue(reply({ message: "Ticket Review", data: { ticketDraft: draft({ step: "REVIEW" }), pendingAction: { id: "act-9", title: "Raise ticket", summary: "Raise the ticket", impact: [], confirmationToken: "t".repeat(20) } } }));
-    await user.type(screen.getByRole("textbox", { name: "Message to the assistant" }), "no{Enter}");
+    await openPanel(user);
+    await user.type(await screen.findByRole("textbox", { name: "Message to the assistant" }), "raise it{Enter}");
     expect(await screen.findByRole("button", { name: /^Confirm: Raise the ticket/ })).toHaveTextContent("Raise Ticket");
     chatbotApi.sendMessage.mockResolvedValue(reply({ message: "What would you like to change?" }));
     await user.click(screen.getByRole("button", { name: "Edit this request" }));
@@ -829,10 +780,10 @@ describe("the single ticket session: one form, one review, one Raise Ticket", ()
   const OPTIONS = { priorities: ["Low", "High"], departments: ["Hardware", "BI/Copilot"] };
   const formDraft = (over = {}) => ({
     id: "d1", status: "ACTIVE", step: "TITLE", title: null, priority: null, fromDepartment: null, department: null, cc: [], ccUsers: [], summary: null, words: 0, maxWords: 50,
-    attachments: [], limits: { maxFiles: 5, maxMb: 10 }, options: OPTIONS, ...over,
+    filesNote: "You can raise a ticket here without attachments. To attach files, use the Create Ticket page instead.",
+    createPage: { type: "route", path: "/portal/new-ticket", label: "Open Create Ticket page" },
+    options: OPTIONS, ...over,
   });
-  const image = (name = "shot.png", size = 2048) => new File([new Uint8Array(size)], name, { type: "image/png" });
-  const att = (id, name, size = 2048, mimeType = "image/png") => ({ id, name, size, mimeType });
 
   async function openForm(user, draft = formDraft()) {
     chatbotApi.sendMessage.mockResolvedValueOnce(reply({ intent: "ticket_draft", message: "Sure. Fill in the form below.", data: { ticketDraft: draft } }));
@@ -854,12 +805,12 @@ describe("the single ticket session: one form, one review, one Raise Ticket", ()
       ...over,
     });
 
-  test("the form has every field, an attachments section and a CC picker, and one primary button", async () => {
+  test("the form has every field and a CC picker, no attachments, and one primary button", async () => {
     const { user } = setup();
     const form = await openForm(user);
     for (const label of [/^Title/, /^Priority/, /^Department/, /^Problem Summary/, /^Add people in CC/]) expect(within(form).getByLabelText(label)).toBeInTheDocument();
-    expect(within(form).getByRole("group", { name: "Attachments" })).toBeInTheDocument();
-    expect(within(form).getByRole("button", { name: "Add files" })).toBeInTheDocument();
+    expect(within(form).queryByRole("group", { name: "Attachments" })).not.toBeInTheDocument();
+    expect(within(form).queryByRole("button", { name: "Add files" })).not.toBeInTheDocument();
     expect(within(form).getByRole("button", { name: "Review Ticket" })).toBeDisabled();
     expect(screen.queryByRole("button", { name: "Create Ticket" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Raise Ticket/ })).not.toBeInTheDocument(); // only the review can raise
@@ -891,90 +842,23 @@ describe("the single ticket session: one form, one review, one Raise Ticket", ()
     expect(within(form).getByRole("button", { name: "Review Ticket" })).toBeEnabled(); // a retry is possible
   });
 
-  test("files are added in place: the list updates, typed text stays, no chat message is added", async () => {
-    URL.createObjectURL = vi.fn(() => "blob:preview");
+  test("the form says attachments can't be added here and links to the Create Ticket page", async () => {
     const { user } = setup();
     const form = await openForm(user);
-    await fill(user, form);
-    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ title: "VPN down", attachments: [att("a1", "shot.png")] }) } } } });
-    await user.upload(within(form).getByTestId("form-file-input"), image());
-    const sent = chatbotApi.uploadDraftFiles.mock.calls[0][0];
-    expect(sent.get("conversationId")).toBe("conv-1");
-    expect(sent.get("quiet")).toBe("1");
-    expect(sent.getAll("files")[0].name).toBe("shot.png");
-    expect(await within(form).findByText("shot.png")).toBeInTheDocument();
-    expect(within(form).getByText(/1\/5 · 2 KB of 10 MB/)).toBeInTheDocument();
-    expect(await within(form).findByAltText("Preview of shot.png")).toBeInTheDocument();
-    expect(within(form).getByLabelText(/^Title/)).toHaveValue("VPN down");
-    expect(screen.queryByText(/Added shot.png/)).not.toBeInTheDocument();
+    const note = within(form).getByRole("note", { name: "About attachments" });
+    expect(note).toHaveTextContent("You can raise a ticket here without attachments. To attach files, use the Create Ticket page instead.");
+    await user.click(within(note).getByRole("button", { name: "Open Create Ticket page" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/portal/new-ticket");
   });
 
-  test("Ctrl+V of an image attaches it and never puts it in the summary", async () => {
+  test("a pasted image in the form is not attached and not sent anywhere", async () => {
     const { user } = setup();
     const form = await openForm(user);
-    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ attachments: [att("a2", "pasted-image-1.png")] }) } } } });
     const summary = within(form).getByLabelText(/^Problem Summary/);
-    fireEvent.paste(summary, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => image("clip.png") }] } });
-    await waitFor(() => expect(chatbotApi.uploadDraftFiles).toHaveBeenCalledTimes(1));
-    expect(chatbotApi.uploadDraftFiles.mock.calls[0][0].getAll("files")[0].name).toMatch(/^pasted-image-\d+\.png$/);
-    expect(summary).toHaveValue("");
-    expect(await within(form).findByText("pasted-image-1.png")).toBeInTheDocument();
-  });
-
-  test("a sixth file or a file over the combined 10 MB is refused before upload; a repeated file is not added twice", async () => {
-    const { user } = setup();
-    const five = Array.from({ length: 5 }, (_, i) => att(`a${i}`, `f${i}.png`));
-    const form = await openForm(user, formDraft({ attachments: five }));
-    await user.upload(within(form).getByTestId("form-file-input"), image("six.png"));
-    expect(await within(form).findByRole("alert")).toHaveTextContent(/Maximum 5 attachments/);
-    await user.upload(within(form).getByTestId("form-file-input"), image("f0.png")); // same name and size as one already attached
-    expect(await within(form).findByRole("alert")).toHaveTextContent(/already attached|Maximum 5/);
-    expect(chatbotApi.uploadDraftFiles).not.toHaveBeenCalled();
-  });
-
-  test("a failed upload is reported next to the files and the rest of the form is untouched", async () => {
-    const { user } = setup();
-    const form = await openForm(user);
-    await fill(user, form);
-    chatbotApi.uploadDraftFiles.mockRejectedValue(apiError("CHAT_ACTION_INVALID", "That file type is not allowed.", 400));
-    await user.upload(within(form).getByTestId("form-file-input"), image());
-    expect(await within(form).findByRole("alert")).toHaveTextContent("That file type is not allowed.");
-    expect(within(form).getByLabelText(/^Title/)).toHaveValue("VPN down");
-    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ attachments: [att("a1", "shot.png")] }) } } } });
-    await user.upload(within(form).getByTestId("form-file-input"), image()); // retry works
-    expect(await within(form).findByText("shot.png")).toBeInTheDocument();
-  });
-
-  test("a file can be opened in a new tab and removed; the temporary preview is released", async () => {
-    URL.createObjectURL = vi.fn(() => "blob:preview");
-    URL.revokeObjectURL = vi.fn();
-    const open = vi.spyOn(window, "open").mockReturnValue({ location: {}, close: vi.fn() });
-    const { user } = setup();
-    const form = await openForm(user);
-    chatbotApi.uploadDraftFiles.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft({ attachments: [att("a1", "shot.png")] }) } } } });
-    await user.upload(within(form).getByTestId("form-file-input"), image());
-    await within(form).findByText("shot.png");
-    await user.click(within(form).getByRole("button", { name: "Open attachment shot.png" }));
-    expect(open).toHaveBeenCalledWith("blob:preview", "_blank");
-    chatbotApi.removeDraftFile.mockResolvedValue({ data: { data: { quiet: true, data: { ticketDraft: formDraft() } } } });
-    await user.click(within(form).getByRole("button", { name: "Remove attachment shot.png" }));
-    expect(chatbotApi.removeDraftFile).toHaveBeenCalledWith("a1", "conv-1", true);
-    await waitFor(() => expect(within(form).queryByText("shot.png")).not.toBeInTheDocument());
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:preview");
-    open.mockRestore();
-  });
-
-  test("a file chosen earlier (no local copy) is fetched and opened from the server", async () => {
-    URL.createObjectURL = vi.fn(() => "blob:from-server");
-    const tab = { location: {}, close: vi.fn() };
-    const open = vi.spyOn(window, "open").mockReturnValue(tab);
-    chatbotApi.fetchDraftFile.mockResolvedValue({ data: new Blob(["x"], { type: "application/pdf" }) });
-    const { user } = setup();
-    const form = await openForm(user, formDraft({ attachments: [att("a9", "spec.pdf", 5000, "application/pdf")] }));
-    await user.click(within(form).getByRole("button", { name: "Open attachment spec.pdf" }));
-    await waitFor(() => expect(chatbotApi.fetchDraftFile).toHaveBeenCalledWith("a9", "conv-1"));
-    await waitFor(() => expect(tab.location.href).toBe("blob:from-server"));
-    open.mockRestore();
+    fireEvent.paste(summary, { clipboardData: { items: [{ kind: "file", type: "image/png", getAsFile: () => new File(["x"], "clip.png", { type: "image/png" }) }] } });
+    expect(chatbotApi.reviewDraft).not.toHaveBeenCalled();
+    expect(chatbotApi.sendMessage).toHaveBeenCalledTimes(1);
+    expect(within(form).queryByText("clip.png")).not.toBeInTheDocument();
   });
 
   test("CC people: search, pick several, remove one, and send only their ids", async () => {
@@ -1004,7 +888,7 @@ describe("the single ticket session: one form, one review, one Raise Ticket", ()
     await user.click(within(form).getByRole("button", { name: "Review Ticket" }));
     await screen.findByText(/Ticket Review/);
     chatbotApi.sendMessage.mockResolvedValueOnce(
-      reply({ intent: "ticket_draft", message: "Okay, edit your ticket in the form below. Everything you entered is kept.", data: { ticketDraft: formDraft({ step: "FORM", title: "VPN down", priority: "High", department: "Hardware", summary: "Cannot connect.", ccUsers: [{ id: "u2", name: "Bob Lee", email: "bob@x.test" }], attachments: [att("a1", "shot.png")] }) } })
+      reply({ intent: "ticket_draft", message: "Okay, edit your ticket in the form below. Everything you entered is kept.", data: { ticketDraft: formDraft({ step: "FORM", title: "VPN down", priority: "High", department: "Hardware", summary: "Cannot connect.", ccUsers: [{ id: "u2", name: "Bob Lee", email: "bob@x.test" }] }) } })
     );
     await user.click(screen.getByRole("button", { name: "Edit this request" }));
     expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("I want to edit the ticket", "conv-1", null);
@@ -1014,7 +898,6 @@ describe("the single ticket session: one form, one review, one Raise Ticket", ()
     expect(within(again).getByLabelText(/^Department/)).toHaveValue("Hardware");
     expect(within(again).getByLabelText(/^Problem Summary/)).toHaveValue("Cannot connect.");
     expect(within(again).getByText("Bob Lee")).toBeInTheDocument();
-    expect(within(again).getByText("shot.png")).toBeInTheDocument();
     expect(chatbotApi.confirmAction).not.toHaveBeenCalled();
   });
 

@@ -26,7 +26,15 @@ const WORD_ALIASES = [
   [/\b(?:mngr|mgr)\b/g, "manager"],
   [/\bbreak[- ]?(?:up|down)\b/g, "breakdown"],
   [/\b(?:plz|pls|please|kindly)\b/g, ""],
+  [TRANSFER_TYPOS_G(), "transfer$1"],
 ];
+
+// Common misspellings of "transfer" ("tranfser", "trasnfer", "tranfer"...). Also applied to the
+// ORIGINAL text before the action parser reads it, so a misspelt transfer request is still understood.
+function TRANSFER_TYPOS_G() {
+  return /\b(?:tranfser|trasnfer|tranfer|transefer|transfr|trnasfer|tansfer|trasfer|transfor|tranffer|trannsfer|trnsfer|transfre|transefr|tranfsre|trasnfr|tarnsfer)(s|ing)?\b/gi;
+}
+const fixTransferTypos = (text) => String(text).replace(TRANSFER_TYPOS_G(), (_, end) => `transfer${end || ""}`);
 
 function normalizeMessage(text) {
   let t = String(text).toLowerCase();
@@ -34,4 +42,4 @@ function normalizeMessage(text) {
   return t.replace(/\s+/g, " ").trim();
 }
 
-module.exports = { normalizeMessage };
+module.exports = { normalizeMessage, fixTransferTypos };

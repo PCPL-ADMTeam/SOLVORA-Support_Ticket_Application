@@ -1,7 +1,8 @@
 jest.mock("../../config/prisma", () => require("../testkit/prismaMock"));
 
-// The single ticket session: ONE form (title, priority, department, problem summary, CC people, files),
-// ONE review, ONE final "Raise Ticket". The ticket itself is created by ticket.service.createTicket
+// The single ticket session: ONE form (title, priority, department, problem summary, CC people),
+// ONE review, ONE final "Raise Ticket". Files are not taken in the chat (the form links to the
+// Create Ticket page for those). The ticket itself is created by ticket.service.createTicket
 // (spied here, so each case can check exactly what the existing service receives).
 
 const ticketService = require("../../services/ticket.service");
@@ -11,7 +12,6 @@ const { users, seedDefault, prismaMock } = require("../testkit/fixtures");
 
 const db = prismaMock.__db;
 let create;
-const file = (name, size = 2048, type = "image/png") => ({ originalname: name, mimetype: type, size, buffer: Buffer.alloc(Math.min(size, 64), 7) });
 const ask = (user, message, conversationId) => service.sendMessage(user, { message, conversationId });
 const form = (over = {}) => ({ title: "Printer broken", priority: "High", department: "Finance", problemSummary: "The printer jams on every page.", ccUserIds: [], ...over });
 
@@ -154,74 +154,68 @@ describe("Custom CC is part of the same session", () => {
   });
 });
 
-describe("attachments inside the form", () => {
-  test("adding and removing files updates the form in place, without chat messages", async () => {
-    const { cid } = await start();
-    const before = db.messages.length;
-    const added = await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png"), file("b.txt", 100, "text/plain")], quiet: true });
-    expect(added.quiet).toBe(true);
-    expect(added.data.ticketDraft.attachments.map((a) => a.name)).toEqual(["a.png", "b.txt"]);
-    const removed = await service.removeDraftFile(users.empA, { conversationId: cid, attachmentId: added.data.ticketDraft.attachments[1].id, quiet: true });
-    expect(removed.data.ticketDraft.attachments.map((a) => a.name)).toEqual(["a.png"]);
-    expect(db.messages.length).toBe(before); // nothing was added to the conversation
+describe("no attachments in the chat: the Create Ticket page is the place for files", () => {
+  test.each([
+    ["EMPLOYEE", "empA", "/portal/new-ticket"],
+    ["TEAMLEAD", "tlD1", "/agent/new-ticket"],
+    ["MANAGER", "mgrD2", "/agent/new-ticket"],
+  ])("%s: the first message and the form say so and link to their own Create Ticket page", async (_role, who, path) => {
+    const { r, draft } = await start(users[who]);
+    expect(r.message).toContain("You can raise a ticket here without attachments. To attach files, use the Create Ticket page instead.");
+    expect(r.navigationTarget).toEqual({ type: "route", path, label: "Open Create Ticket page" });
+    expect(draft.filesNote).toMatch(/without attachments/);
+    expect(draft.createPage).toEqual({ type: "route", path, label: "Open Create Ticket page" });
+    expect(draft.attachments).toBeUndefined();
+    expect(draft.limits).toBeUndefined();
   });
 
-  test("a sixth file, or more than 10 MB in total, is refused and the others stay", async () => {
+  test.each(["Can I attach a screenshot?", "attach a file", "upload an image", "add attachments"])("'%s' while the form is open points to the Create Ticket page and keeps the ticket", async (q) => {
     const { cid } = await start();
-    await service.addDraftFiles(users.empA, { conversationId: cid, files: [1, 2, 3, 4, 5].map((i) => file(`f${i}.png`)), quiet: true });
-    await expect(service.addDraftFiles(users.empA, { conversationId: cid, files: [file("six.png")], quiet: true })).rejects.toMatchObject({ message: expect.stringMatching(/Maximum 5 attachments/) });
-    expect(db.draftFiles).toHaveLength(5);
-    // A new session for the size rule.
-    const second = await start(users.empB);
-    await expect(service.addDraftFiles(users.empB, { conversationId: second.cid, files: [file("big.png", 6 * 1048576), file("big2.png", 6 * 1048576)], quiet: true })).rejects.toMatchObject({ message: expect.stringMatching(/cannot exceed 10 MB/) });
+    const r = await ask(users.empA, q, cid);
+    expect(r.message).toMatch(/^Files can't be attached in the chat\./);
+    expect(r.navigationTarget).toMatchObject({ path: "/portal/new-ticket" });
+    // Not taken as the title, and nothing else changed.
+    expect(r.data.ticketDraft).toMatchObject({ title: null, priority: null, department: null, summary: null });
   });
 
-  test("the files go to the ticket service exactly as chosen, and the review lists them", async () => {
+  test("asking about files at the review keeps the review usable", async () => {
     const { cid } = await start();
-    const added = await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("shot.png", 3000), file("log.txt", 100, "text/plain")], quiet: true });
     const rev = await review(users.empA, cid);
-    expect(rev.message).toMatch(/Attachments: 1\. shot\.png \(3 KB\); 2\. log\.txt/);
-    expect(rev.data.ticketDraft.attachments).toHaveLength(2);
-    expect(added.data.ticketDraft.attachments).toHaveLength(2);
+    const r = await ask(users.empA, "I need to add a screenshot", cid);
+    expect(r.message).toMatch(/Files can't be attached in the chat/);
+    const done = await confirm(users.empA, rev);
+    expect(done.status).toBe("EXECUTED");
+  });
+
+  test("a title that mentions files is still a title", async () => {
+    const { cid } = await start();
+    const r = await ask(users.empA, "Unable to upload documents", cid);
+    expect(r.data.ticketDraft.title).toBe("Unable to upload documents");
+  });
+
+  test("the ticket is created with no files, and the review has no attachments line", async () => {
+    const { cid } = await start();
+    const rev = await review(users.empA, cid);
+    expect(rev.message).not.toMatch(/Attachments/);
+    expect(rev.pendingAction.summary).not.toMatch(/attachment/);
     await confirm(users.empA, rev);
-    const files = create.mock.calls[0][2];
-    expect(files.map((f) => f.originalname)).toEqual(["shot.png", "log.txt"]);
-    expect(db.draftFiles).toHaveLength(0); // the stored bytes are released once the ticket exists
+    expect(create.mock.calls[0][2]).toEqual([]);
   });
 
-  test("removing a file at the review gives a fresh review that matches", async () => {
-    const { cid } = await start();
-    const added = await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png"), file("b.png")], quiet: true });
-    const rev = await review(users.empA, cid);
-    expect(rev.data.ticketDraft.attachments).toHaveLength(2);
-    const after = await service.removeDraftFile(users.empA, { conversationId: cid, attachmentId: added.data.ticketDraft.attachments[0].id, quiet: true });
-    expect(after.quiet).toBeUndefined(); // at the review it is a normal reply with a new review
-    expect(after.pendingAction).toBeTruthy();
-    expect(after.data.ticketDraft.attachments.map((a) => a.name)).toEqual(["b.png"]);
-    expect(after.message).toMatch(/Attachments: 1\. b\.png/);
-  });
-
-  test("a file can be opened only by the owner of that open ticket", async () => {
-    const { cid } = await start();
-    const added = await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("shot.png")], quiet: true });
-    const id = added.data.ticketDraft.attachments[0].id;
-    const got = await service.getDraftFile(users.empA, { conversationId: cid, attachmentId: id });
-    expect(got).toMatchObject({ fileName: "shot.png", mimeType: "image/png" });
-    expect(Buffer.isBuffer(got.buffer)).toBe(true);
-    await expect(service.getDraftFile(users.empB, { conversationId: cid, attachmentId: id })).rejects.toBeTruthy();
-    await expect(service.getDraftFile(users.empA, { conversationId: cid, attachmentId: "nope" })).rejects.toBeTruthy();
+  test("the chat has no way to store files any more", () => {
+    expect(service.addDraftFiles).toBeUndefined();
+    expect(service.removeDraftFile).toBeUndefined();
+    expect(service.getDraftFile).toBeUndefined();
   });
 });
 
 describe("Edit and Cancel", () => {
   test("Edit returns to the form with everything entered; the old review can no longer be used", async () => {
     const { cid } = await start();
-    await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png")], quiet: true });
     const rev = await review(users.empA, cid, { ccUserIds: ["u_empB"] });
     const edit = await ask(users.empA, "I want to edit the ticket", cid);
     expect(edit.data.ticketDraft).toMatchObject({ title: "Printer broken", priority: "High", department: "Finance", summary: "The printer jams on every page." });
     expect(edit.data.ticketDraft.options).toBeTruthy();
-    expect(edit.data.ticketDraft.attachments).toHaveLength(1);
     expect(edit.data.ticketDraft.ccUsers).toHaveLength(1);
     expect(edit.data.pendingAction).toBeFalsy();
     await expect(confirm(users.empA, rev)).resolves.toMatchObject({ status: expect.not.stringMatching(/EXECUTED/) });
@@ -232,17 +226,15 @@ describe("Edit and Cancel", () => {
     expect(again.message).toContain("Title: Printer broken");
   });
 
-  test("Cancel creates nothing and releases the files", async () => {
+  test("Cancel creates nothing", async () => {
     const { cid } = await start();
-    await service.addDraftFiles(users.empA, { conversationId: cid, files: [file("a.png")], quiet: true });
     await review(users.empA, cid);
     const r = await ask(users.empA, "cancel", cid);
     expect(r.message).toMatch(/cancelled the ticket/);
     expect(create).not.toHaveBeenCalled();
-    expect(db.draftFiles).toHaveLength(0);
     // A new ticket starts clean, never from the old values.
     const next = await ask(users.empA, "Raise a ticket", cid);
-    expect(next.data.ticketDraft).toMatchObject({ title: null, priority: null, department: null, summary: null, attachments: [] });
+    expect(next.data.ticketDraft).toMatchObject({ title: null, priority: null, department: null, summary: null, ccUsers: [] });
   });
 });
 

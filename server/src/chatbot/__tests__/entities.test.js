@@ -98,7 +98,7 @@ describe("people questions honor the role asked for", () => {
   const { users: u } = require("../testkit/fixtures");
   test("'the Manager in <dept>' lists only managers, 'employees' only employees, none = everyone", async () => {
     const mgr = await ask(u.admin, "show me the Manager in IT Support");
-    expect(mgr.message).toMatch(/^IT Support\n|no managers? found/);
+    expect(mgr.message).toMatch(/^Managers in IT Support\n|^No Managers were found in the IT Support department\. Total managers: 0\.$/);
     expect(mgr.message).not.toMatch(/— (Employee|Team Lead)/);
     const lead = await ask(u.admin, "show me the team lead in IT Support");
     expect(lead.message).toMatch(/— Team Lead/);

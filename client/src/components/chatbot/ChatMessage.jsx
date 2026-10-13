@@ -22,12 +22,13 @@ import ActionConfirmCard from "./ActionConfirmCard";
 import TicketDraftCard from "./TicketDraftCard";
 import TicketReasonsCard from "./TicketReasonsCard";
 import FormattedText from "./response/FormattedText";
-import NoticeBanner from "./response/NoticeBanner";
+import NoticeCallout from "./response/NoticeBanner";
+import GuideCard, { TransferGuideCard } from "./response/GuideCard";
 import WhatsNewCard from "./response/WhatsNewCard";
 import SummaryReportCard from "./response/SummaryReportCard";
 import OverviewCard from "./response/OverviewCard";
 import NotificationsCard from "./response/NotificationsCard";
-import { DepartmentListCard, DepartmentStatsCard, PeopleCard, PersonCard, RoleCountsCard, WeeklyReportCard } from "./response/DirectoryCards";
+import { DepartmentListCard, DepartmentStatsCard, PeopleCard, PeopleResultCard, PersonCard, RoleCountsCard, WeeklyReportCard } from "./response/DirectoryCards";
 import { card, focusRing, reducedMotion, rise, srOnly } from "./theme/chatStyles";
 
 const enter = { animation: `${rise} var(--sv-base) ease both`, ...reducedMotion };
@@ -54,7 +55,7 @@ const TRY_BLOCK = /\n+Try(?: one of these)?:\n(?:•.*(?:\n|$))+\s*$/;
 // Answers whose details are shown as a card. For these the bubble shows a one-line headline instead of
 // repeating every number as prose (Copy still copies the full text).
 const hasCard = (data) =>
-  Boolean(data.digest || data.summaryReport || data.overview || data.notifications?.items || data.departmentMembers || data.person || data.userSummary || data.headcount || data.ticketsByDepartment || data.assignments || data.roles || data.weeklyReport || (data.departments && data.headline));
+  Boolean(data.people || data.guide || data.article || data.digest || data.summaryReport || data.overview || data.notifications?.items || data.departmentMembers || data.person || data.userSummary || data.headcount || data.ticketsByDepartment || data.assignments || data.roles || data.weeklyReport || (data.departments && data.headline));
 const firstLine = (text) => String(text || "").split("\n")[0].replace(/:\s*$/, ".");
 
 function Time({ at }) {
@@ -137,7 +138,7 @@ function AlsoTry({ actions, onSend, disabled }) {
 
 // Assistant text is always rendered as TEXT (React-escaped; pre-line keeps the
 // numbered steps) — never as HTML — so ticket-derived strings cannot inject markup.
-export default function ChatMessage({ message, onNavigate, onSend, onFeedback, disabled, actionState = {}, onConfirmAction, onCancelAction, onEditAction, previews, onRemoveAttachment, activeDraftKey, draftTools, firstName }) {
+export default function ChatMessage({ message, onNavigate, onSend, onFeedback, disabled, actionState = {}, onConfirmAction, onCancelAction, onEditAction, activeDraftKey, draftTools, firstName }) {
   const [copied, setCopied] = useState(false);
 
   const copy = async () => {
@@ -193,8 +194,10 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
           <Typography variant="caption" display="block" sx={{ color: "var(--sv-muted)", fontWeight: 600 }}>
             {ASSISTANT_NAME}
           </Typography>
-          <NoticeBanner error={error} />
-          <FormattedText text={bodyText} />
+          {/* A refusal, "nothing found" or "not understood" sits in a tinted callout that names it. */}
+          <NoticeCallout error={error}>
+            <FormattedText text={bodyText} />
+          </NoticeCallout>
           {isFallback && !/one of these\?\s*$/.test(bodyText) && (
             <Typography variant="caption" display="block" sx={{ mt: 0.5, color: "var(--sv-muted)" }}>
               Try one of these:
@@ -206,11 +209,14 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
             </Typography>
           )}
 
+          {data.guide && <TransferGuideCard guide={data.guide} />}
+          {data.article && <GuideCard article={data.article} priorities={data.priorities} profile={data.profile} />}
           {data.digest && <WhatsNewCard digest={data.digest} onNavigate={onNavigate} onSend={onSend} disabled={disabled} />}
           {data.summaryReport && <SummaryReportCard report={data.summaryReport} />}
           {data.overview && <OverviewCard overview={data.overview} />}
           {data.notifications?.items && <NotificationsCard notifications={data.notifications} onNavigate={onNavigate} />}
-          {data.departmentMembers && <PeopleCard departments={data.departmentMembers} />}
+          {/* People answers carry `people` (who and/or how many, for the role and departments asked); older ones only departmentMembers. */}
+          {data.people ? <PeopleResultCard people={data.people} /> : data.departmentMembers && <PeopleCard departments={data.departmentMembers} />}
           {(data.person || data.userSummary) && <PersonCard person={data.person || data.userSummary} />}
           {data.departments && data.headline && <DepartmentListCard departments={data.departments} />}
           {(data.headcount || data.ticketsByDepartment || data.assignments) && <DepartmentStatsCard headcount={data.headcount} ticketsByDepartment={data.ticketsByDepartment} assignments={data.assignments} />}
@@ -225,13 +231,11 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
           {data.ticketDraft && (
             <TicketDraftCard
               draft={data.ticketDraft}
-              previews={previews}
-              onRemove={onRemoveAttachment}
               onSend={onSend}
+              onNavigate={onNavigate}
               tools={draftTools}
               active={Boolean(activeDraftKey) && message.key === activeDraftKey && !actionState[data.pendingAction?.id]?.status?.match(/EXECUTED|CANCELLED|SUPERSEDED/)}
               disabled={disabled}
-              compact={Boolean(data.pendingAction)}
             />
           )}
           {data.pendingAction && (
@@ -243,9 +247,10 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
           {navigationTarget && !cardOpensTarget && (
             <Button
               size="small"
-              variant="outlined"
+              variant="contained"
+              disableElevation
               startIcon={<OpenInNewIcon />}
-              sx={{ mt: 1, color: "var(--sv-accent-ink)", borderColor: "var(--sv-accent-ink)", ...focusRing }}
+              sx={{ mt: 1.25, textTransform: "none", fontWeight: 700, borderRadius: "10px", color: "var(--sv-on-accent)", background: "var(--sv-accent-gradient)", "&:hover": { background: "var(--sv-accent-gradient)", filter: "brightness(1.05)" }, ...focusRing }}
               onClick={() => onNavigate(navigationTarget)}
             >
               {navigationTarget.label}

@@ -1,5 +1,5 @@
 const { parseAction } = require("./actionParser");
-const { normalizeMessage } = require("./aliases");
+const { normalizeMessage, fixTransferTypos } = require("./aliases");
 const { actionAllowed, permissionsFor } = require("../permissions");
 const knowledge = require("../knowledge");
 const { departmentRef, topicBeforeTickets, STOP } = require("./departmentRef");
@@ -47,6 +47,37 @@ function reasonWord(m) {
   if (!hit) return undefined;
   const w = hit[1];
   return /^clos/.test(w) ? "closed" : /^resol/.test(w) ? "resolved" : /^re-?open/.test(w) ? "reopened" : "on_hold";
+}
+
+// ---- moving a ticket to another department ------------------------------------
+// "2600011 transfer to Hardware", "transfer department to Hardware", "how do I transfer a ticket",
+// "change the department of ticket N": how a ticket is transferred, for this role. Only TICKET
+// transfers: "transfer Ravi to Finance" (moving a person, an Admin action) has no ticket cue and is
+// left to the action parser. "Why was it transferred" (past) is a question about the ticket instead.
+const TRANSFER_WORD = /\btransfer(?:s|ring)?\b|\b(?:change|switch)\s+(?:the\s+)?(?:ticket'?s?\s+)?department\b(?!\s+names?)/;
+const TRANSFER_CUE = /\b(?:tickets?|it|this|that)\b|\d{5,12}|\btransfer\w*\s+(?:the\s+|a\s+)?(?:department|dept)\b|\bdepartment transfer\b|\b(?:another|other|a different|different|new) (?:department|dept|team)\b/;
+const NOT_A_DEPARTMENT = /^(?:another|other|a different|different|a new|new|some|which|what|my|your|their|a|the)(?:\s+(?:one|department|dept|team))?$/i;
+
+function transferDestination(text) {
+  const withoutReason = text.replace(/\s+(?:because|since|as|reason\b|with reason)\b.*$/i, "");
+  const hit = withoutReason.match(/^.*\b(?:to|into)\s+(?:the\s+)?(.+?)(?:\s+(?:department|dept|team))?\s*[?.!]*$/i);
+  const name = hit ? hit[1].trim() : "";
+  return name && name.length <= 60 && !NOT_A_DEPARTMENT.test(name) && !/^(?:transfer|move|change|do|be|go)\b/i.test(name) ? name : null;
+}
+
+function transferRequest(m, message, role) {
+  if (!TRANSFER_WORD.test(m)) return null;
+  // The cue is looked for before any reason ("transfer Ravi to Finance because it is needed" moves a person).
+  const core = m.replace(/\s+(?:because|since|as|reason)\b.*$/, "");
+  if (!TRANSFER_CUE.test(core) && !GUIDANCE_START.test(m) && !/^transfer(?:s|ring)?[?.!]*$/.test(m)) return null;
+  const fixed = fixTransferTypos(message);
+  // A full "transfer ticket N to X" from a role that may transfer is the confirm-first action (handled below).
+  const act = parseAction(fixed);
+  if (act?.action === "transfer_ticket" && role !== "ADMIN" && actionAllowed("transfer_ticket", role, permissionsFor(role))) return null;
+  const ref = extractTicketRef(fixed);
+  const department = transferDestination(fixed);
+  const pointsBack = ref.kind !== "valid" && /\b(?:it|this ticket|that ticket|this one|the ticket)\b/.test(m);
+  return { intent: "transfer_guidance", params: { ...(ref.kind === "valid" ? { ticketNumber: ref.value } : {}), ...(department ? { department } : {}), ...(pointsBack ? { useLastTicket: true } : {}) } };
 }
 
 // Extra details a ticket sub-intent carries (the date asked for, the status whose reason is asked).
@@ -218,13 +249,17 @@ function classifyRules(message, role) {
     if (!actionAllowed("create_ticket", role, permissionsFor(role))) return { intent: "restricted_feature", params: {} };
     return { intent: "ticket_draft", params: {} };
   }
-  const act = parseAction(message);
+  const transfer = transferRequest(m, message, role);
+  if (transfer) return transfer;
+  const act = parseAction(fixTransferTypos(message));
   if (act) {
     if (act.redirect) return role === "ADMIN" ? { intent: "admin_redirect", params: { key: act.redirect } } : { intent: "restricted_feature", params: {} };
     // The application itself forbids these for Administrators; explain instead of refusing generically.
     if (role === "ADMIN" && act.action === "create_ticket") return { intent: "admin_redirect", params: { key: "admin_raise_ticket" } };
     if (act.action === "create_ticket") return actionAllowed("create_ticket", role, permissionsFor(role)) ? { intent: "ticket_draft", params: {} } : { intent: "restricted_feature", params: {} };
     if (role === "ADMIN" && act.action === "assign_ticket") return { intent: "admin_redirect", params: { key: "reassign_ticket" } };
+    // Employees cannot assign or reassign (the ticket service allows it for Managers and Team Leads only): explain.
+    if (role === "EMPLOYEE" && act.action === "assign_ticket") return { intent: "assign_not_allowed", params: act.args.ticket ? { ticketNumber: act.args.ticket } : {} };
     // Deny by default: the role's permissions must cover the action (enforced again at preview and at confirmation).
     if (!actionAllowed(act.action, role, permissionsFor(role))) return { intent: "restricted_feature", params: {} };
     return { intent: "admin_action", params: { parsed: act } };

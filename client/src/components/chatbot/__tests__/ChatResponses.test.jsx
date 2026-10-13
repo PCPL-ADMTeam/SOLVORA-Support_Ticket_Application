@@ -147,19 +147,25 @@ describe("ticket lists", () => {
   test("one result: a full card with every available field and an Open Ticket button", async () => {
     const { user } = setup();
     await ask(user, "show ticket 2627001", reply({ message: "Ticket 2627001:", data: { tickets: [ticket(2627001)], total: 1 } }));
-    const list = screen.getByRole("list", { name: "Matching tickets" });
-    for (const text of ["#2627001", "Ticket 2627001", "IT Support", "Carol Worker", "Oct 1, 2026", "Oct 9, 2026", "Open", "High"]) expect(within(list).getAllByText(text).length).toBeGreaterThan(0);
-    expect(within(list).getByRole("button", { name: "Open ticket 2627001" })).toBeInTheDocument();
+    const card = screen.getByRole("region", { name: "Ticket 2627001" });
+    expect(within(card).getByRole("heading", { name: "Ticket #2627001" })).toBeInTheDocument();
+    for (const text of ["Ticket 2627001", "IT Support", "Carol Worker", "Alice Employee", "Oct 1, 2026", "Oct 9, 2026", "Open", "High"]) expect(within(card).getAllByText(text).length).toBeGreaterThan(0);
+    for (const label of ["Department", "Assigned to", "Raised by", "Created", "Updated"]) expect(within(card).getByText(label)).toBeInTheDocument();
+    expect(within(card).getByRole("button", { name: "Open ticket 2627001" })).toBeInTheDocument();
   });
 
   test("several results: compact rows with dates, the filters in force and the range shown", async () => {
     const { user } = setup();
     const tickets = [ticket(1), ticket(2), ticket(3)];
-    await ask(user, "show my open tickets", reply({ message: "Your open tickets: found 7 tickets. Showing 1–3 of 7.", data: { tickets, total: 7, listing: { showing: "1–3 of 7", filters: ["Open (all active statuses)", "High priority"], notes: ["\"Open\" includes Open, In Progress, On Hold and Reopened."] }, headline: "Your open tickets: 7 tickets found." } }));
-    expect(screen.getByText("Your open tickets: 7 tickets found.")).toBeInTheDocument();
-    const filters = screen.getByRole("group", { name: "Filters" });
+    await ask(user, "show my open tickets", reply({ message: "Your open tickets: found 7 tickets. Showing 1–3 of 7.", data: { tickets, total: 7, listing: { title: "Your open tickets", showing: "1–3 of 7", filters: ["Open (all active statuses)", "High priority"], notes: ["\"Open\" includes Open, In Progress, On Hold and Reopened."] }, headline: "I found 7 tickets; here are 1–3." } }));
+    expect(screen.getByText("I found 7 tickets; here are 1–3.")).toBeInTheDocument();
+    // The card says what the list is, how many there are and which are shown.
+    const card = screen.getByRole("region", { name: "Ticket list" });
+    expect(within(card).getByRole("heading", { name: "Your open tickets" })).toBeInTheDocument();
+    expect(within(card).getByText("Showing 1–3 of 7")).toBeInTheDocument();
+    expect(within(card).getByText("7 tickets")).toBeInTheDocument();
+    const filters = within(card).getByRole("group", { name: "Filters" });
     expect(within(filters).getByText("High priority")).toBeInTheDocument();
-    expect(within(filters).getByText("Showing 1–3 of 7")).toBeInTheDocument();
     expect(screen.getByText("\"Open\" includes Open, In Progress, On Hold and Reopened.")).toBeInTheDocument();
     const rows = within(screen.getByRole("list", { name: "Matching tickets" })).getAllByRole("button", { name: /^Open ticket / });
     expect(rows).toHaveLength(3);
@@ -268,6 +274,172 @@ describe("refusals, 'not understood' and plain text", () => {
     await ask(user, "my summary", reply({ message: full, data: { headline: "Here's your ticket summary for the last 30 days.", summaryReport: { title: "Your Ticket Summary", period: { label: "Last 30 days" }, sections: [{ key: "created", label: "Raised by you", total: 0, byStatus: [], byPriority: [] }] } } }));
     await user.click(screen.getByRole("button", { name: "Copy response" }));
     expect(writeText).toHaveBeenCalledWith(full);
+  });
+});
+
+describe("how-to answers", () => {
+  const guide = (over = {}) => ({
+    kind: "transfer",
+    title: "How to transfer a ticket to another department",
+    ticket: { ticketNumber: "2600011", title: "dashboard issue", department: "BI/Copilot", status: "OPEN", statusLabel: "Open", ticketRouteId: "id_2600011" },
+    target: "Hardware",
+    targetNote: null,
+    access: { tone: "blocked", text: "Administrators can't transfer tickets. A Manager or Team Lead of BI/Copilot, or the employee it is assigned to, can." },
+    steps: ["Open ticket 2600011 (use Open Ticket below).", "Select Transfer Department at the top of the ticket page.", "In Transfer To, choose Hardware.", "Enter the Transfer Reason (it is required).", "Select Transfer Ticket."],
+    notes: ["A ticket can't be transferred to the department it is already in."],
+    ...over,
+  });
+
+  test("'2600011 transfer to Hardware' shows the transfer guide: route, who may do it, numbered steps, notes and Open Ticket", async () => {
+    const { user } = setup();
+    await ask(user, "2600011 tranfser to Hardware", reply({ intent: "transfer_guidance", message: "How to transfer a ticket to another department", data: { guide: guide(), headline: "Here's how to transfer ticket 2600011 to Hardware." }, navigationTarget: { type: "route", path: "/tickets/id_2600011", label: "Open Ticket 2600011" } }));
+    expect(screen.getByText("Here's how to transfer ticket 2600011 to Hardware.")).toBeInTheDocument();
+    const card = screen.getByRole("region", { name: "How to transfer a ticket to another department" });
+    expect(within(card).getByRole("heading", { name: "How to transfer a ticket to another department" })).toBeInTheDocument();
+    const route = within(card).getByLabelText("Transfer route");
+    expect(route).toHaveTextContent("FromBI/Copilot");
+    expect(route).toHaveTextContent("ToHardware");
+    expect(within(card).getByRole("note", { name: "Not available to you" })).toHaveTextContent("Administrators can't transfer tickets.");
+    const steps = within(card).getByRole("list", { name: "Steps" });
+    expect(within(steps).getAllByRole("listitem")).toHaveLength(5);
+    expect(within(card).getByRole("region", { name: "Good to know" })).toHaveTextContent("already in");
+    await user.click(screen.getByRole("button", { name: "Open Ticket 2600011" }));
+    expect(screen.getByTestId("where")).toHaveTextContent("/tickets/id_2600011");
+  });
+
+  test("a user who may transfer is told so and can start the confirm-first transfer here", async () => {
+    const { user } = setup();
+    await ask(user, "2600011 transfer to Hardware", reply({ intent: "transfer_guidance", data: { guide: guide({ access: { tone: "ok", text: "You can transfer ticket 2600011." } }), headline: "Here's how to transfer ticket 2600011 to Hardware." }, suggestedActions: [{ label: "Transfer 2600011 to Hardware here", prompt: "Transfer ticket 2600011 to Hardware" }] }));
+    expect(screen.getByRole("note", { name: "You can do this" })).toHaveTextContent("You can transfer ticket 2600011.");
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "What is the reason?" }));
+    await user.click(screen.getByRole("button", { name: "Transfer 2600011 to Hardware here" }));
+    expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Transfer ticket 2600011 to Hardware", "conv-1", null);
+  });
+
+  test("a destination that can't be used is called out", async () => {
+    const { user } = setup();
+    await ask(user, "2600011 transfer to Narnia", reply({ data: { guide: guide({ target: null, targetNote: "I couldn't find a department called \"Narnia\". Pick the department in Transfer To on the ticket page." }), headline: "Here's how to transfer ticket 2600011." } }));
+    expect(screen.getByRole("note", { name: "About the destination" })).toHaveTextContent("Narnia");
+    expect(screen.getByLabelText("Transfer route")).toHaveTextContent("ToChosen on the ticket page");
+  });
+
+  test("a help article is a guide card: title, numbered steps and its note", async () => {
+    const { user } = setup();
+    await ask(user, "how do I change my password", reply({ intent: "change_password", message: "How to change your password:\n1. Open your profile.\n2. Select Change Password.\nNote: You need your current password.", data: { headline: "Here's how to do it in Solvora.", article: { id: "common.change-password", title: "How to change your password", feature: "Profile", steps: ["Open your profile.", "Select Change Password."], warning: "You need your current password." } } }));
+    expect(screen.getByText("Here's how to do it in Solvora.")).toBeInTheDocument();
+    const card = screen.getByRole("region", { name: "How to change your password" });
+    expect(within(card).getByText("In Solvora: Profile")).toBeInTheDocument();
+    expect(within(within(card).getByRole("list", { name: "Steps" })).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(card).getByRole("note", { name: "Note" })).toHaveTextContent("You need your current password.");
+  });
+});
+
+describe("every card says what it shows", () => {
+  test.each([
+    ["What's New", { digest: { period: PERIOD, notifications: { unread: 0, inPeriod: 0, latest: [] }, assigned: null, updated: { label: "Your tickets", count: 0, tickets: [] }, created: null, unassigned: null, caughtUp: true } }],
+    ["Your Ticket Summary", { summaryReport: { title: "Your Ticket Summary", period: { label: "Last 30 days" }, sections: [{ key: "created", label: "Raised by you", total: 0, byStatus: [], byPriority: [] }] } }],
+    ["Tickets by priority", { overview: { kind: "priority", title: "Tickets by priority", scope: "Your department", period: "All time", total: 1, rows: [{ label: "High", count: 1 }] } }],
+    ["Notifications", { notifications: { unread: 0, shown: 0, matching: 0, items: [] } }],
+    ["People in IT Support", { departmentMembers: [{ name: "IT Support", total: 1, members: [{ name: "Tina Lead", role: "Team Lead" }] }] }],
+    ["Your departments statistics", { statistics: { label: "Your departments", total: 2, byStatus: { OPEN: 2 }, byPriority: [], openUnassigned: 1, openInactiveOver7Days: 0, createdLast7Days: 1, createdPrevious7Days: 0, createdLast30Days: 2 } }],
+    ["History of ticket #2627001", { history: { ticketNumber: "2627001", entries: [{ at: "2026-10-01T10:00:00.000Z", description: "Ticket created by Alice" }] } }],
+    ["Recorded reasons", { reasons: [{ label: "Resolution notes", text: "Replaced the toner", by: "Carol", at: "2026-10-01T10:00:00.000Z", current: true }] }],
+  ])("%s has a themed header with that title", async (title, data) => {
+    const { user } = setup();
+    await ask(user, "show it", reply({ data }));
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+  });
+
+  test("a refusal sits in a labelled callout around the explanation", async () => {
+    const { user } = setup();
+    await ask(user, "show finance tickets", reply({ message: "I can only access tickets for your assigned department.", error: { code: "CHAT_ACCESS_DENIED", message: "x", retryable: false } }));
+    expect(screen.getByRole("note", { name: "Not available for your role" })).toHaveTextContent("I can only access tickets for your assigned department.");
+  });
+});
+
+describe("people answers (who and how many)", () => {
+  const bi = (over = {}) => ({ name: "BI/Copilot", total: 2, counts: { EMPLOYEE: 2 }, members: [{ name: "Kamalesh M", role: "Employee" }, { name: "srihari", role: "Employee" }], ...over });
+
+  test("count and names: a numbered list with each person's role and department, under the total", async () => {
+    const { user } = setup();
+    await ask(user, "employee count and names in BI/Copilot", reply({ message: "Employees in BI/Copilot\nTotal employees: 2", data: { headline: "BI/Copilot: 2 employees.", people: { title: "Employees in BI/Copilot", roles: ["Employees"], mode: "both", scope: "named", total: 2, noun: "employees", departments: [bi()] } } }));
+    const card = screen.getByRole("region", { name: "Employees in BI/Copilot" });
+    expect(within(card).getByRole("heading", { name: "Employees in BI/Copilot" })).toBeInTheDocument();
+    expect(within(card).getByText("Total employees: 2")).toBeInTheDocument();
+    const rows = within(within(card).getByRole("list", { name: "Employees in BI/Copilot" })).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toHaveTextContent("1.");
+    expect(rows[0]).toHaveTextContent("Kamalesh M");
+    expect(rows[0]).toHaveTextContent("Employee");
+    expect(rows[0]).toHaveTextContent("BI/Copilot");
+  });
+
+  test("count only for every department: one row per department, no names", async () => {
+    const { user } = setup();
+    await ask(user, "employee counts for every department", reply({ data: { people: { title: "Employees in all departments", roles: ["Employees"], mode: "count", scope: "every", total: 5, noun: "employees", departments: [bi({ members: undefined }), { name: "Cloud", total: 3, counts: { EMPLOYEE: 3 } }] } } }));
+    const counts = screen.getByRole("list", { name: "Count by department" });
+    expect(within(counts).getAllByRole("listitem")).toHaveLength(2);
+    expect(within(counts).getByText("Cloud")).toBeInTheDocument();
+    expect(within(counts).getByText("3")).toBeInTheDocument();
+    expect(screen.queryByText("Kamalesh M")).not.toBeInTheDocument();
+  });
+
+  test("everyone in a department shows the count per role", async () => {
+    const { user } = setup();
+    const dept = { name: "BI/Copilot", total: 4, counts: { MANAGER: 1, TEAMLEAD: 1, EMPLOYEE: 2 }, members: [{ name: "jayakumarj", role: "Manager" }, { name: "Pavithran M", role: "Team Lead" }, { name: "Kamalesh M", role: "Employee" }, { name: "srihari", role: "Employee" }] };
+    await ask(user, "show all people in BI/Copilot", reply({ data: { people: { title: "People in BI/Copilot", roles: [], mode: "list", scope: "named", total: 4, noun: "people", departments: [dept] } } }));
+    const byRole = screen.getByRole("list", { name: "Count by role" });
+    expect(byRole).toHaveTextContent("Managers 1");
+    expect(byRole).toHaveTextContent("Team Leads 1");
+    expect(byRole).toHaveTextContent("Employees 2");
+    expect(within(screen.getByRole("list", { name: "People in BI/Copilot" })).getAllByRole("listitem")).toHaveLength(4);
+  });
+
+  test("administrators and an empty answer", async () => {
+    const { user } = setup();
+    await ask(user, "show all admins", reply({ data: { people: { title: "Administrators", roles: ["Administrators"], mode: "list", departments: [], total: 2, admins: { total: 2, members: [{ name: "Ada Admin", role: "Admin" }, { name: "Other Admin", role: "Admin" }] } } } }));
+    expect(within(screen.getByRole("list", { name: "Administrators" })).getAllByRole("listitem")).toHaveLength(2);
+    await ask(user, "how many managers in IT Support", reply({ message: "No Managers were found in the IT Support department. Total managers: 0.", data: { headline: "No Managers were found in the IT Support department. Total managers: 0.", people: { title: "Managers in IT Support", roles: ["Managers"], mode: "count", scope: "named", total: 0, noun: "managers", departments: [{ name: "IT Support", total: 0, counts: { MANAGER: 0 } }] } } }));
+    expect(screen.getByText("No matching people were found. Total managers: 0.")).toBeInTheDocument();
+  });
+});
+
+describe("editing an assignment preview", () => {
+  const preview = () =>
+    reply({
+      message: "I can do that. Assign ticket 2600013 to Kamalesh M. Nothing has been changed yet.",
+      data: { pendingAction: { id: "act-1", title: "Assign ticket", summary: "Assign ticket 2600013 to Kamalesh M.", impact: [], confirmationToken: "t".repeat(20), edit: { kind: "assign", ticketNumber: "2600013", assignee: "Kamalesh M", note: "", options: ["Kamalesh M", "srihari"], canSelfAssign: false } } },
+    });
+
+  test("Edit opens the editor in the card; Update preview asks for a new preview and quietly withdraws the old one", async () => {
+    chatbotApi.cancelAction = vi.fn().mockResolvedValue({ data: { data: { status: "CANCELLED", message: "Cancelled. Nothing was changed." } } });
+    const { user } = setup();
+    await ask(user, "2600013 assign to kamalesh", preview());
+    await user.click(screen.getByRole("button", { name: "Edit this request" }));
+    const editor = screen.getByRole("form", { name: "Edit the assignment" });
+    await user.selectOptions(within(editor).getByLabelText("Assign to"), "srihari");
+    await user.type(within(editor).getByLabelText(/Note for the assignee/), "Please check the VPN first");
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "New preview." }));
+    await user.click(within(editor).getByRole("button", { name: "Update preview" }));
+    await waitFor(() => expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Assign ticket 2600013 to srihari with note: Please check the VPN first", "conv-1", null));
+    expect(chatbotApi.cancelAction).toHaveBeenCalledTimes(1);
+    expect(screen.getByText("Replaced by your edit")).toBeInTheDocument();
+    // No "Cancelled" reply: the request was changed, not dropped.
+    expect(screen.queryByText("Cancelled. Nothing was changed.")).not.toBeInTheDocument();
+  });
+
+  test("someone not in the list can be typed; Back leaves the preview as it was", async () => {
+    chatbotApi.cancelAction = vi.fn().mockResolvedValue({ data: { data: { status: "CANCELLED" } } });
+    const { user } = setup();
+    await ask(user, "2600013 assign to kamalesh", preview());
+    await user.click(screen.getByRole("button", { name: "Edit this request" }));
+    await user.click(screen.getByRole("button", { name: "Back" }));
+    expect(screen.getByRole("button", { name: /^Confirm: Assign ticket 2600013/ })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Edit this request" }));
+    await user.type(screen.getByLabelText(/Or someone else/), "pavithran@example.com");
+    chatbotApi.sendMessage.mockResolvedValueOnce(reply({ message: "New preview." }));
+    await user.click(screen.getByRole("button", { name: "Update preview" }));
+    await waitFor(() => expect(chatbotApi.sendMessage).toHaveBeenLastCalledWith("Assign ticket 2600013 to pavithran@example.com", "conv-1", null));
   });
 });
 

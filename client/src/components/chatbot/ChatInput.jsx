@@ -1,35 +1,15 @@
-import { useRef } from "react";
 import { Box, IconButton, InputBase, Tooltip } from "@mui/material";
 import SendIcon from "@mui/icons-material/Send";
-import AttachFileIcon from "@mui/icons-material/AttachFile";
 import MicNoneOutlinedIcon from "@mui/icons-material/MicNoneOutlined";
 import { focusRing, reducedMotion } from "./theme/chatStyles";
 
 const MAX_LENGTH = 1000;
 const ghost = { color: "var(--sv-muted)", ...focusRing };
 
-// Sticky pill-shaped composer. Attachment and voice are visible but disabled
-// placeholders (not implemented yet); sending behavior is unchanged.
-export default function ChatInput({ placeholder = "Ask about tickets...", value, onChange, onSubmit, inputRef, loading, canAttach = false, onFiles }) {
+// Sticky pill-shaped composer. Voice is a visible but disabled placeholder (not implemented yet). Files are
+// not taken in the chat: a ticket that needs them is raised on the Create Ticket page.
+export default function ChatInput({ placeholder = "Ask about tickets...", value, onChange, onSubmit, inputRef, loading }) {
   const canSend = !loading && Boolean(value.trim());
-  const picker = useRef(null);
-
-  // A pasted screenshot becomes an attachment of the ticket being raised, never text in the message.
-  const onPaste = (e) => {
-    if (!canAttach || !onFiles) return;
-    const images = Array.from(e.clipboardData?.items || [])
-      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-      .map((item, i, all) => {
-        const blob = item.getAsFile();
-        if (!blob) return null;
-        const ext = (item.type.split("/")[1] || "png").replace("jpeg", "jpg");
-        return new File([blob], `pasted-image-${Date.now()}${all.length > 1 ? `-${i + 1}` : ""}.${ext}`, { type: item.type });
-      })
-      .filter(Boolean);
-    if (!images.length) return;
-    e.preventDefault();
-    onFiles(images);
-  };
   return (
     <Box component="form" onSubmit={onSubmit} sx={{ flexShrink: 0, p: 1.5, bgcolor: "var(--sv-surface)", borderTop: "1px solid var(--sv-border)" }}>
       <Box
@@ -38,7 +18,7 @@ export default function ChatInput({ placeholder = "Ask about tickets...", value,
           alignItems: "center",
           gap: 0.25,
           minHeight: 52,
-          pl: 0.75,
+          pl: 1.5,
           pr: 0.75,
           borderRadius: 99,
           bgcolor: "var(--sv-bg)",
@@ -48,25 +28,6 @@ export default function ChatInput({ placeholder = "Ask about tickets...", value,
           ...reducedMotion,
         }}
       >
-        <Tooltip title={canAttach ? "Attach files to your ticket" : "Start raising a ticket to attach files"}>
-          <span>
-            <IconButton size="small" disabled={!canAttach || loading} onClick={() => picker.current?.click()} aria-label={canAttach ? "Attach files to the ticket" : "Attach a file (available while raising a ticket)"} sx={ghost}>
-              <AttachFileIcon fontSize="small" />
-            </IconButton>
-          </span>
-        </Tooltip>
-        <input
-          ref={picker}
-          type="file"
-          multiple
-          hidden
-          data-testid="ticket-file-input"
-          onChange={(e) => {
-            const files = Array.from(e.target.files || []);
-            e.target.value = "";
-            if (files.length) onFiles?.(files);
-          }}
-        />
         <InputBase
           inputRef={inputRef}
           value={value}
@@ -75,7 +36,7 @@ export default function ChatInput({ placeholder = "Ask about tickets...", value,
           fullWidth
           multiline
           maxRows={4}
-          inputProps={{ maxLength: MAX_LENGTH, "aria-label": "Message to the assistant", onPaste }}
+          inputProps={{ maxLength: MAX_LENGTH, "aria-label": "Message to the assistant" }}
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) onSubmit(e);
           }}

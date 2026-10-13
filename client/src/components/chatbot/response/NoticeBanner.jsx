@@ -1,33 +1,34 @@
-import { Box, Typography } from "@mui/material";
+import { Typography } from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import SearchOffIcon from "@mui/icons-material/SearchOff";
 import HelpOutlineIcon from "@mui/icons-material/HelpOutline";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
+import { Callout } from "./parts";
 
-// A small label above an answer that is a refusal or a "could not", so it reads differently from data.
-// It names the kind of answer only; the explanation itself is the message text (never ids or internals).
+// An answer that is a refusal, a "nothing found" or a "not understood" is shown inside a tinted callout
+// with a label naming the kind of answer, so it reads differently from data. The explanation itself is the
+// message text (never ids or internals).
 const KINDS = {
-  CHAT_ACCESS_DENIED: { icon: LockOutlinedIcon, label: "Not available for your role", color: "var(--sv-warning)" },
-  CHAT_TICKET_NOT_FOUND: { icon: LockOutlinedIcon, label: "No access or not found", color: "var(--sv-warning)" },
-  CHAT_NO_RESULTS: { icon: SearchOffIcon, label: "No results", color: "var(--sv-muted)" },
-  CHAT_UNSUPPORTED_INTENT: { icon: HelpOutlineIcon, label: "Not understood", color: "var(--sv-muted)" },
+  CHAT_ACCESS_DENIED: { icon: LockOutlinedIcon, label: "Not available for your role", tone: "blocked" },
+  CHAT_TICKET_NOT_FOUND: { icon: LockOutlinedIcon, label: "No access or not found", tone: "blocked" },
+  CHAT_NO_RESULTS: { icon: SearchOffIcon, label: "No results", tone: "info" },
+  CHAT_UNSUPPORTED_INTENT: { icon: HelpOutlineIcon, label: "Not understood", tone: "info" },
 };
 
 export function noticeKind(error) {
   if (!error?.code) return null;
-  return KINDS[error.code] || (error.code.startsWith("CHAT_") ? { icon: ErrorOutlineIcon, label: "Couldn't complete that", color: "var(--sv-error)" } : null);
+  return KINDS[error.code] || (error.code.startsWith("CHAT_") ? { icon: ErrorOutlineIcon, label: "Couldn't complete that", tone: "error" } : null);
 }
 
-export default function NoticeBanner({ error }) {
+export default function NoticeCallout({ error, children }) {
   const kind = noticeKind(error);
-  if (!kind) return null;
-  const Icon = kind.icon;
+  if (!kind) return children;
   return (
-    <Box sx={{ display: "inline-flex", alignItems: "center", gap: 0.5, mb: 0.5, px: 0.9, py: 0.2, borderRadius: 99, border: `1px solid ${kind.color}`, color: kind.color }}>
-      <Icon aria-hidden sx={{ fontSize: 14 }} />
-      <Typography component="span" variant="caption" fontWeight={700} sx={{ color: "inherit" }}>
+    <Callout tone={kind.tone} icon={kind.icon} label={kind.label}>
+      <Typography variant="caption" fontWeight={800} sx={{ display: "block", mb: 0.25, color: "var(--sv-muted)" }}>
         {kind.label}
       </Typography>
-    </Box>
+      {children}
+    </Callout>
   );
 }

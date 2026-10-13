@@ -1,8 +1,8 @@
 # Raising a ticket through the assistant
 
-The assistant is a conversational front for the EXISTING Raise a Ticket workflow. It collects the same details as the page,
-shows a review, and on confirmation calls `ticket.service.createTicket(user, payload, files)`, the same function the
-`POST /tickets` route calls. Nothing about ticket creation is duplicated.
+The assistant is a conversational front for the EXISTING Raise a Ticket workflow. It collects the same details as the page
+(except attachments, see below), shows a review, and on confirmation calls `ticket.service.createTicket(user, payload, [])`,
+the same function the `POST /tickets` route calls. Nothing about ticket creation is duplicated.
 
 ## Field mapping
 
@@ -14,22 +14,31 @@ shows a review, and on confirmation calls `ticket.service.createTicket(user, pay
 | Department | any department in the database (fuzzy name match, invalid names are refused with the real list) | `Ticket.toDepartmentId` |
 | Custom CC | people found with `user.service.searchActiveEmployees` (the CC picker's own search); several matches are never guessed | `TicketCC` via `ccUserIds` |
 | Problem Summary | 50 words or fewer (`utils/wordCount`, the same rule); never truncated | `Ticket.problemSummary` |
-| Attachments | the ticket service's rules: 5 files, 10 MB combined; file types by the same multer filter | `TicketAttachment` via the service |
+| Attachments | **not taken in the chat**: the form links to the Create Ticket page for a ticket that needs files | — |
 
 The ticket number, `TicketHistory`, notifications, emails and Team Lead / Manager notification are all produced inside
 `createTicket`; the chatbot only displays the number the service returns.
 
+## No attachments in the chat
+
+A ticket raised in the chat has no files. The first message and the form say: "You can raise a ticket here without
+attachments. To attach files, use the Create Ticket page instead.", with an **Open Create Ticket page** link to the
+role's own page (`/portal/new-ticket` for Employees, `/agent/new-ticket` for Managers and Team Leads; Admins cannot
+raise tickets). Asking to attach a file during the chat ("can I attach a screenshot?", "upload an image") gets the same
+answer and link and changes nothing on the ticket; while the title or summary is being asked for, only a clear request
+counts, so "Unable to upload documents" is still taken as a title. There is no attach button, pasting an image does
+nothing, and the former `/chatbot/drafts/attachments` endpoints are removed. Files can be added afterwards on the
+ticket page.
+
 ## Conversation
 
-State is a server-side draft (`chat_ticket_drafts`, with files in `chat_draft_attachments`), bound to the user and the
-conversation, valid for 2 hours. One message can carry everything ("Raise a high priority ticket for Finance. Title: ...
-The problem is ... CC Manoj"); only missing required details are asked (title, priority, department, problem summary),
-then CC and files once, then the review.
+State is a server-side draft (`chat_ticket_drafts`), bound to the user and the conversation, valid for 2 hours. One
+message can carry everything ("Raise a high priority ticket for Finance. Title: ... The problem is ... CC Manoj"); only
+missing required details are asked (title, priority, department, problem summary), then the review.
 
 Corrections never restart: "change the priority to Critical", "change the department to Hardware", "change the title",
-"change the problem summary", "remove Manoj from CC", "remove the screenshot". Unrelated questions ("show my tickets")
-are answered and the draft waits. "Cancel the ticket" or "No, don't create it" closes it. "Create another ticket" starts
-a new draft.
+"change the problem summary", "remove Manoj from CC". Unrelated questions ("show my tickets") are answered and the draft
+waits. "Cancel the ticket" or "No, don't create it" closes it. "Create another ticket" starts a new draft.
 
 At the review the user presses **Raise Ticket**, or types "yes, raise it" (the typed reply is accepted only for the review
 of this conversation; the same checks as the button apply: same user, same conversation, not expired, role re-checked,
@@ -38,15 +47,6 @@ claimed once). Admin is told they cannot raise tickets; the backend remains the 
 If creation fails, the message says so ("No ticket was created. <reason>"), the draft keeps everything, and "yes" shows the
 review again to retry.
 
-## Attachments in the chat
-
-`POST /api/v1/chatbot/drafts/attachments` (multipart `files`, `conversationId`) and
-`DELETE /api/v1/chatbot/drafts/attachments/:id?conversationId=` use the same multer instance as the ticket route. The
-attach button is enabled while a ticket is being raised; a pasted screenshot (Ctrl+V) becomes an attachment, never
-text. Images show a thumbnail, PDFs and other files a file card, each with a remove button until the ticket is raised. The
-client checks count and size first with the Raise a Ticket page's own helper; the server remains authoritative.
-Stored bytes are deleted when the ticket is created, the draft is cancelled, or the retention purge runs.
-
 ## Not duplicated, not bypassed
 
 Role and user come from the authenticated session. A message cannot set the user, role, department access or the
@@ -54,20 +54,15 @@ Role and user come from the authenticated session. A message cannot set the user
 
 ## One ticket session: one form, one review, one Raise Ticket
 
-"Raise a ticket" opens ONE form in the chat: Title, Priority, Department, Problem Summary, an
-Attachments section (Add files, paste an image with Ctrl+V, open, remove, `n/5 · size of 10 MB`) and an
-optional "Add people in CC" search. Nothing about CC or files is asked as a separate question any more.
+"Raise a ticket" opens ONE form in the chat: the no-attachments note with its link, Title, Priority, Department, Problem
+Summary and an optional "Add people in CC" search. Nothing about CC is asked as a separate question.
 
 1. **Review Ticket** sends every field in one request (`POST /chatbot/drafts/review`). The server validates it with the
    same rules as typed answers (required fields, 50 words, real priority and department, real active CC users, never the
    requester) and answers with the review. Nothing is created.
-2. The review lists every field, the CC people and the files (Open / Remove), and has **Raise Ticket**, **Edit** and
-   **Cancel** (asks first). Raise Ticket is the only creating action: it calls `ticket.service.createTicket` once with the
-   files; the ticket number is the service's own.
-3. **Edit** returns to the form with everything kept. **Cancel** creates nothing and releases the files.
+2. The review lists every field and the CC people, and has **Raise Ticket**, **Edit** and **Cancel** (asks first). Raise
+   Ticket is the only creating action: it calls `ticket.service.createTicket` once; the ticket number is the service's own.
+3. **Edit** returns to the form with everything kept. **Cancel** creates nothing.
 
-Files added while the form is open change the form in place (`quiet` upload/remove, no chat message), so typed text is
-never lost. Files are held server-side for the draft, with the same 5-file / 10 MB rules, and sent to the ticket service
-unchanged. `GET /chatbot/drafts/attachments/:id` lets the owner open their own file (inline only for images and PDFs).
 `GET /chatbot/drafts/cc-search` searches active users (same service as the Raise a Ticket page) and only while a ticket is
 being raised. One click, or two at once, creates one ticket: the pending action is claimed before the service is called.

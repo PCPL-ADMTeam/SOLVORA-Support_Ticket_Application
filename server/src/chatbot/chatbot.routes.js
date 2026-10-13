@@ -4,7 +4,6 @@ const { validationResult } = require("express-validator");
 const authenticate = require("../middleware/auth");
 const ApiError = require("../utils/ApiError");
 const env = require("../config/env");
-const { upload } = require("../config/multer");
 const controller = require("./chatbot.controller");
 const { sendMessageSchema, conversationIdSchema, conversationListSchema, bulkDeleteSchema, deleteAllSchema, feedbackSchema, actionIdSchema, draftReviewSchema } = require("./chatbot.schemas");
 const { ChatError, CODES, toErrorPayload, USER_MESSAGES } = require("./chatbot.errors");
@@ -63,13 +62,8 @@ router.delete("/conversations/:conversationId", chatLimiter, conversationIdSchem
 router.get("/conversations/:conversationId", conversationIdSchema, validateRequest, controller.getConversation);
 router.post("/conversations/:conversationId/reset", chatLimiter, conversationIdSchema, validateRequest, controller.resetConversation);
 
-// Files for the ticket being raised through the assistant. The SAME multer instance as the Raise a
-// Ticket route (file-type denylist, per-file size limit, memory storage); the 5-file / 10 MB budget
-// is the ticket service's own and is applied when the files are added.
-router.post("/drafts/attachments", chatLimiter, upload.array("files", 20), controller.uploadDraftFiles);
-router.delete("/drafts/attachments/:attachmentId", chatLimiter, controller.removeDraftFile);
-router.get("/drafts/attachments/:attachmentId", chatLimiter, controller.getDraftFile);
-// The form's "Review Ticket" (all fields) and its CC people search; both only while a ticket is being raised.
+// The ticket form's "Review Ticket" (all fields) and its CC people search; both only while a ticket is
+// being raised. Files are not taken in the chat (the form links to the Create Ticket page for those).
 router.post("/drafts/review", chatLimiter, draftReviewSchema, validateRequest, controller.reviewDraft);
 router.get("/drafts/cc-search", searchLimiter, controller.searchDraftCc);
 

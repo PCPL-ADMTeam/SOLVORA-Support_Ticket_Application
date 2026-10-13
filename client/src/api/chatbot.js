@@ -35,16 +35,10 @@ export const chatbotApi = {
   // The one-time token shown with the preview and the conversation id must accompany both calls.
   confirmAction: (actionId, confirmationToken, conversationId) => api.post(`/chatbot/actions/${actionId}/confirm`, { confirmationToken, conversationId }),
   cancelAction: (actionId, confirmationToken, conversationId) => api.post(`/chatbot/actions/${actionId}/cancel`, { confirmationToken, conversationId }),
-  // Files for the ticket being raised through the assistant (same limits as the Raise a Ticket page).
-  uploadDraftFiles: (formData) => api.post("/chatbot/drafts/attachments", formData, { headers: { "Content-Type": "multipart/form-data" } }),
-  // `quiet`: change the open form in place (no chat message). Not used at the review.
-  removeDraftFile: (attachmentId, conversationId, quiet = false) => api.delete(`/chatbot/drafts/attachments/${attachmentId}`, { params: { conversationId, ...(quiet ? { quiet: "1" } : {}) } }),
   // The form's "Review Ticket": every field at once. Never carries a role, user or source department.
   reviewDraft: (payload) => api.post("/chatbot/drafts/review", payload),
   // People to CC, searched among real active users while a ticket is being raised.
   searchDraftCc: (conversationId, q) => api.get("/chatbot/drafts/cc-search", { params: { conversationId, q } }),
-  // One attached file of the ticket being raised, as bytes, to open in a new tab.
-  fetchDraftFile: (attachmentId, conversationId) => api.get(`/chatbot/drafts/attachments/${attachmentId}`, { params: { conversationId }, responseType: "blob" }),
   sendFeedback: (messageId, rating, reason) =>
     api.post(`/chatbot/messages/${messageId}/feedback`, reason ? { rating, reason } : { rating }),
 };

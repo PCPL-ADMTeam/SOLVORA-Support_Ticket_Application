@@ -149,6 +149,8 @@ function toTicketSummary(t, { isStaff }) {
     // docs/chatbot-repository-analysis.md) — never invented here.
     slaStatus: "Not tracked",
     latestUpdate: latest ? `${latest.description} (${latest.at})` : null,
+    // The same without the raw timestamp, for the card (which formats latestUpdateAt itself).
+    latestUpdateText: latest ? latest.description : null,
     latestUpdateAt: latest ? latest.at : null,
     pendingActions: pending,
     suggestions,

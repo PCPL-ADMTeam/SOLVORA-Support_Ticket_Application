@@ -2,8 +2,9 @@ const prisma = require("../../config/prisma");
 const { runTool } = require("../tools");
 const { ChatError, CODES } = require("../chatbot.errors");
 const { statusLabel } = require("../dto");
-const { portalFor } = require("../roleScope");
-const { proposeAction, precheckAction } = require("../actions/actionService");
+const { portalFor, authorizedWhere } = require("../roleScope");
+const ticketService = require("../../services/ticket.service");
+const { proposeAction, precheckAction, assigneeChoices } = require("../actions/actionService");
 const { dashboardOverview, askPerson } = require("./overviewHandlers");
 const { REDIRECTS } = require("../actions/registry");
 const { resolveDepartment, resolvePriority, resolveUserArg, invalid } = require("../actions/resolvers");
@@ -47,7 +48,8 @@ async function guidance(ctx, params) {
   const { article } = await runTool("get_navigation_steps", ctx, { id: params.articleId });
   if (!article) throw new ChatError(CODES.UNSUPPORTED_INTENT);
 
-  const data = { article: { id: article.id, title: article.title, feature: article.feature, steps: article.steps, warning: article.warning } };
+  // The guide card shows the title, steps and note; the bubble only introduces it.
+  const data = { article: { id: article.id, title: article.title, feature: article.feature, steps: article.steps, warning: article.warning }, headline: "Here's how to do it in Solvora." };
   const parts = [`${article.title}:`, numbered(article.steps)];
   if (article.warning) parts.push(`Note: ${article.warning}`);
 
@@ -82,7 +84,7 @@ async function viewProfile(ctx, params) {
     `Role: ${profile.role}`,
     `Department: ${profile.departments.length ? profile.departments.join(", ") : "not available"}`,
   ];
-  return { ...base, message: `Here is the profile I have on file for you:\n${lines.join("\n")}\n\n${base.message}`, data: { ...base.data, profile } };
+  return { ...base, message: `Here is the profile I have on file for you:\n${lines.join("\n")}\n\n${base.message}`, data: { ...base.data, profile, headline: "Here is the profile I have on file for you, and how to view it." } };
 }
 
 // ---- ticket information ----------------------------------------------------
@@ -146,7 +148,40 @@ async function resolvePerson(ctx, text, params = {}) {
   if (ctx.scope.role === "EMPLOYEE") {
     throw new ChatError(CODES.ACCESS_DENIED, { internal: "employee person lookup", message: "I can only show your own tickets. I can't look up other people." });
   }
-  return resolveUserArg({ user: text, userId: params.userId }, "user", (v) => String(v).trim(), personScope(ctx));
+  try {
+    return await resolveUserArg({ user: text, userId: params.userId }, "user", (v) => String(v).trim(), personScope(ctx));
+  } catch (err) {
+    // Nobody by that name in the caller's departments, but a real person elsewhere: say plainly that people and
+    // tickets of other departments are not available to this role, instead of "not found" or "not understood".
+    // (Names are not secret here: the Raise a Ticket CC search lists every active user.) Nothing about that
+    // person (department, tickets, role) is revealed.
+    if (err instanceof ChatError && !err.choices?.length && personScope(ctx) && (await personOutsideScope(text))) {
+      throw new ChatError(CODES.ACCESS_DENIED, { internal: "person outside the caller's departments", message: await outsideScopeMessage(ctx, text) });
+    }
+    throw err;
+  }
+}
+
+// An active user whose name (or a word of it) starts with the text, or whose email is the text. Only called after
+// the search INSIDE the caller's departments found nobody, so any match is a person outside them.
+async function personOutsideScope(text) {
+  const t = String(text || "").trim();
+  if (t.length < 3 || t.length > 80) return false;
+  const hits = await prisma.user.findMany({
+    where: { isActive: true, OR: [{ email: { equals: t, mode: "insensitive" } }, { name: { startsWith: t, mode: "insensitive" } }, { name: { contains: ` ${t}`, mode: "insensitive" } }] },
+    select: { id: true },
+    take: 1,
+  });
+  return hits.length > 0;
+}
+
+async function outsideScopeMessage(ctx, text) {
+  const mine = (await visibleDepartmentNames(ctx)) || [];
+  const where = mine.length ? ` (${mine.join(", ")})` : "";
+  const who = toPlainText(text, 60);
+  return ctx.scope.role === "TEAMLEAD"
+    ? `You don't have access to view employees or tickets of other departments. "${who}" isn't in your department${where}, so I can't show their details or tickets.`
+    : `You don't have access to view employees or tickets of other departments. "${who}" isn't in the departments you manage${where}, so I can't show their details or tickets.`;
 }
 
 // "tickets for X" where X may be a department OR a person: real departments first.
@@ -184,6 +219,127 @@ async function withEntities(ctx, params, question) {
 const PAGE_SIZE = 5;
 const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
 const countOf = (n, word) => `${n} ${word}${n === 1 ? "" : "s"}`;
+const titleWords = (s) => s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
+
+// ---- ticket views: which tickets a list shows, its heading, and where to go next ----------------------------
+//
+// Each view is a distinct filter on search_authorized_tickets, always inside the signed-in user's own scope:
+//   mine     -> requester = me OR assignee = me      "My Tickets" (the portal's "My Tickets" tab)
+//   assigned -> assignee = me                        "Tickets Assigned to Me"
+//   raised   -> requester = me                       "Tickets Raised by Me"
+//   dept     -> the departments the user may see     "My Department's Tickets" (Manager / Team Lead; Admin: all)
+//   named    -> one named department, inside that   "Tickets in Hardware"
+//   person   -> one named person, inside that        "Tickets assigned to Ravi"
+function ticketView(params, filters, person) {
+  if (person) return "person";
+  if (params.mine === "assignee") return "assigned";
+  if (params.mine === "requester") return "raised";
+  if (params.scope === "mine") return "mine";
+  return filters.department ? "named" : "dept";
+}
+
+function viewTitle(view, kind, { role, department, who }) {
+  const k = titleWords(kind); // "Tickets", "Open Tickets", "High Priority Tickets"
+  const where = department ? ` in ${department}` : "";
+  if (view === "mine") return `My ${k}${where}`;
+  if (view === "assigned") return `${k} Assigned to Me${where}`;
+  if (view === "raised") return `${k} Raised by Me${where}`;
+  if (view === "dept") return role === "ADMIN" ? `All ${k}` : `My Department's ${k}`;
+  if (view === "named") return `${k}${where}`;
+  return `${cap(kind)} ${who}${where}`;
+}
+
+// "your department (BI/Copilot)" / "your departments (BI/Copilot, Hardware)": what "my department" covered.
+function departmentScopeText(names) {
+  if (!names?.length) return "your department";
+  const shown = names.length > 4 ? `${names.slice(0, 4).join(", ")} and ${names.length - 4} more` : names.join(", ");
+  return `your department${names.length === 1 ? "" : "s"} (${shown})`;
+}
+
+// One-click switches to the other views. Only views this role can use are offered: Employees have no department
+// view, a Manager is never a ticket's assignee, and an Admin neither raises nor is assigned tickets. Each prompt is
+// an ordinary question, classified afresh, so it runs the same filter as typing it.
+const VIEW_SWITCHES = {
+  mine: { label: "My Tickets", prompt: "Show my tickets" },
+  assigned: { label: "Assigned to Me", prompt: "Show tickets assigned to me" },
+  raised: { label: "Raised by Me", prompt: "Show tickets raised by me" },
+  dept: { label: "My Department's Tickets", prompt: "Show my department's tickets" },
+  deptOpen: { label: "Open in My Department", prompt: "Show open tickets in my department" },
+  mineOpen: { label: "My Open Tickets", prompt: "Show my open tickets" },
+  mineUnresolved: { label: "My Unresolved Tickets", prompt: "Show my unresolved tickets" },
+  // An Admin's views (every department).
+  allTickets: { label: "All Tickets", prompt: "Show all tickets" },
+  allOpen: { label: "All Open Tickets", prompt: "Show all open tickets" },
+  unassigned: { label: "Unassigned Tickets", prompt: "Show unassigned tickets" },
+};
+const NEXT_VIEWS = {
+  mine: ["assigned", "raised", "dept"],
+  dept: ["assigned", "raised", "deptOpen"],
+  named: ["dept", "assigned", "raised"],
+  assigned: ["raised", "dept", "mineOpen"],
+  raised: ["assigned", "dept", "mineUnresolved"],
+  person: ["dept", "mine"],
+};
+const FALLBACK_VIEWS = ["mine", "mineOpen", "assigned", "raised", "dept", "deptOpen", "allTickets", "allOpen", "unassigned"];
+
+function viewAllowed(key, role) {
+  if (key.startsWith("all") || key === "unassigned") return role === "ADMIN";
+  if (key.startsWith("dept")) return role === "MANAGER" || role === "TEAMLEAD";
+  if (key === "assigned") return role === "TEAMLEAD" || role === "EMPLOYEE";
+  return role !== "ADMIN"; // mine / raised / my open tickets
+}
+
+// Up to `max` views to switch to after a list of `view`, never the one just shown.
+function viewSwitches(view, role, { open = false, plain = false, filter, max = 3 } = {}) {
+  const current = new Set();
+  if (plain && ["mine", "dept", "assigned", "raised"].includes(view)) current.add(view);
+  if (open && view === "mine") current.add("mineOpen").add("mineUnresolved");
+  if (open && view === "dept") current.add("deptOpen");
+  // An Admin's department view is every department.
+  if (view === "dept" && plain) current.add("allTickets");
+  if (view === "dept" && open) current.add("allOpen");
+  if (filter === "unassigned") current.add("unassigned");
+  const keys = [];
+  for (const key of [...(NEXT_VIEWS[view] || []), ...(view === "person" || view === "named" ? [] : FALLBACK_VIEWS)]) {
+    if (keys.length >= max) break;
+    if (current.has(key) || keys.includes(key) || !viewAllowed(key, role)) continue;
+    // "My open tickets" and "my unresolved tickets" are the same list: offer one.
+    if ((key === "mineOpen" && keys.includes("mineUnresolved")) || (key === "mineUnresolved" && keys.includes("mineOpen"))) continue;
+    keys.push(key);
+  }
+  return keys.map((k) => VIEW_SWITCHES[k]);
+}
+
+// After a ticket list: the other views first, then narrowing steps on this same list, three at most.
+function listSuggestions(view, role, { open, plain, refine, params, filters }) {
+  const out = viewSwitches(view, role, { open, plain, filter: params.filter });
+  if (refine) {
+    const offersOpen = out.some((s) => /\b(open|unresolved)\b/i.test(s.label));
+    const narrowing = [
+      ...(!params.status && params.filter !== "open" && !offersOpen ? [{ label: "Only Open", prompt: "Only open" }] : []),
+      ...(!params.status ? [{ label: "Only Resolved", prompt: "Only resolved" }] : []),
+      ...(!filters.priority ? [{ label: "High Priority", prompt: "Only high priority" }] : []),
+    ];
+    for (const s of narrowing) if (out.length < 3) out.push(s);
+  }
+  return out;
+}
+
+// An Employee asked for department / team tickets: the ticket tool refused (and audited it). Say why, and what they
+// can see instead, rather than a bare "no access" (or, worse, silently showing their own tickets as if they were it).
+function employeeDepartmentRefusal(params) {
+  return new ChatError(CODES.ACCESS_DENIED, {
+    internal: "employee requested department tickets",
+    message:
+      "Department tickets are available only to the Managers and Team Leads of that department. " +
+      "As an Employee, you can view the tickets you raised and the tickets assigned to you.",
+    suggestions: [
+      params.filter === "open" ? VIEW_SWITCHES.mineOpen : VIEW_SWITCHES.mine,
+      VIEW_SWITCHES.assigned,
+      VIEW_SWITCHES.raised,
+    ],
+  });
+}
 
 async function listTickets(ctx, params0, question) {
   let base = { ...params0 };
@@ -208,8 +364,9 @@ async function listTickets(ctx, params0, question) {
         relation = "either";
         delete base.departmentOrText;
       } catch (err) {
-        // Several people match: the user chooses. Nobody matches: it stays a topic to search for.
-        if (err instanceof ChatError && err.choices?.length) throw err;
+        // Several people match: the user chooses. A person of another department: say it is not available.
+        // Nobody matches: it stays a topic to search for.
+        if (err instanceof ChatError && (err.choices?.length || err.code === CODES.ACCESS_DENIED)) throw err;
       }
     }
   }
@@ -242,7 +399,6 @@ async function listTickets(ctx, params0, question) {
   const kind = qual ? `${qual} tickets` : "tickets";
   const who = person ? { assignee: `assigned to ${person.name}`, requester: `raised by ${person.name}`, either: `assigned to or raised by ${person.name}` }[relation] : null;
   const whom = params.mine === "requester" ? "you raised" : params.mine === "assignee" ? "assigned to you" : null;
-  const where = filters.department ? ` in ${filters.department}` : "";
 
   const toolInput = {
     scope: params.scope,
@@ -263,7 +419,24 @@ async function listTickets(ctx, params0, question) {
     limit: params.mode === "count" || params.latest ? 1 : PAGE_SIZE,
     ...(params.latest || params.recentCreated ? { sort: "created" } : {}),
   };
-  const result = await runTool("search_authorized_tickets", ctx, toolInput);
+  let result;
+  try {
+    result = await runTool("search_authorized_tickets", ctx, toolInput);
+  } catch (err) {
+    if (err instanceof ChatError && err.code === CODES.ACCESS_DENIED && params.scope === "staff" && ctx.scope.role === "EMPLOYEE") throw employeeDepartmentRefusal(params);
+    throw err;
+  }
+
+  // Which view this is, its heading, and (for "my department") which departments it covered.
+  const role = ctx.scope.role;
+  const view = ticketView(params, filters, person);
+  const filterWord = { unassigned: "unassigned", stale: "inactive", recent: "recently updated" }[params.filter];
+  const listKind = filterWord ? `${filterWord} ${kind}` : kind; // "unassigned tickets", "open tickets"
+  const title = viewTitle(view, listKind, { role, department: filters.department, who });
+  const deptNames = view === "dept" && role !== "ADMIN" ? await visibleDepartmentNames(ctx) : null;
+  const scopeText = view === "dept" ? (role === "ADMIN" ? "across all departments" : `in ${departmentScopeText(deptNames)}`) : "";
+  const isOpen = params.filter === "open" && !params.status;
+  const isPlain = (params.filter || "any") === "any" && !params.status && !filters.priority && !filters.department && !params.dateFrom && !filters.text && !params.text;
 
   // What a follow-up like "only open ones" builds on: resolved values only, no text from the message.
   const frame = {
@@ -278,12 +451,13 @@ async function listTickets(ctx, params0, question) {
 
   if (params.mode === "count") {
     const subjectLabel = person ? `${person.name} has` : filters.department ? `${filters.department} has` : params.scope === "mine" ? "You have" : result.total === 1 ? "There is" : "There are";
-    const tail = who ? ` (${who.replace(` ${person.name}`, " them")})` : whom ? ` that ${whom}` : "";
+    // Say which tickets were counted: "(raised by you or assigned to you)", "in your department (BI/Copilot)".
+    const tail = who ? ` (${who.replace(` ${person.name}`, " them")})` : whom ? (whom === "you raised" ? " that you raised" : ` ${whom}`) : view === "mine" && !filters.department ? " (raised by you or assigned to you)" : view === "dept" ? ` ${scopeText}` : "";
     return {
       message: result.total ? `${subjectLabel} ${countOf(result.total, qual ? `${qual} ticket` : "ticket")}${tail}.` : `${subjectLabel === "There are" || subjectLabel === "There is" ? "There are" : subjectLabel} no ${kind}${tail}.`,
       data: { total: result.total },
       navigationTarget: null,
-      suggestedActions: result.total ? [{ label: "Show them", prompt: "Show them" }] : [],
+      suggestedActions: [...(result.total ? [{ label: "Show them", prompt: "Show them" }] : []), ...viewSwitches(view, role, { open: isOpen, plain: isPlain, filter: params.filter, max: 2 })],
       state: { frame },
       useModel: false,
       ticketNumbers: [],
@@ -301,10 +475,22 @@ async function listTickets(ctx, params0, question) {
     if (filters.text && ctx.scope.role !== "EMPLOYEE") {
       suggestions.push({ label: `Assigned to ${filters.text}`, prompt: `Show tickets assigned to ${filters.text}` }, { label: `Raised by ${filters.text}`, prompt: `Show tickets raised by ${filters.text}` });
     }
+    // Then the other views ("Raised by Me", "My Department's Tickets"...), so an empty view is never a dead end.
+    for (const s of viewSwitches(view, role, { open: isOpen, plain: isPlain, filter: params.filter })) if (!suggestions.some((x) => x.prompt === s.prompt)) suggestions.push(s);
     suggestions.push({ label: "Recently updated tickets", prompt: "Show recently updated tickets" });
     const target = [person ? who : null, filters.department ? filters.department : null].filter(Boolean).join(" in ");
+    // With no other filter, name the view that was empty ("raised by you or assigned to you", "in your department").
+    const emptyView = view === "mine" ? " raised by you or assigned to you" : view === "dept" && role !== "ADMIN" ? ` ${scopeText}` : null;
+    // An Admin never raises tickets or gets them assigned, so their own views are always empty: say so plainly.
+    const adminOwn = role === "ADMIN" && ["mine", "assigned", "raised"].includes(view) && !filters.department;
     throw new ChatError(CODES.NO_RESULTS, {
-      message: applied.length || who || whom ? `I couldn't find any ${kind}${target ? ` for ${person ? who : target}` : whom ? ` ${whom}` : ""}${params.dateFrom ? ` (${used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}`})` : ""}. You can widen the search:` : "I didn't find any matching tickets.",
+      message: adminOwn
+        ? "Admins don't raise tickets and are never assigned tickets, so there are no tickets of yours to show. As an Admin, you can view tickets from every department."
+        : applied.length || who || whom
+          ? `I couldn't find any ${listKind}${target ? ` for ${person ? who : target}` : whom ? ` ${whom}` : ""}${params.dateFrom ? ` (${used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}`})` : ""}. You can widen the search:`
+          : emptyView
+            ? `I couldn't find any ${listKind}${emptyView}.`
+            : "I didn't find any matching tickets.",
       suggestions: suggestions.slice(0, 3),
     });
   }
@@ -313,9 +499,8 @@ async function listTickets(ctx, params0, question) {
   const shown = result.tickets.length;
   const first = (page - 1) * PAGE_SIZE + 1;
   const last = (page - 1) * PAGE_SIZE + shown;
-  const heading = whom ? `${cap(kind)} ${whom}` : who ? `${cap(kind)} ${who}` : params.scope === "mine" ? `Your ${kind}` : `${cap(kind)}${where}`;
   const message =
-    `${heading}${who || whom ? where : ""}: found ${result.total} ticket${result.total === 1 ? "" : "s"}` +
+    `${title}: found ${result.total} ticket${result.total === 1 ? "" : "s"}` +
     (result.total > shown || page > 1 ? `. Showing ${first}–${last} of ${result.total}.` : ".") +
     (params.filter === "pending" ? " \"Pending\" means tickets with status On Hold." : "") +
     (params.filter === "open" ? " \"Open\" includes Open, In Progress, On Hold and Reopened." : "") +
@@ -324,9 +509,13 @@ async function listTickets(ctx, params0, question) {
   // What the list is, shown above the cards: the filters in force, the range shown, and what a word means.
   const dateUsed = params.dateFrom ? used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}` : null;
   const listing = {
+    // What the list is, as the card's title ("My Tickets", "Tickets Assigned to Me", "My Department's Open Tickets").
+    title,
     showing: `${first}–${last} of ${result.total}`,
     filters: [
       ...(whom ? [whom === "you raised" ? "Raised by you" : "Assigned to you"] : []),
+      ...(view === "mine" ? ["Raised by you or assigned to you"] : []),
+      ...(view === "dept" ? [role === "ADMIN" ? "All departments" : deptNames?.length === 1 ? deptNames[0] : "Your departments"] : []),
       ...(who ? [cap(who)] : []),
       ...({ open: ["Open (all active statuses)"], pending: ["On Hold"], unassigned: ["Unassigned"], stale: ["No recent activity"] }[params.filter] || []),
       ...(params.status ? [STATUS_LABEL[params.status]] : []),
@@ -336,6 +525,15 @@ async function listTickets(ctx, params0, question) {
       ...(filters.text ? [`Matching "${filters.text}"`] : []),
     ],
     notes: [
+      // Which tickets the view covers, in the portal's own terms.
+      view === "mine" ? "\"My Tickets\" are the tickets you raised plus the tickets assigned to you." : null,
+      view === "dept"
+        ? role === "ADMIN"
+          ? "As an Admin, you see tickets from every department."
+          : deptNames?.length
+            ? `Shows tickets in the department${deptNames.length === 1 ? "" : "s"} you have access to: ${deptNames.join(", ")}.`
+            : "Shows tickets in the departments you have access to."
+        : null,
       params.filter === "pending" ? "\"Pending\" means tickets with status On Hold." : null,
       params.filter === "open" ? "\"Open\" includes Open, In Progress, On Hold and Reopened." : null,
       params.withReasons ? "The recorded reason is shown on each ticket." : null,
@@ -349,20 +547,14 @@ async function listTickets(ctx, params0, question) {
       total: params.latest ? result.tickets.length : result.total,
       page,
       pageSize: PAGE_SIZE,
-      ...(params.latest ? {} : { listing, headline: `${heading}${who || whom ? where : ""}: ${countOf(result.total, "ticket")} found.` }),
+      ...(params.latest ? {} : { listing, headline: `I found ${countOf(result.total, "ticket")}${result.total > shown || page > 1 ? `; here are ${first}–${last}` : ""}.` }),
     },
     navigationTarget: null,
     suggestedActions: params.latest ? [] : [
       ...(last < result.total ? [{ label: "Show more", prompt: "Show more" }] : []),
-      // "You can also try": narrowing steps that fit what was just shown (each goes through the normal follow-up rules).
-      ...(result.total > 1
-        ? [
-            ...(!params.status && params.filter !== "open" ? [{ label: "Only Open", prompt: "Only open" }] : []),
-            ...(!params.status ? [{ label: "Only Resolved", prompt: "Only resolved" }] : []),
-            ...(!filters.priority ? [{ label: "High Priority", prompt: "Only high priority" }] : []),
-            ...(!person && params.mine !== "assignee" ? [{ label: "Assigned to Me", prompt: "Only assigned to me" }] : []),
-          ]
-        : []),
+      // "You can also try": first the other views this role can use, then (to fill up to three) narrowing steps that
+      // fit what was just shown (those go through the normal follow-up rules, on this same list).
+      ...listSuggestions(view, role, { open: isOpen, plain: isPlain, refine: result.total > 1, params, filters }),
     ],
     state: { frame: { ...frame, results: result.tickets.map((t) => t.ticketNumber) } },
     useModel: true,
@@ -468,7 +660,8 @@ async function findTicket(ctx, params) {
     ];
     return {
       message: lines.join("\n"),
-      data: { summary, lastTicketNumber: summary.ticketId },
+      // The card shows every field; the bubble only says what the card is.
+      data: { summary, lastTicketNumber: summary.ticketId, headline: `Here are the details of ticket ${summary.ticketId}.` },
       navigationTarget: ticketTarget(summary.ticketRouteId),
       suggestedActions: [{ label: "Show history", prompt: `Show history of ticket ${summary.ticketId}` }, { label: "Show comments", prompt: `Show comments on ticket ${summary.ticketId}` }],
       useModel: false,
@@ -507,7 +700,7 @@ async function summarizeTicket(ctx, params) {
   parts.push("Details are in the card below. SLA is not tracked in this application.");
   return {
     message: parts.join(" "),
-    data: { summary, lastTicketNumber: summary.ticketId },
+    data: { summary, lastTicketNumber: summary.ticketId, headline: `Here's a summary of ticket ${summary.ticketId}.` },
     navigationTarget: ticketTarget(summary.ticketRouteId),
     suggestedActions: [
       { label: "Show ticket history", prompt: `Show history of ticket ${summary.ticketId}` },
@@ -641,70 +834,179 @@ async function listDepartments(ctx, params, question = "") {
   return report(message, { departments, headline });
 }
 
-// Admin only (enforced again inside the tool). Names + role labels, no
-// emails. Free text such as names is placed in the message directly, which is
-// safe because this intent never goes through the model (useModel: false).
-// People in a department, filtered to the role(s) the user asked for. "the Manager in X" lists
-// the manager(s) only, never the whole department. The tool enforces who may ask and limits
-// the departments to the caller's own (every department for an Admin).
-const ROLE_NOUN = { MANAGER: "manager", TEAMLEAD: "team lead", EMPLOYEE: "employee" };
+// ---- people: employees, Team Leads, Managers, Admins, counts and names ------------------------
+// Names + role labels only, never emails or ids. Free text such as names is placed in the message directly,
+// which is safe because this intent never goes through the model (useModel: false).
+//
+// The question's role(s), department(s) and output (names, count, both, a breakdown) are decided BEFORE any
+// data is read (queryFrame.peopleFrame). The tool then returns, for the caller's own departments only (every
+// department for an Admin), each person once with exact per-role counts; the filters are applied here, and the
+// count and the names always come from the SAME filtered set. A role asked for without a department means every
+// department the user may see; only a question with neither a role nor a department asks "which department?".
+const ROLE_NOUN = { MANAGER: "manager", TEAMLEAD: "team lead", EMPLOYEE: "employee", ADMIN: "administrator" };
+const ROLE_TITLE = { MANAGER: "Managers", TEAMLEAD: "Team Leads", EMPLOYEE: "Employees", ADMIN: "Administrators" };
 const ROLE_LABEL_TO_KEY = { Manager: "MANAGER", "Team Lead": "TEAMLEAD", Employee: "EMPLOYEE" };
+const DEPARTMENT_ROLES = ["MANAGER", "TEAMLEAD", "EMPLOYEE"];
+
+const nounFor =(roles) => (n) => (roles.length === 1 ? (n === 1 ? ROLE_NOUN[roles[0]] : `${ROLE_NOUN[roles[0]]}s`) : n === 1 ? "person" : "people");
+const listWords = (items) => (items.length <= 1 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items[items.length - 1]}`);
+const breakdownText = (counts) => DEPARTMENT_ROLES.filter((r) => counts[r] !== undefined).map((r) => plural(counts[r], ROLE_NOUN[r], `${ROLE_NOUN[r]}s`)).join(", ");
+
+// "in Narnia" / "of the HR team": the department a question names, if any. Only used when the tool found no
+// department of that name among the ones this user may see, to say so instead of guessing another one.
+function namedDepartment(question) {
+  const q = String(question || "").replace(/[?.!]+\s*$/, "");
+  const hit = q.match(/\b(?:in|of|for|from|at)\s+(?:the\s+)?([a-z0-9][\w&/.\- ]{0,40}?)(?:\s+(?:department|dept|team))?\s*(?:,.*|\s+(?:including|with|along|and|show|list|who|please)\b.*)?$/i);
+  if (!hit) return null;
+  const name = hit[1].trim();
+  if (!name || /^(?:each|every|all|my|our|your|their|total|overall|general|here|the company|company|organi[sz]ation|it all)\b/i.test(name) || /\bdepartments?\b/i.test(name)) return null;
+  return name;
+}
+
+// "Administrators": they belong to no department, and only an Administrator may list them.
+function adminsBlock(list, mode) {
+  const { total, admins } = list;
+  if (!total) return { text: "No active administrators were found. Total administrators: 0.", data: { total: 0, members: [] } };
+  const names = mode === "count" ? [] : admins;
+  const lines = [`Administrators`, `Total administrators: ${total}`, ...names.map((a, i) => `${i + 1}. ${a.name} — Admin`)];
+  if (names.length && total > names.length) lines.push(`…and ${total - names.length} more`);
+  return { text: lines.join("\n"), data: { total, members: names } };
+}
 
 async function peopleDirectory(ctx, params, question) {
+  const role = ctx.scope.role;
   const roles = [...new Set(params.roleFilters || (params.roleFilter ? [params.roleFilter] : []))];
-  const { departments: found, availableDepartments } = await runTool("get_department_members", ctx, {
-    question: params.question || question,
-    all: params.all ? "yes" : undefined,
-    roleFilter: roles.length === 1 ? roles[0] : undefined,
-  });
+  const mode = params.mode === "count" || params.mode === "both" ? params.mode : "list";
+  const showNames = mode !== "count";
+  const wantsAdmins = roles.includes("ADMIN");
+  const deptRoles = roles.filter((r) => r !== "ADMIN");
+
+  // Administrators first: an Administrator-only list (the tool policy refuses anyone else, too).
+  let admins = null;
+  if (wantsAdmins) {
+    if (role !== "ADMIN") throw new ChatError(CODES.ACCESS_DENIED, { internal: "admin list for non-admin", message: "Only an Administrator can see who the administrators are. I can show the people of your own departments." });
+    admins = adminsBlock(await runTool("get_admin_users", ctx, {}), mode);
+    if (!deptRoles.length) {
+      return {
+        message: admins.text,
+        data: { people: { title: "Administrators", roles: ["ADMIN"], mode, departments: [], total: admins.data.total, admins: admins.data }, headline: `${plural(admins.data.total, "administrator", "administrators")}.` },
+        navigationTarget: null,
+        suggestedActions: [],
+        useModel: false,
+        ticketNumbers: [],
+      };
+    }
+  }
+
+  const ask = { question: params.question || question, roleFilter: deptRoles.length === 1 ? deptRoles[0] : undefined };
+  let { departments: found, availableDepartments } = await runTool("get_department_members", ctx, { ...ask, all: params.all ? "yes" : undefined });
+  let everyDepartment = Boolean(params.all);
 
   if (!found.length) {
-    return {
-      message: `Which department do you mean? I can list people for: ${availableDepartments.join(", ")}. You can also ask for "employees in each department".`,
-      data: { departments: availableDepartments },
-      navigationTarget: null,
-      suggestedActions: availableDepartments.slice(0, 4).map((d) => ({ label: d, prompt: `show me the people in ${d}` })),
-      state: roles.length ? { frame: { intent: "people_directory", params: { roleFilters: roles, mode: "list" }, at: Date.now() } } : undefined,
-      useModel: false,
-      ticketNumbers: [],
-    };
+    // A department was named that this user does not have: say so, never answer for another one.
+    const named = namedDepartment(params.question || question);
+    if (named) {
+      throw new ChatError(CODES.ACTION_INVALID, {
+        message: `I couldn't find a department called "${toPlainText(named, 40)}"${role === "ADMIN" ? "" : " among the departments you can see"}. You can ask about: ${availableDepartments.join(", ") || "no departments"}.`,
+        suggestions: availableDepartments.slice(0, 4).map((d) => ({ label: d, prompt: `${deptRoles.length === 1 ? `Show ${ROLE_TITLE[deptRoles[0]].toLowerCase()}` : "Show the people"} in ${d}` })),
+      });
+    }
+    // A role, a count or a breakdown with no department: every department this user may see.
+    if (deptRoles.length || mode !== "list" || params.breakdown) {
+      ({ departments: found } = await runTool("get_department_members", ctx, { ...ask, all: "yes" }));
+      everyDepartment = true;
+    } else {
+      return {
+        message: `Which department do you mean? I can list people for: ${availableDepartments.join(", ")}. You can also ask for "employees in each department".`,
+        data: { departments: availableDepartments },
+        navigationTarget: null,
+        suggestedActions: [...availableDepartments.slice(0, 4).map((d) => ({ label: d, prompt: `show me the people in ${d}` })), { label: "All my departments", prompt: "show the people in each department" }],
+        useModel: false,
+        ticketNumbers: [],
+      };
+    }
   }
 
-  // One tool call handles a single role; several roles are filtered here.
-  const departments = roles.length > 1
-    ? found.map((d) => {
-        const members = d.members.filter((m) => roles.includes(ROLE_LABEL_TO_KEY[m.role]));
-        return { ...d, members, total: members.length };
-      })
-    : found;
-  const noun = (n) => (roles.length === 1 ? `${ROLE_NOUN[roles[0]]}${n === 1 ? "" : "s"}` : n === 1 ? "person" : "people");
-  const frame = { intent: "people_directory", params: { question: departments.map((d) => d.name).join(", "), roleFilters: roles, mode: "list" }, at: Date.now() };
-
-  if (params.mode === "count") {
-    return {
-      message: departments.map((d) => `${d.name} has ${d.total} ${noun(d.total)}.`).join("\n"),
-      data: { departmentMembers: departments.map((d) => ({ name: d.name, total: d.total })) },
-      navigationTarget: null,
-      suggestedActions: [],
-      state: { frame },
-      useModel: false,
-      ticketNumbers: [],
-    };
-  }
-
-  const blocks = departments.map((d) => {
-    const lines = d.members.map((m) => `  • ${m.name} — ${m.role}`);
-    if (d.total > d.members.length) lines.push(`  …and ${d.total - d.members.length} more`);
-    const heading = roles.length ? d.name : d.total ? `${d.name} - ${d.total} ${noun(d.total)}` : `${d.name} - no people found`;
-    if (roles.length && !d.total) return `${d.name}: no ${roles.map((r) => `${ROLE_NOUN[r]}s`).join(" or ")} found.`;
-    return [heading, ...lines].join("\n");
+  // The same filter for the count and for the names: the roles asked for, or every department role.
+  const keys = deptRoles.length ? deptRoles : DEPARTMENT_ROLES;
+  const breakdown = Boolean(params.breakdown);
+  const rows = found.map((d) => {
+    const counts = d.counts || {};
+    const total = d.counts ? keys.reduce((n, k) => n + (counts[k] || 0), 0) : d.total;
+    const members = (d.members || []).filter((m) => keys.includes(ROLE_LABEL_TO_KEY[m.role]));
+    return { name: d.name, total, counts: Object.fromEntries(keys.map((k) => [k, counts[k] || 0])), members };
   });
-  const totalPeople = departments.reduce((n, d) => n + d.total, 0);
+  const noun = nounFor(deptRoles);
+  const grand = rows.reduce((n, d) => n + d.total, 0);
+  const roleWord = deptRoles.length ? listWords(deptRoles.map((r) => ROLE_TITLE[r])) : "People";
+  const where = rows.length === 1 && !everyDepartment ? `in ${rows[0].name}` : role === "ADMIN" ? "in all departments" : role === "MANAGER" ? "in your departments" : "in your department";
+  const title = breakdown && rows.length > 1 ? `${roleWord} by department` : `${roleWord} ${where}`;
+  const nounPlural = noun(2);
+
+  // In a list of several departments, departments with nobody of that role are left out (and said once).
+  const shownRows = showNames && rows.length > 1 && !breakdown ? rows.filter((d) => d.total > 0) : rows;
+  const emptyNames = rows.filter((d) => d.total === 0).map((d) => d.name);
+
+  const nameLines = (d) => {
+    const lines = d.members.map((m, i) => `${i + 1}. ${m.name} — ${m.role} — ${d.name}`);
+    if (d.total > d.members.length) lines.push(`…and ${d.total - d.members.length} more`);
+    return lines;
+  };
+
+  let message;
+  if (!grand) {
+    message = rows.length === 1 && !everyDepartment ? `No ${roleWord} were found in the ${rows[0].name} department. Total ${nounPlural}: 0.` : `No ${roleWord} were found ${where}. Total ${nounPlural}: 0.`;
+  } else if (rows.length === 1 && !everyDepartment) {
+    const d = rows[0];
+    const head = [`${roleWord} in ${d.name}`, `Total ${nounPlural}: ${d.total}${!deptRoles.length || breakdown ? ` (${breakdownText(d.counts)})` : ""}`];
+    message = [...head, ...(showNames ? nameLines(d) : [])].join("\n");
+  } else if (!showNames) {
+    const lines = rows.map((d) => `• ${d.name}: ${breakdown || !deptRoles.length ? `${d.total} (${breakdownText(d.counts)})` : d.total}`);
+    message = [title, ...lines, `Total ${nounPlural}: ${grand}`].join("\n");
+  } else {
+    const blocks = shownRows.map((d) => [`${d.name}: ${plural(d.total, noun(1), nounPlural)}${breakdown || !deptRoles.length ? ` (${breakdownText(d.counts)})` : ""}`, ...nameLines(d)].join("\n"));
+    message = [`${title}\nTotal ${nounPlural}: ${grand}`, ...blocks, ...(emptyNames.length && deptRoles.length ? [`No ${roleWord.toLowerCase()} in: ${emptyNames.join(", ")}.`] : [])].join("\n\n");
+  }
+  if (admins) message = `${message}\n\n${admins.text}`;
+
+  const frame = { intent: "people_directory", params: { question: rows.map((d) => d.name).join(", "), roleFilters: deptRoles, mode: "list" }, at: Date.now() };
+  const people = {
+    title,
+    roles: roles.map((r) => ROLE_TITLE[r]),
+    mode,
+    breakdown,
+    scope: everyDepartment ? "every" : "named",
+    total: grand,
+    noun: nounPlural,
+    departments: shownRows.map((d) => ({ name: d.name, total: d.total, counts: d.counts, ...(showNames ? { members: d.members } : {}) })),
+    ...(emptyNames.length && showNames && rows.length > 1 && !breakdown ? { emptyDepartments: emptyNames } : {}),
+    ...(admins ? { admins: admins.data } : {}),
+  };
+  // Asked for a count: offer the names (the same filters), and the other way round.
+  const rolePhrase = deptRoles.length === 1 ? `${ROLE_NOUN[deptRoles[0]]}` : "people";
+  const placePhrase = rows.length === 1 && !everyDepartment ? `in ${rows[0].name}` : "in each department";
+  const suggestedActions = grand
+    ? mode === "count"
+      ? [{ label: "Show their names", prompt: `Show the ${rolePhrase === "people" ? "people" : `${rolePhrase} names`} ${placePhrase}` }]
+      : mode === "list"
+        ? [{ label: "Count only", prompt: `How many ${rolePhrase === "people" ? "people" : `${rolePhrase}s`} are ${placePhrase}?` }]
+        : []
+    : [];
+
   return {
-    message: blocks.join("\n\n"),
-    data: { departmentMembers: departments, headline: departments.length === 1 ? `${departments[0].name}: ${departments[0].total} ${noun(departments[0].total)}.` : `${totalPeople} ${noun(totalPeople)} in ${departments.length} departments.` },
-    navigationTarget: !roles.length && ctx.scope.role === "ADMIN" ? { type: "route", path: "/admin/departments", label: "Open Departments" } : null,
-    suggestedActions: [],
+    message,
+    data: {
+      people,
+      // The earlier shape, kept for existing callers: the departments with their (filtered) members.
+      departmentMembers: shownRows.map((d) => (showNames ? { name: d.name, total: d.total, members: d.members } : { name: d.name, total: d.total })),
+      headline: !grand
+        ? message
+        : rows.length === 1 && !everyDepartment
+          ? `${rows[0].name}: ${plural(rows[0].total, noun(1), nounPlural)}.`
+          : `${plural(grand, noun(1), nounPlural)} ${where}.`,
+    },
+    navigationTarget: !deptRoles.length && role === "ADMIN" ? { type: "route", path: "/admin/departments", label: "Open Departments" } : null,
+    suggestedActions,
     state: { frame },
     useModel: false,
     ticketNumbers: [],
@@ -914,6 +1216,132 @@ async function ticketPeople(ctx, params) {
   return withTicket(ticket, `Ticket ${ticket.ticketNumber} belongs to ${ticket.department}:\n${members.map((m) => `• ${m.name} — ${m.role}`).join("\n")}`, {});
 }
 
+// ---- "how do I transfer a ticket" / "2600011 transfer to Hardware" -----------------------
+// How a ticket is moved to another department, for THIS user: the steps on the ticket page, the rules,
+// and whether they may do it. "May they" is the ticket service's own transfer rule (the one the transfer
+// itself enforces), never a copy. Nothing is changed here; a role that may transfer is offered the
+// confirm-first chat action as a next step.
+const TICKETS_PAGE = { ADMIN: ["/admin/tickets", "Open All Tickets"], MANAGER: ["/agent/queue", "Open Tickets"], TEAMLEAD: ["/agent/queue", "Open Tickets"], EMPLOYEE: ["/portal/my-tickets", "Open My Tickets"] };
+const WHO_CAN_TRANSFER = "Who can transfer: a Manager or Team Lead of the ticket's department, or the employee the ticket is assigned to. Administrators can't transfer tickets.";
+
+async function transferGuidance(ctx, params) {
+  const role = ctx.scope.role;
+  const ticketNumber = params.ticketNumber || (params.useLastTicket ? ctx.lastTicketNumber : null);
+  let ticket = null;
+  let access;
+  if (ticketNumber) {
+    // Only a ticket this user may see (otherwise the usual neutral "not found or no permission").
+    ({ ticket } = await runTool("get_authorized_ticket", ctx, { ticketNumber }));
+    const row = await prisma.ticket.findFirst({ where: { AND: [{ ticketNumber: ticket.ticketNumber }, authorizedWhere(ctx.scope)] }, select: { toDepartmentId: true, assigneeId: true } });
+    try {
+      ticketService.assertCanTransferDepartment(ctx.scope.user, row, ctx.scope.departmentIds);
+      access = { tone: "ok", text: `You can transfer ticket ${ticket.ticketNumber}.` };
+    } catch (err) {
+      access = { tone: "blocked", text: role === "ADMIN" ? `Administrators can't transfer tickets. A Manager or Team Lead of ${ticket.department || "the ticket's department"}, or the employee it is assigned to, can.` : err.message };
+    }
+  } else {
+    access =
+      role === "ADMIN"
+        ? { tone: "blocked", text: "Administrators can't transfer tickets in this application. A Manager or Team Lead of the ticket's department, or the employee it is assigned to, can." }
+        : role === "EMPLOYEE"
+          ? { tone: "info", text: "You can transfer a ticket while it is assigned to you." }
+          : { tone: "info", text: "You can transfer tickets that belong to the departments you manage." };
+  }
+
+  // The destination: any department may receive a transfer (as on the ticket page), so all names are checked.
+  let target = null;
+  let targetNote = null;
+  if (params.department) {
+    const names = (await prisma.department.findMany({ select: { name: true } })).map((d) => d.name);
+    const hit = matchDepartments(params.department, names);
+    if (hit.length === 1) target = hit[0];
+    else targetNote = `I couldn't find a department called "${toPlainText(params.department, 60)}". Pick the department in Transfer To on the ticket page.`;
+    if (target && ticket?.department && target.toLowerCase() === ticket.department.toLowerCase()) targetNote = `Ticket ${ticket.ticketNumber} is already in ${target}.`;
+  }
+
+  const which = ticket ? `ticket ${ticket.ticketNumber}` : "the ticket";
+  const steps = [
+    `Open ${which}${ticket ? " (use Open Ticket below)" : " from your ticket list"}.`,
+    "Select Transfer Department at the top of the ticket page.",
+    `In Transfer To, choose ${target && !targetNote ? target : "the department that should handle it"}.`,
+    "Enter the Transfer Reason (it is required).",
+    "Select Transfer Ticket.",
+  ];
+  const notes = [
+    "The destination department needs an active Manager or Team Lead. Departments without one are marked \"No active management\" and can't receive tickets.",
+    "A ticket can't be transferred to the department it is already in.",
+    "After the transfer the ticket is unassigned until the new department assigns it. The requester and the new department's Managers and Team Leads are notified, with your reason.",
+    WHO_CAN_TRANSFER,
+  ];
+  const canAct = access.tone === "ok" && role !== "ADMIN" && target && !targetNote;
+  if (canAct) access.text += ` I can also do it here: I'll ask for the reason and show a preview before anything changes.`;
+
+  const title = "How to transfer a ticket to another department";
+  const guide = {
+    kind: "transfer",
+    title,
+    ticket: ticket ? { ticketNumber: ticket.ticketNumber, title: ticket.title, department: ticket.department, status: ticket.status, statusLabel: ticket.statusLabel, ticketRouteId: ticket.ticketRouteId } : null,
+    target,
+    targetNote,
+    access,
+    steps,
+    notes,
+  };
+  const [path, label] = TICKETS_PAGE[role] || TICKETS_PAGE.EMPLOYEE;
+  const message = [
+    title,
+    ticket ? `Ticket ${ticket.ticketNumber} is in ${ticket.department || "no department"}${target && !targetNote ? `; the destination is ${target}` : ""}.` : null,
+    targetNote,
+    access.text,
+    `Steps:\n${numbered(steps)}`,
+    `Good to know:\n${notes.map((n) => `• ${n}`).join("\n")}`,
+  ].filter(Boolean).join("\n\n");
+
+  return {
+    message,
+    data: {
+      guide,
+      headline: ticket ? `Here's how to transfer ticket ${ticket.ticketNumber}${target && !targetNote ? ` to ${target}` : ""}.` : "Here's how to transfer a ticket to another department.",
+      ...(ticket ? { lastTicketNumber: ticket.ticketNumber } : {}),
+    },
+    navigationTarget: ticket ? { type: "route", path: `/tickets/${ticket.ticketRouteId}`, label: `Open Ticket ${ticket.ticketNumber}` } : { type: "route", path, label },
+    suggestedActions: canAct ? [{ label: `Transfer ${ticket.ticketNumber} to ${target} here`, prompt: `Transfer ticket ${ticket.ticketNumber} to ${target}` }] : [],
+    useModel: false,
+    ticketNumbers: ticket ? [ticket.ticketNumber] : [],
+  };
+}
+
+// ---- an Employee asking to assign or reassign -------------------------------------------------
+// The application lets only a Manager or Team Lead of the ticket's department assign or reassign
+// (ticket.service.updateTicket's assignment block), even when the ticket is assigned to the Employee.
+// Say so, and what they CAN do with a ticket assigned to them. Nothing is changed.
+async function assignNotAllowed(ctx, params) {
+  let ticket = null;
+  let mine = false;
+  if (params.ticketNumber) {
+    // Only a ticket this user may see (otherwise the usual neutral "not found or no permission").
+    ({ ticket } = await runTool("get_authorized_ticket", ctx, { ticketNumber: params.ticketNumber }));
+    const row = await prisma.ticket.findFirst({ where: { AND: [{ ticketNumber: ticket.ticketNumber }, authorizedWhere(ctx.scope)] }, select: { assigneeId: true } });
+    mine = row?.assigneeId === ctx.scope.userId;
+  }
+  const lines = [
+    `In Solvora only a Manager or Team Lead of the ticket's department${ticket?.department ? ` (${ticket.department})` : ""} can assign or reassign a ticket. Employees can't, even when the ticket is assigned to them.`,
+    mine
+      ? `Ticket ${ticket.ticketNumber} is assigned to you, so you can change its status, add a comment, or transfer it to another department if another team should handle it.`
+      : ticket
+        ? `You can still follow ticket ${ticket.ticketNumber} and add comments to it.`
+        : "While a ticket is assigned to you, you can change its status, add a comment, or transfer it to another department.",
+  ];
+  // A refusal (shown as "Not available for your role"), with what they CAN do as one-click next steps.
+  throw new ChatError(CODES.ACCESS_DENIED, {
+    internal: "employee assign",
+    message: lines.join("\n\n"),
+    suggestions: ticket
+      ? [...(mine ? [{ label: "How to transfer it", prompt: `How do I transfer ticket ${ticket.ticketNumber}` }] : []), { label: "Add a comment", prompt: `Add a comment on ticket ${ticket.ticketNumber}` }, { label: "Show this ticket", prompt: `Show ticket ${ticket.ticketNumber}` }]
+      : [{ label: "Tickets assigned to me", prompt: "Show tickets assigned to me" }],
+  });
+}
+
 function withTicket(ticket, message, data) {
   return {
     message,
@@ -1037,12 +1465,22 @@ async function adminAction(ctx, params) {
   if (parsed.missing?.length) {
     await precheckAction(ctx, parsed);
     const field = parsed.missing[0];
+    let message = (MISSING_QUESTION[field] || (() => "I need one more detail."))(parsed.args, parsed);
+    let suggestedActions = [];
+    // "Assign ticket N" with nobody named: offer the people who can take it (checked like the action itself).
+    if (parsed.action === "assign_ticket" && field === "assignee" && parsed.args.ticket) {
+      const { ticketNumber, people, canSelfAssign } = await assigneeChoices(ctx, parsed);
+      message = people.length || canSelfAssign
+        ? `Who should ticket ${ticketNumber} be assigned to? Pick someone below, or type their name or email.`
+        : `Who should ticket ${ticketNumber} be assigned to? No active employee of its department is available to pick; you can type a name or email.`;
+      suggestedActions = [...(canSelfAssign ? [{ label: "Assign to me", prompt: "me" }] : []), ...people.map((u) => ({ label: u.name, prompt: u.name }))];
+    }
     return {
-      message: (MISSING_QUESTION[field] || (() => "I need one more detail."))(parsed.args, parsed),
+      message,
       data: {},
       state: { clarification: { kind: "action", parsed: { action: parsed.action, args: parsed.args }, required: parsed.required, field, at: Date.now() } },
       navigationTarget: null,
-      suggestedActions: [],
+      suggestedActions,
       useModel: false,
       ticketNumbers: [],
     };
@@ -1053,7 +1491,7 @@ async function adminAction(ctx, params) {
   const message = `I can do that. ${pending.summary} Nothing has been changed yet. Please review the change below and confirm or cancel; this request expires in 10 minutes.`;
   return {
     message,
-    data: { pendingAction: { id: pending.id, title: pending.title, summary: pending.summary, impact: pending.impact, expiresAt: pending.expiresAt, confirmationToken: pending.confirmationToken } },
+    data: { pendingAction: { id: pending.id, title: pending.title, summary: pending.summary, impact: pending.impact, expiresAt: pending.expiresAt, confirmationToken: pending.confirmationToken, ...(pending.edit ? { edit: pending.edit } : {}) } },
     navigationTarget: null,
     suggestedActions: [],
     useModel: false,
@@ -1199,6 +1637,8 @@ const HANDLERS = {
   ticket_dates: ticketDates,
   ticket_attachments: ticketAttachments,
   ticket_people: ticketPeople,
+  transfer_guidance: transferGuidance,
+  assign_not_allowed: assignNotAllowed,
   search_tickets: (ctx, p) => listTickets(ctx, { ...p, filter: p.filter || "any", title: p.title || `Tickets matching "${p.text}"` }),
   list_departments: listDepartments,
   people_directory: peopleDirectory,

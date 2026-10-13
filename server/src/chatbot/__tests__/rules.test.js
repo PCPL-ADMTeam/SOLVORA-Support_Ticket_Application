@@ -67,7 +67,8 @@ describe("rule engine: equivalent questions map to the same intent", () => {
     expect(c("Show my open tickets", "EMPLOYEE").intent).toBe("list_tickets");
     expect(c("How do I change my password?", "EMPLOYEE").intent).toBe("change_password");
     expect(c("tell me the department names").intent).toBe("list_departments");
-    expect(c("Show employee count by department").intent).toBe("department_headcount");
+    // A people count per department (scoped to the user's departments), Employees only.
+    expect(c("Show employee count by department")).toMatchObject({ intent: "people_directory", params: { roleFilters: ["EMPLOYEE"], mode: "count", all: true } });
     expect(c("Generate weekly ticket report").intent).toBe("weekly_report");
     expect(c("Show SLA breaches").intent).toBe("sla_approaching");
   });

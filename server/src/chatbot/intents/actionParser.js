@@ -165,10 +165,19 @@ const RULES = [
     re: new RegExp(`^(?:please\\s+)?close\\s+ticket\\s+#?(\\S+?)(?:\\s+(?:with\\s+reason|reason|because|since|saying)\\s*[:\\-]?\\s*(.+?))?${END}`, "i"),
     args: (m) => ({ ticket: clean(m[1]), reason: clean(m[2]) }),
   },
+  // "assign ticket 2600013 to Kamalesh", optionally "with note: check the VPN first" (the Assign dialog's
+  // optional instructions, which go into the assignment email). "to me" is a Team Lead's Assign to Me.
   {
     action: "assign_ticket",
-    re: new RegExp(`^(?:please\\s+)?(?:assign|reassign)\\s+ticket\\s+#?(\\S+)\\s+to\\s+${NAME}${END}`, "i"),
-    args: (m) => ({ ticket: clean(m[1]), assignee: clean(m[2]) }),
+    re: new RegExp(`^(?:please\\s+)?(?:assign|reassign)\\s+ticket\\s+#?(\\S+)\\s+to\\s+${NAME}(?:\\s*[,;]?\\s+(?:with\\s+(?:a\\s+|the\\s+)?(?:note|comment|instructions?|message)|note|saying)\\s*[:\\-]?\\s*(.+?))?${END}`, "i"),
+    args: (m) => ({ ticket: clean(m[1]), assignee: clean(m[2]), note: clean(m[3]) }),
+    guard: (a) => shortName(a.assignee),
+  },
+  // "assign ticket 2600013" with nobody named: ask who (the eligible people are offered).
+  {
+    action: "assign_ticket",
+    re: new RegExp(`^(?:please\\s+)?(?:assign|reassign)\\s+(?:the\\s+)?ticket\\s+#?(\\S+?)${END}`, "i"),
+    args: (m) => ({ ticket: clean(m[1]) }),
   },
   {
     action: "transfer_ticket",
@@ -249,8 +258,28 @@ const REDIRECTS = [
   { key: "escalate_ticket", re: /^(?:please\s+)?escalate\b/i },
 ];
 
+// The ways people actually ask for an assignment, rewritten to the one form the rules read:
+//   "2600013 assign to Kamalesh"        -> "assign ticket 2600013 to Kamalesh"
+//   "Assign 2600013 to kamal@x.com"     -> "assign ticket 2600013 to kamal@x.com"
+//   "2600013 assign ticket"             -> "assign ticket 2600013"
+//   "assign Kamalesh to ticket 2600013" -> "assign ticket 2600013 to Kamalesh"
+// plus common misspellings ("asign", "assing", "assgin"). Only messages with a ticket number change.
+function normalizeAssignPhrases(text) {
+  let t = text.replace(/\b(re-?)?(?:asign|assing|assgin|asssign|assigne|assin|asing)(ed)?\b/gi, (_, re, ed) => `${re ? "reassign" : "assign"}${ed || ""}`).replace(/\bre-assign/gi, "reassign");
+  const VERB = "(reassign|assign)";
+  const REF = "#?(\\d{5,12})";
+  // Only the command form ("assign"), never "assigned" ("2600013 assigned to me?" is a question).
+  let m = t.match(new RegExp(`^(?:please\\s+)?(?:ticket\\s+)?${REF}\\s+${VERB}(?:\\s+(?:the\\s+|this\\s+)?ticket)?(?:\\s+(?:it\\s+)?to\\s+(.+))?$`, "i"));
+  if (m) return `${m[2].toLowerCase()} ticket ${m[1]}${m[3] ? ` to ${m[3]}` : ""}`;
+  m = t.match(new RegExp(`^(?:please\\s+)?${VERB}\\s+(.+?)\\s+to\\s+(?:the\\s+)?(?:ticket\\s+)?${REF}\\s*[.!?]*$`, "i"));
+  if (m && !/\bticket\b/i.test(m[2])) return `${m[1].toLowerCase()} ticket ${m[3]} to ${m[2]}`;
+  m = t.match(new RegExp(`^(?:please\\s+)?${VERB}\\s+(?:the\\s+)?${REF}\\b(.*)$`, "i"));
+  if (m) t = `${m[1].toLowerCase()} ticket ${m[2]}${m[3]}`;
+  return t;
+}
+
 function parseAction(message) {
-  const text = normalizeStatusPhrases(String(message).trim());
+  const text = normalizeAssignPhrases(normalizeStatusPhrases(String(message).trim()));
   const emp = text.match(ADD_EMPLOYEE);
   if (emp && shortName(emp[1]) && shortName(emp[3])) {
     return { action: "add_employee", args: { name: clean(emp[1]), email: clean(emp[2]), department: clean(emp[3]) }, required: ACTION_REQUIRED.add_employee };

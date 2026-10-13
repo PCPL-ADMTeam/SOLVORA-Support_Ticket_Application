@@ -50,7 +50,6 @@ describe("authentication and validation", () => {
     for (const c of [
       request(app).post("/api/v1/chatbot/drafts/review").send(body()),
       request(app).get("/api/v1/chatbot/drafts/cc-search?q=al"),
-      request(app).get("/api/v1/chatbot/drafts/attachments/x"),
     ]) {
       const res = await c;
       expect(res.status).toBe(401);
@@ -67,30 +66,19 @@ describe("authentication and validation", () => {
 });
 
 describe("the whole session over HTTP", () => {
-  test("form -> files in place -> CC search -> Review Ticket -> Raise Ticket creates one ticket", async () => {
-    // The ticket service saves each file on the ticket it creates; this stand-in records that, so the answer can be checked.
-    const create = jest.spyOn(ticketService, "createTicket").mockImplementation(async (_user, _payload, files) => {
-      files.forEach((f) => prisma.__db.ticketAttachments.push({ ticketId: "id_2600099", fileName: f.originalname }));
-      return { id: "id_2600099", ticketNumber: "2600099", status: "OPEN" };
-    });
+  test("the chat no longer accepts files: the old attachment endpoints do not exist", async () => {
+    const { cid } = await open();
+    const up = await request(app).post("/api/v1/chatbot/drafts/attachments").set(as("empA")).field("conversationId", cid).attach("files", png, { filename: "shot.png", contentType: "image/png" });
+    const get = await request(app).get("/api/v1/chatbot/drafts/attachments/x").query({ conversationId: cid }).set(as("empA"));
+    const del = await request(app).delete("/api/v1/chatbot/drafts/attachments/x").query({ conversationId: cid }).set(as("empA"));
+    for (const res of [up, get, del]) expect(res.status).toBe(404);
+  });
+
+  test("form -> CC search -> Review Ticket -> Raise Ticket creates one ticket, with no files", async () => {
+    const create = jest.spyOn(ticketService, "createTicket").mockResolvedValue({ id: "id_2600099", ticketNumber: "2600099", status: "OPEN" });
     const { cid, draft } = await open();
     expect(draft.options.departments).toContain("Finance");
-
-    // A file added through the form: the answer is just the updated draft, not a chat message.
-    const up = await request(app).post("/api/v1/chatbot/drafts/attachments").set(as("empA")).field("conversationId", cid).field("quiet", "1").attach("files", png, { filename: "shot.png", contentType: "image/png" });
-    expect(up.status).toBe(200);
-    expect(up.body.data.quiet).toBe(true);
-    const att = up.body.data.data.ticketDraft.attachments[0];
-    expect(att).toMatchObject({ name: "shot.png", mimeType: "image/png" });
-
-    // Open it: only the owner, shown inline with safe headers.
-    const open1 = await request(app).get(`/api/v1/chatbot/drafts/attachments/${att.id}`).query({ conversationId: cid }).set(as("empA"));
-    expect(open1.status).toBe(200);
-    expect(open1.headers["content-type"]).toMatch(/image\/png/);
-    expect(open1.headers["content-disposition"]).toMatch(/^inline/);
-    expect(open1.headers["x-content-type-options"]).toBe("nosniff");
-    const stranger = await request(app).get(`/api/v1/chatbot/drafts/attachments/${att.id}`).query({ conversationId: cid }).set(as("empB"));
-    expect(stranger.status).toBeGreaterThanOrEqual(400);
+    expect(draft.createPage).toMatchObject({ path: "/portal/new-ticket" });
 
     // CC people.
     const found = await request(app).get("/api/v1/chatbot/drafts/cc-search").query({ conversationId: cid, q: "Bob" }).set(as("empA"));
@@ -101,7 +89,7 @@ describe("the whole session over HTTP", () => {
     const rev = await request(app).post("/api/v1/chatbot/drafts/review").set(as("empA")).send({ ...body({ ccUserIds: ["u_empB"] }), conversationId: cid });
     expect(rev.status).toBe(200);
     expect(rev.body.data.data.pendingAction.title).toBe("Raise ticket");
-    expect(rev.body.data.message).toContain("shot.png");
+    expect(rev.body.data.message).not.toMatch(/Attachments/);
     expect(create).not.toHaveBeenCalled();
 
     // The one final action.
@@ -112,9 +100,7 @@ describe("the whole session over HTTP", () => {
     expect(create).toHaveBeenCalledTimes(1);
     const [, payload, files] = create.mock.calls[0];
     expect(payload.ccUserIds).toEqual(["u_empB"]);
-    expect(files.map((f) => f.originalname)).toEqual(["shot.png"]);
-    expect(prisma.__db.ticketAttachments.map((x) => x.fileName)).toEqual(["shot.png"]); // associated with the created ticket
-    expect(done.body.data.message).not.toMatch(/could be saved/);
+    expect(files).toEqual([]);
   });
 
   test("a refused form answers 4xx with a clear message, and the form can be corrected and sent again", async () => {
