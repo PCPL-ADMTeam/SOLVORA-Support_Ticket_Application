@@ -4,6 +4,7 @@ import PendingActionsIcon from "@mui/icons-material/PendingActions";
 import TaskAltIcon from "@mui/icons-material/TaskAlt";
 import HourglassBottomIcon from "@mui/icons-material/HourglassBottom";
 import PauseCircleOutlineIcon from "@mui/icons-material/PauseCircleOutline";
+import ArchiveIcon from "@mui/icons-material/Archive";
 import KpiCard from "./KpiCard";
 import StatusPieChart from "./StatusPieChart";
 import PriorityBarChart from "./PriorityBarChart";
@@ -87,7 +88,7 @@ export default function TicketStatsSummary({
           <KpiCard label="Resolved" value={kpis.resolved} color="#0ca30c" icon={<TaskAltIcon />} onClick={() => goToTickets({ status: "RESOLVED" })} />
         </Box>
         <Box sx={{ flex: { xs: "1 1 45%", sm: "1 1 30%", md: "1 1 0" }, minWidth: 0 }}>
-          <KpiCard label="Closed" value={kpis.closed} color="#898781" onClick={() => goToTickets({ status: "CLOSED" })} />
+          <KpiCard label="Closed" value={kpis.closed} color="#898781" icon={<ArchiveIcon />} onClick={() => goToTickets({ status: "CLOSED" })} />
         </Box>
       </Box>
 

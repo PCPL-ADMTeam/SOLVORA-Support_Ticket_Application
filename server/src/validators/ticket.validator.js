@@ -119,7 +119,7 @@ const listTicketsValidator = [
   query("page").optional().isInt({ min: 1 }),
   query("limit").optional().isInt({ min: 1, max: 100 }),
   query("departmentId").optional().isString(),
-  query("scope").optional().isIn(["created", "assigned", "authorized"]),
+  query("scope").optional().isIn(["created", "assigned", "authorized", "department"]),
 ];
 
 module.exports = {

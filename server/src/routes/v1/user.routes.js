@@ -32,7 +32,9 @@ router.get("/me/department-access", userController.myDepartmentAccess);
 // is not itself an "assign" action (that power is enforced separately, at
 // updateTicket/bulkUpdate, where Admin is rejected regardless of what this
 // endpoint returns), so Admin keeps this pre-existing read capability.
-router.get("/assignable-agents", requireRole("ADMIN", "MANAGER", "TEAMLEAD"), userController.assignableEmployees);
+// EMPLOYEE gets only their own department's people, for the Department
+// Tickets Assignee filter (see user.service.js#listAssignableEmployees).
+router.get("/assignable-agents", requireRole("ADMIN", "MANAGER", "TEAMLEAD", "EMPLOYEE"), userController.assignableEmployees);
 
 // Everything else is Admin-only user management.
 router.use(requireRole("ADMIN"));

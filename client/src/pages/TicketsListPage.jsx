@@ -45,6 +45,7 @@ export default function TicketsListPage({
   showDepartment = true,
   showDepartmentFilter,
   showAssignedFilter,
+  assignedFilterLabel,
   showBulkActions,
   highlightUnassigned,
   hideHeading = false,
@@ -154,6 +155,7 @@ export default function TicketsListPage({
         showAssigneeFilter={showAssigneeFilter}
         showDepartmentFilter={showDepartmentFilter}
         showAssignedFilter={showAssignedFilter}
+        assignedFilterLabel={assignedFilterLabel}
       />
 
       {showBulkActions && selected.length > 0 && (

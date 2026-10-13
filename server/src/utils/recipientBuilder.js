@@ -108,6 +108,36 @@ async function buildAssignedOrCommentRecipients(ticket) {
   return { userIds, ccUserIds };
 }
 
+// TICKET_COMMENT_ADDED only (public comments):
+//   Assigned:   TO = the assignee
+//               CC = the requester + every ACTIVE TEAMLEAD + every ACTIVE
+//                    MANAGER of the ticket's CURRENT department + Custom CC
+//   Unassigned: TO = the requester
+//               CC = every ACTIVE TEAMLEAD + every ACTIVE MANAGER of the
+//                    ticket's CURRENT department + Custom CC
+// Unlike buildAssignedOrCommentRecipients (still used by TICKET_ASSIGNED/
+// REASSIGNED), an unassigned ticket never leaves TO empty, so the comment
+// email is never skipped. An empty Team Lead or Manager list simply
+// contributes nobody. The To id is removed from CC here; address-level
+// (case-insensitive) dedupe and invalid/inactive filtering happen in
+// notification.service.js#notify.
+async function buildCommentRecipients(ticket) {
+  const [teamLeads, managers, ticketCcUserIds] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(ticket.toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(ticket.toDepartmentId),
+    getTicketCcUserIds(ticket.id),
+  ]);
+  const toId = ticket.assigneeId || ticket.requesterId || null;
+  const userIds = toId ? [toId] : [];
+  const ccUserIds = [
+    ...new Set(
+      [ticket.assigneeId ? ticket.requesterId : null, ...teamLeads.map((u) => u.id), ...managers.map((u) => u.id), ...ticketCcUserIds]
+        .filter(Boolean)
+    ),
+  ].filter((id) => id !== toId);
+  return { userIds, ccUserIds };
+}
+
 // TICKET_STATUS_CHANGED, TICKET_RESOLVED, TICKET_CLOSED, TICKET_REOPENED, and
 // TICKET_UPDATED only:
 //   TO = the requester ONLY
@@ -161,6 +191,7 @@ module.exports = {
   buildCreatedRecipients,
   buildStandardRecipients,
   buildAssignedOrCommentRecipients,
+  buildCommentRecipients,
   buildRequesterOnlyRecipients,
   buildSelfAssignedRecipients,
   getTicketCcUserIds,

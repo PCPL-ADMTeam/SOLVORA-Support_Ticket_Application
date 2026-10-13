@@ -13,6 +13,7 @@
     "prisma:studio": "prisma studio",
     "seed": "node prisma/seed.js",
     "test": "jest --runInBand",
+    "test:db": "jest --runInBand",
     "test:chatbot": "jest --config jest.regression.config.js --runInBand",
     "test:chatbot:employee": "jest --config jest.regression.config.js --runInBand -t \"^EMPLOYEE\"",
     "test:chatbot:teamlead": "jest --config jest.regression.config.js --runInBand -t \"^TEAMLEAD\"",
