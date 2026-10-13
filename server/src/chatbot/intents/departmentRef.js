@@ -19,7 +19,10 @@ const GENERIC_TOPIC = new Set(["support", "help", "helpdesk", "service", "servic
 const WORD = "[a-z0-9][a-z0-9&/\\-]*";
 
 // A date or a time word is never a department ("tickets from 2026-09-30 to 2026-10-07", "tickets of last week").
-const DATE_LIKE = /(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![a-z])\.?\s*\d|\d\s*(?:st|nd|rd|th)?\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\b(?:today|yesterday|week|month|year|days?)\b)/i;
+const DATE_LIKE = /(?:\d{4}-\d{2}-\d{2}|\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)(?![a-z])\.?\s*\d|\d\s*(?:st|nd|rd|th)?\s*(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)|\b(?:today|yesterday|week|month|year|days?|since|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b)/i;
+
+// A time phrase at the end ("... in BI since Monday", "... in Hardware this week") is not part of the department name.
+const TRAILING_TIME = /\s+(?:since|after|before|until|till|from\s+(?:last\s+)?(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*|(?:this|last|past|previous)\s+(?:week|month|year|\d+\s+days?)|today|yesterday)\b.*$/;
 
 function clean(raw) {
   if (!raw || DATE_LIKE.test(raw)) return null;
@@ -29,7 +32,8 @@ function clean(raw) {
 }
 
 // m: lower-cased, normalized message. Returns department text or null.
-function departmentRef(m) {
+function departmentRef(raw) {
+  const m = raw.replace(TRAILING_TIME, "");
   // "... in/of/for/from the <name> department|team"
   let hit = m.match(new RegExp(`\\b(?:in|of|for|from|under|to)\\s+(?:the\\s+)?((?:${WORD}\\s+){0,2}${WORD})\\s+(?:department|dept|team)\\b`));
   let name = hit && clean(hit[1]);

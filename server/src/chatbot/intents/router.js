@@ -5,6 +5,13 @@ const knowledge = require("../knowledge");
 const { departmentRef, topicBeforeTickets, STOP } = require("./departmentRef");
 const { parseFrame, personLookup } = require("./queryFrame");
 const { TICKET_REF_PATTERN } = require("../tools/ticketTools");
+const { extractDateRange } = require("../entities/dates");
+
+// A creation-date window named in a report question ("this month", "since Monday"), as report parameters.
+function periodOf(m) {
+  const r = extractDateRange(m);
+  return r && !r.ambiguous ? { dateFrom: r.from, dateTo: r.to, period: r.label } : {};
+}
 
 // Deterministic, allow-listed intent router. It reads ONLY the user's own
 // message and the server-derived role. It never reads ticket content, so text
@@ -137,6 +144,8 @@ function wantsStaffScope(m, role) {
 }
 
 function statsScopeWord(m, role) {
+  // "my department's statistics" is about the department, not "my" tickets.
+  if (/\b(?:my|our)\s+(?:own\s+)?(?:departments?|depts?|team)\b/.test(m)) return "department";
   if (/\b(my|mine)\b/.test(m)) return "mine";
   if (/\b(overall|system|company|organization|everything|all tickets)\b/.test(m)) return "overall";
   if (/\b(team|department|dept)\b/.test(m)) return "department";
@@ -207,7 +216,9 @@ function classifyRules(message, role) {
   const bare = m.match(/^(?:(?:show|list|get|see|display|give)(?: me)?(?: all)?(?: the)? )?(my )?(open|closed|resolved|solved|reopened|on hold|in progress|pending|waiting|(?:high|low|medium) priority|critical|urgent|high)(?: tickets?| ones| items)?[.?!]*$/);
   if (bare) {
     const what = bare[2] === "solved" ? "resolved" : bare[2] === "high" ? "high priority" : bare[2];
-    const rewritten = `show ${role === "EMPLOYEE" || bare[1] ? "my " : ""}${what} tickets`;
+    // "my" only when it was said: an Employee's bare "resolved" may mean their own tickets or their department's
+    // (the list handler asks when it is unclear).
+    const rewritten = `show ${bare[1] ? "my " : ""}${what} tickets`;
     if (rewritten !== m) return classifyRules(rewritten, role);
   }
 
@@ -220,12 +231,19 @@ function classifyRules(message, role) {
     if (/\b(?:priority|priorities)\s+(?:summary|breakdown|distribution)\b|\btickets?\s+by\s+priority\b/.test(m)) return { intent: "dashboard_overview", params: { view: "priority" } };
     if (/\bstatus\s+(?:summary|breakdown|distribution)\b|\btickets?\s+by\s+status\b/.test(m)) return { intent: "dashboard_overview", params: { view: "status" } };
   }
+  // "Who's got the most tickets in my team?", "who has the fewest open tickets in Hardware": people ranked by their
+  // workload (the dashboard's own numbers), never a plain ticket list.
+  const whoMost = m.match(/^(?:and\s+)?who(?:'s| is| has| have)?(?:\s+(?:got|has|have|handling|holding|working on))?\s+(?:the\s+)?(most|highest|maximum|fewest|least|lowest)\b.{0,30}\btickets?\b(?:.*?\b(?:in|of|for)\s+(?:the\s+)?(.+?)(?:\s+(?:department|dept|team))?)?\s*[?.!]*$/);
+  if (whoMost) {
+    const named = whoMost[2] && !/^(?:my|our|the|this)\b/.test(whoMost[2]) ? whoMost[2].trim() : null;
+    return { intent: "dashboard_overview", params: { view: "workload", rank: /fewest|least|lowest/.test(whoMost[1]) ? "fewest" : "most", ...(named ? { department: named } : {}) } };
+  }
   if (/\b(?:employee|agents?|staff)\s+workload\b|\bdepartment\s+workload\b/.test(m)) {
     const dep = m.match(/\b(?:in|of|for)\s+(?:the\s+)?(.+?)(?:\s+department)?\s*[?.!]*$/);
     const named = dep && !/\b(?:my|each|every|all)\b/.test(dep[1]) ? dep[1].trim() : null;
     return { intent: "dashboard_overview", params: { view: "workload", ...(named ? { department: named } : {}) } };
   }
-  if (/\bdepartments?\s+summary\b|\bsummary\s+by\s+department\b/.test(m) && !/\bticket\b/.test(m.replace(/\bsummary by department\b/, ""))) return { intent: "tickets_by_department", params: {} };
+  if (/\bdepartments?\s+summary\b|\bsummary\s+by\s+department\b/.test(m) && !/\bticket\b/.test(m.replace(/\bsummary by department\b/, ""))) return { intent: "tickets_by_department", params: periodOf(m) };
 
   // "Search employee" / "tickets assigned to an employee": nobody was named, so ask who.
   if (/^(?:search|find|look up)(?: for)?(?: an?| the)? (?:employee|user|person|colleague)[?.!]*$/.test(m) || /\b(?:assigned to|raised by|handled by)\s+(?:an?|any|some)\s+(?:employee|person|user|member)\b/.test(m)) return { intent: "ask_person", params: {} };
@@ -319,12 +337,12 @@ function classifyRules(message, role) {
   // Ranking departments by tickets: "which department has the most open tickets".
   if (/department.{0,40}(most|highest|largest|biggest|maximum|fewest|least|lowest).{0,40}tickets?|(most|highest|fewest|least|lowest).{0,30}tickets?.{0,30}department/.test(m)) {
     const rank = /fewest|least|lowest/.test(m) ? "fewest_open" : /open/.test(m) ? "most_open" : "most_total";
-    return { intent: "tickets_by_department", params: { rank } };
+    return { intent: "tickets_by_department", params: { rank, ...periodOf(m) } };
   }
   if (
     /tickets?.{0,40}(each|every|per|by|all)\s+departments?|department.?wise|tickets? (raised|routed|sent|submitted|assigned) to (each|every|all|the)\b.{0,20}department|departments?.{0,20}(breakdown|split|distribution)|(breakdown|split|distribution).{0,25}departments?|group.{0,15}by departments?/.test(m)
   ) {
-    return { intent: "tickets_by_department", params: {} };
+    return { intent: "tickets_by_department", params: periodOf(m) };
   }
   // "display critical tickets assigned to Finance" — priority + department filter.
   const prioDept = m.match(/^(?:show|list|find|get|give me)\s+(?:me\s+)?(?:all\s+)?(low|medium|high|critical)\s+(?:priority\s+)?tickets?(?:\s+(?:assigned to|for|in|of|belonging to|raised (?:to|for))\s+(?:the\s+)?(.+?)(?:\s+department)?)?\s*[?.!]*$/);

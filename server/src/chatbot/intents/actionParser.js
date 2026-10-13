@@ -205,8 +205,9 @@ const RULES = [
   //   add a comment on ticket 2600007            (asks what it should say)
   {
     action: "change_ticket_status",
-    re: new RegExp(`^(?:please\\s+)?(resolve|solve)\\s+(?:the\\s+)?ticket\\s+#?(?:number\\s+)?(\\S+?)${END}`, "i"),
-    args: (m) => ({ ticket: clean(m[2]), status: "resolved" }),
+    // "resolve ticket 2600007", "resolve ticket 2600007 because the cable was replaced" (the reason = resolution notes).
+    re: new RegExp(`^(?:please\\s+)?(resolve|solve)\\s+(?:the\\s+)?ticket\\s+#?(?:number\\s+)?(\\S+?)(?:\\s+(?:with\\s+(?:resolution\\s+)?notes?|notes?|reason|because|since|as)\\s*[:\\-]?\\s*(.+?))?${END}`, "i"),
+    args: (m) => ({ ticket: clean(m[2]), status: "resolved", ...(m[3] ? { reason: clean(m[3]) } : {}) }),
   },
   {
     action: "add_ticket_comment",

@@ -2,7 +2,7 @@
 // Expectations come from the application's own services (see scenarios.js).
 const { add, each, web, OPEN, status, prio, inDept, assignedTo, and, forbiddenFor, noWrite, outsideAccess, own } = require("./scenarios");
 const { OUTSIDE_BI } = require("./data");
-const { outcomeOf } = require("./harness");
+const { outcomeOf, getAccessibleTickets } = require("./harness");
 
 const ROLES = ["EMPLOYEE", "TEAMLEAD", "MANAGER", "ADMIN"];
 const jamie = (t) => t.assignee?.name === "Jamie User" || t.requester?.name === "Jamie User";
@@ -15,9 +15,30 @@ const SHORT = [
   ["high priority tickets", prio("High")], ["high priority", prio("High")], ["high tickets", prio("High")], ["critical tickets", prio("Critical")],
   ["BI/Copilot tickets", inDept("BI/Copilot")],
 ];
+// An Employee's bare filter ("resolved", "open tickets") may mean their own tickets (Raised By Me / Assigned To Me) or
+// their Department Tickets. Expected from the backend's own tab counts: two or more tabs with tickets -> the assistant
+// asks, showing exactly those counts; only one personal tab and an empty department -> that list; none of their own ->
+// "you have none", naming the department's count.
+const employeeChoice = (pred) => async (r) => {
+  const count = async (scope) => (await getAccessibleTickets("EMPLOYEE", { scope })).filter(pred).length;
+  const want = { raised: await count("created"), assigned: await count("assigned"), dept: await count("department") };
+  const mine = [want.raised, want.assigned].filter(Boolean).length;
+  const o = outcomeOf(r);
+  if (mine >= 2 || (mine === 1 && want.dept)) {
+    return o === "CLARIFY" && JSON.stringify(r.data?.counts) === JSON.stringify(want) ? null : `expected a question with the counts ${JSON.stringify(want)}, got ${o} ${JSON.stringify(r.data?.counts || null)}`;
+  }
+  if (mine === 1) return o === "DATA" ? null : `expected the one personal list, got ${o}`;
+  return o === "NO_DATA" && (!want.dept || String(r.message).includes(`has ${want.dept} `)) ? null : `expected "none of yours" naming the department's ${want.dept}, got ${o}: ${r.message}`;
+};
 each(ROLES, (role) => {
   for (const [text, pred] of SHORT) {
-    add(role, "SHORT_FORMS", `Short form "${text}" is a ticket list`, { say: text, web: web(pred), allPages: true, intent: "list_tickets", suggest: `Show ${own(role)}${text.replace(/ tickets?$/, "")} tickets` });
+    const spec =
+      role !== "EMPLOYEE"
+        ? { web: web(pred), allPages: true }
+        : text === "BI/Copilot tickets"
+          ? { web: web(pred, { scope: "department" }), allPages: true } // their own department, named: Department Tickets
+          : { check: employeeChoice(pred) };
+    add(role, "SHORT_FORMS", `Short form "${text}" is a ticket list`, { say: text, ...spec, intent: "list_tickets", suggest: `Show ${own(role)}${text.replace(/ tickets?$/, "")} tickets` });
   }
 });
 add("EMPLOYEE", "SHORT_FORMS", 'Short form "my tickets"', { say: "my tickets", web: web(() => true), allPages: true, intent: "list_tickets" });

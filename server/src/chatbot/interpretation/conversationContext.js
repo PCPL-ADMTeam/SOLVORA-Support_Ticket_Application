@@ -19,21 +19,30 @@ const CANCEL_WORDS = /^(cancel|never ?mind|nevermind|stop|abort|no|nope|forget i
 const isConfirmWord = (m) => CONFIRM_WORDS.test(m.trim());
 const isCancelWord = (m) => CANCEL_WORDS.test(m.trim());
 
-// "2", "2.", "option 2", or the option's label (case-insensitive).
+// "2", "2.", "option 2", the option's label (case-insensitive), or one of its short answers ("raised", "assigned").
 function pickOption(message, options) {
-  const m = cleanUserMessage(message).toLowerCase();
+  const m = cleanUserMessage(message).toLowerCase().replace(/[.!?]+$/, "").replace(/^(?:the\s+)?/, "").trim();
   const num = m.match(/^(?:option\s*|number\s*|#)?(\d{1,2})\.?$/);
   if (num) return options[Number(num[1]) - 1] || null;
-  return options.find((o) => o.label.toLowerCase() === m) || options.find((o) => m.length >= 3 && o.label.toLowerCase().startsWith(m)) || null;
+  return (
+    options.find((o) => o.label.toLowerCase() === m) ||
+    // A suggestion button sends its prompt ("Show open tickets raised by me").
+    options.find((o) => o.prompt && o.prompt.toLowerCase().replace(/[.!?]+$/, "") === m) ||
+    options.find((o) => m.length >= 3 && o.label.toLowerCase().startsWith(m)) ||
+    options.find((o) => (o.aliases || []).some((a) => m === a || m.startsWith(`${a} `))) ||
+    null
+  );
 }
 
-// Resume the intent that was waiting for a choice, with the SERVER-held id.
+// Resume the intent that was waiting for a choice: with the SERVER-held id, or with the server-built filters the
+// option carries (e.g. "Raised by Me" -> { mine: "requester" }).
 function applySelection(message, selection) {
   if (!fresh(selection)) return null;
   const option = pickOption(message, selection.options);
   if (!option) return null;
   const resume = JSON.parse(JSON.stringify(selection.resume));
-  if (resume.intent === "admin_action") resume.params.parsed.args.userId = option.id;
+  if (option.params) Object.assign(resume.params, option.params);
+  else if (resume.intent === "admin_action") resume.params.parsed.args.userId = option.id;
   else resume.params.userId = option.id;
   return { intent: resume.intent, params: resume.params, chosen: option.label };
 }

@@ -79,7 +79,7 @@ const shared = [
     steps: [
       "Open the ticket and select Edit Ticket.",
       "Change the status. Resolving requires resolution notes, putting on hold requires a reason, and closing requires a closing reason.",
-      "To reopen a Resolved or Closed ticket, select Reopen Ticket or set the status to Reopened.",
+      "To reopen a Resolved or Closed ticket, set the status to Reopened and enter the reason (required); it is saved on the ticket and in its history.",
     ],
     keywords: ["close ticket", "reopen", "re-open", "close a ticket", "reopen ticket"],
   }),

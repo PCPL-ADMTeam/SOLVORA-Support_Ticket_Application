@@ -307,15 +307,27 @@ describe("EMPLOYEE", () => {
     expect((await ask(users.empA, "Summarize ticket 2627001")).error).toBeNull(); // raised by me
   });
 
-  test("same department is not enough: a colleague's ticket is neutral not-found", async () => {
+  // Department Tickets (utils/ticketAccess.js): a colleague's ticket in the Employee's OWN department may be viewed and
+  // publicly commented on; every other change needs operational access. Another department's ticket stays neutral.
+  test("same department: a colleague's ticket is view + public comment only; another department's is neutral", async () => {
     const neutral = "You do not have permission to access this ticket, or the ticket could not be found.";
-    for (const msg of ["Summarize ticket 2627002", "Show history of ticket 2627002", "Add a comment on ticket 2627002: hi", "Close ticket 2627002 reason: x", "Reopen ticket 2627002 because x", "mark ticket 2627002 as resolved: x"]) {
+    expect((await ask(users.empA, "Summarize ticket 2627002")).error).toBeNull();
+    expect((await ask(users.empA, "Show history of ticket 2627002")).error).toBeNull();
+    for (const msg of ["Close ticket 2627002 reason: x", "Reopen ticket 2627002 because x", "mark ticket 2627002 as resolved: x"]) {
+      const r = await ask(users.empA, msg);
+      expect(r.error.code).toBe("CHAT_ACCESS_DENIED");
+      expect(r.message).toMatch(/belongs to your department \(IT Support\), so you can view it and add public comments\. You can't/);
+      expect(r.pendingAction).toBeNull();
+    }
+    // A public comment is allowed (a preview; nothing is written until confirmed).
+    expect((await ask(users.empA, "Add a comment on ticket 2627002: hi")).pendingAction).toBeTruthy();
+    for (const msg of ["Summarize ticket 2627003", "Show history of ticket 2627003", "Add a comment on ticket 2627003: hi", "Close ticket 2627003 reason: x"]) {
       const r = await ask(users.empA, msg);
       expect(r.message).toBe(neutral);
       expect(r.pendingAction).toBeNull();
     }
-    // Department-wide views and reports are not for employees.
-    for (const msg of ["Show team tickets", "Generate weekly ticket report", "Show tickets raised to each department", "who works in IT Support"]) {
+    // Reports, other departments and the people directory are still not for employees.
+    for (const msg of ["Generate weekly ticket report", "Show tickets raised to each department", "who works in IT Support"]) {
       expect((await ask(users.empA, msg)).error.code).toBe("CHAT_ACCESS_DENIED");
     }
     noWrites();

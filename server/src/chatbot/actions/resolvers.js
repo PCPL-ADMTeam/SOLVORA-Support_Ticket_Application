@@ -15,7 +15,12 @@ async function resolveDepartment(text, allowed = null) {
   let rows = await prisma.department.findMany({ select: { id: true, name: true }, orderBy: { name: "asc" } });
   if (allowed) rows = rows.filter((r) => allowed.includes(r.name));
   const exact = rows.filter((r) => norm(r.name) === norm(text));
-  const found = exact.length ? exact : rows.filter((r) => matchDepartments(text, [r.name]).length);
+  let found = exact.length ? exact : rows.filter((r) => matchDepartments(text, [r.name]).length);
+  // A department named by one of its words ("BI" or "Copilot" for "BI/Copilot"), only when exactly one matches.
+  if (!found.length && norm(text).length >= 2) {
+    const byPart = rows.filter((r) => String(r.name).split(/[\s/&,-]+/).some((part) => norm(part) === norm(text)));
+    if (byPart.length === 1) found = byPart;
+  }
   if (found.length === 1) return found[0];
   if (found.length > 1) throw invalid(`"${text}" matches more than one department: ${found.map((f) => f.name).join(", ")}. Please use the exact name.`);
   if (allowed) throw invalid(`I couldn't find a department called "${text}" that you have access to.`);

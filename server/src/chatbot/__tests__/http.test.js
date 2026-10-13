@@ -72,7 +72,8 @@ describe("POST /messages", () => {
   });
 
   test("a role/userId in the body is ignored — the authenticated user decides", async () => {
-    const res = await post("empA", { message: "Show team tickets", role: "ADMIN", userId: "u_admin", portalRole: "ADMIN" });
+    // System-wide statistics are Admin-only: an Employee claiming to be Admin in the body is still an Employee.
+    const res = await post("empA", { message: "Show overall ticket summary", role: "ADMIN", userId: "u_admin", portalRole: "ADMIN" });
     expect(res.status).toBe(200);
     expect(res.body.data.error.code).toBe("CHAT_ACCESS_DENIED");
   });

@@ -69,10 +69,19 @@ async function dashboardOverview(ctx, params) {
   // workload
   const COLUMNS = ["Open", "In progress", "Resolved", "Closed"];
   if (o.workload.length) {
-    const lines = o.workload.map((w) => `• ${w.agentName}: ${w.openTickets} open, ${w.inProgressTickets} in progress, ${w.resolvedTickets} resolved, ${w.closedTickets} closed`);
+    // "Who has the most tickets?": ranked by open tickets (the ones still being worked), computed here from the
+    // dashboard's own numbers; ties are named together.
+    const people = params.rank ? [...o.workload].sort((a, b) => (params.rank === "fewest" ? a.openTickets - b.openTickets : b.openTickets - a.openTickets)) : o.workload;
+    const lines = people.map((w) => `• ${w.agentName}: ${w.openTickets} open, ${w.inProgressTickets} in progress, ${w.resolvedTickets} resolved, ${w.closedTickets} closed`);
     const heading = `Employee workload${departmentName ? ` in ${departmentName}` : ""}`;
-    return reply(`${heading}:\n${lines.join("\n")}`, {
-      data: { overview: { kind: "workload", title: heading, scope: departmentName || label, period: PERIOD, columns: COLUMNS, note: "Open counts every ticket not yet Resolved or Closed.", rows: o.workload.map((w) => ({ label: w.agentName, values: [w.openTickets, w.inProgressTickets, w.resolvedTickets, w.closedTickets] })) }, headline: `${heading}.` },
+    let lead = null;
+    if (params.rank) {
+      const top = people[0].openTickets;
+      const tied = people.filter((w) => w.openTickets === top).map((w) => w.agentName);
+      lead = `${params.rank === "fewest" ? "Fewest" : "Most"} open tickets: ${tied.join(" and ")} (${top}${tied.length > 1 ? " each" : ""}).`;
+    }
+    return reply(`${lead ? `${lead}\n` : ""}${heading}:\n${lines.join("\n")}`, {
+      data: { overview: { kind: "workload", title: heading, scope: departmentName || label, period: PERIOD, columns: COLUMNS, note: "Open counts every ticket not yet Resolved or Closed.", rows: people.map((w) => ({ label: w.agentName, values: [w.openTickets, w.inProgressTickets, w.resolvedTickets, w.closedTickets] })) }, headline: lead || `${heading}.` },
     });
   }
   if (o.departmentWorkload.length) {

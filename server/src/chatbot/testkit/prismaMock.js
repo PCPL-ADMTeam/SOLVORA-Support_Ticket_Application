@@ -36,6 +36,12 @@ const norm = (v) => (isDate(v) ? v.getTime() : v);
 
 function matchField(value, cond) {
   if (cond === null) return value === null || value === undefined;
+  // To-many relation filters on a list held on the row, e.g. a ticket's Custom CC rows: { ccUsers: { some: { userId } } }.
+  if (cond && typeof cond === "object" && ("some" in cond || "none" in cond)) {
+    const rows = Array.isArray(value) ? value : [];
+    if ("some" in cond) return rows.some((r) => matches(r, cond.some));
+    return !rows.some((r) => matches(r, cond.none));
+  }
   if (cond && typeof cond === "object" && !isDate(cond)) {
     if ("in" in cond && !cond.in.includes(value)) return false;
     if ("not" in cond && (cond.not === null ? value === null || value === undefined : norm(value) === norm(cond.not))) return false;

@@ -19,7 +19,7 @@ const { extractDateRange } = require("../entities/dates");
 const GUIDANCE = /^(how (do|can|to|does|should|would)|where|what is|what's|what does|explain|can i|tell me about|steps)/;
 const TICKET_WORD = /\b(tickets?|requests?|cases?)\b/;
 const PEOPLE_WORD = /\b(people|persons?|employees?|users?|staff|members?|managers?|team ?leads?|leads?|admins?|administrators?|everyone|everybody)\b/;
-const ASK = /\b(who|show|list|give|display|see|view|get|find|which|what|how many|count|number of|tell|names?|are there|do i have|have i|any)\b/;
+const ASK = /\b(who|show|list|give|display|see|view|get|find|which|what|how many|count|number of|tell|names?|are there|do i have|have i|any|anything|something)\b/;
 // Questions other rules own (reports, history, guidance about features). "Reported" is a ticket's raising, not a report:
 // "what tickets have I reported", "what tickets are reported in Hardware" are ticket lists.
 const OTHER_OWNER = /(department.?wise|which (?:department|dept)|\b(?:most|highest|fewest|least|lowest|largest|biggest|maximum)\b|summar|statistic|stats|metric|trend|breakdown|report(?!ed\b)|each department|per department|by department|overdue|\bsla\b|escalat|unassigned|stale|histor|timeline|assignments?\b|dashboard|password|profile|notification)/;
@@ -53,9 +53,16 @@ const RAISED_BY = rx(`\\b(?:raised|created|submitted|logged|reported|requested|o
 const POSSESSIVE = rx("((?:[a-z][a-z.-]*\\s+){0,3}[a-z][a-z.-]*)'s\\b");
 
 // Relation to the signed-in user. Never reads a name: "me" means the authenticated user.
+//   requester  raised by me            assignee  assigned to me
+//   both       raised by me OR assigned to me, said explicitly ("raised by me or assigned to me", "associated with me")
+//   cc         tickets I am on the Custom CC list of
+//   either     "my tickets": raised by me, or assigned to me? (the handler asks, or answers both separately)
 function relationToMe(raw) {
   // "my departments" / "my team" name a scope, not "my own tickets".
   const m = raw.replace(/\bmy (departments?|depts?|team)\b/g, "$1");
+  // Custom CC: "tickets I'm CC'd on", "where I am in CC", "tickets I was copied on", "my CC tickets".
+  if (/\bcc'?e?d\b|\b(?:in|on) (?:the )?(?:custom )?cc\b|\bcustom cc\b|\bcc (?:tickets?|list)\b|\bcopied (?:on|in)\b|\bcopied to me\b/.test(m)) return "cc";
+  if (/\b(?:raised|created)(?: by me)? (?:or|and|\/) assigned to me\b|\bassigned to me (?:or|and|\/) (?:raised|created) by me\b|\b(?:raised|created) or assigned\b|\bassigned or (?:raised|created)\b|\bboth raised and assigned\b/.test(m)) return "both";
   if (/\b(?:raised|created|submitted|logged|reported|requested|opened|filed|made|sent)\s+by\s+(?:me|myself)\b/.test(m)) return "requester";
   if (/\b(?:i|i've|i have|we)\s+(?:have\s+)?(?:rais|creat|submit|logg?|report|request|open|fil|mad|mak|sen[dt])\w*\b/.test(m)) return "requester";
   if (/\bmy\s+(?:raised|created|submitted)\b/.test(m)) return "requester";
@@ -63,9 +70,9 @@ function relationToMe(raw) {
   if (/\b(?:raised|created|submitted|logged|filed)\s+(?:tickets?|requests?)\b/.test(m) && !/\bby\s+(?!me\b|myself)\S/.test(m)) return "requester";
   if (/\bassigned\s+(?:tickets?|requests?)\b/.test(m) && !/\bassigned(?:\s+(?:tickets?|requests?))?\s+(?:to|for)\s+(?!me\b|myself|my\b)\S/.test(m)) return "assignee";
   // "Associated with me", "related to me", "involving me": raised by me OR assigned to me (checked before "with me" below).
-  if (/\b(?:associated|related|linked|connected|involved)\s+(?:with|to)\s+(?:me|myself)\b|\b(?:involving|concerning)\s+(?:me|myself)\b|\bi(?:'m| am)\s+involved\b/.test(m)) return "either";
+  if (/\b(?:associated|related|linked|connected|involved)\s+(?:with|to)\s+(?:me|myself)\b|\b(?:involving|concerning)\s+(?:me|myself)\b|\bi(?:'m| am)\s+involved\b/.test(m)) return "both";
   if (/\bam i (?:handling|working|responsible)|\b(?:i need|do i need|i have|i must|i should) to (?:work|handle|look)|\bresponsible for|\bassigned\s+(?:to|for)\s+(?:me|myself)\b|\bassigned\s+to\s+my\b|\b(?:on|with)\s+me\b|\bmy\s+assigned\b|\bi\s+(?:am|'m|have been)\s+(?:assigned|handling|working)\b|\bi'm\s+(?:handling|working)\b/.test(m)) return "assignee";
-  if (/\b(?:my|mine)\b|\b(?:i|i've)\s+have\b|\btickets?\s+i\b|\bdo\s+i\s+have\b|\bhave\s+i\b/.test(m)) return "either";
+  if (/\b(?:my|mine)\b|\b(?:i|i've)\s+have\b|\btickets?\s+i\b|\bdo\s+i\s+have\b|\bhave\s+i\b|\bbelong(?:s|ing)?\s+to\s+me\b|\bof\s+mine\b/.test(m)) return "either";
   return null;
 }
 
@@ -110,13 +117,16 @@ function ticketFrame(m, role) {
   else if (/\b(open|unresolved|active)\b/.test(m) && !/\b(in progress|on hold|resolved|closed|reopened)\b/.test(m)) filter = "open";
 
   const pr = m.match(/\b(low|medium|high|critical)\s+(?:priority\s+)?tickets?\b|\b(low|medium|high|critical)\s+priority\b|\bpriority\s+(low|medium|high|critical)\b/);
-  const flag = mine && mine !== "either" ? mine : null; // requester | assignee
-  // Raised by / assigned to me -> my own tickets. "My department" -> the department view: for an Employee the ticket
-  // tool refuses it (the handler then explains what they can see) instead of silently showing their own tickets.
-  const scope = mine ? "mine" : myDepartment ? "staff" : role === "EMPLOYEE" ? "mine" : "staff";
-  const params = { scope, filter, mode, title: scope === "mine" ? "My Tickets" : myDepartment ? "My Department's Tickets" : "Tickets" };
-  if (flag) params.mine = flag;
-  if (myDepartment && scope === "staff") params.myDepartment = true;
+  // Which tickets (the handler turns this into the final, role-checked scope):
+  //   raised by / assigned to me, both, "my" -> my own tickets ("my" alone is ambiguous: the handler asks)
+  //   CC'd on                                -> the Custom CC view
+  //   "my department"                        -> the portal's Department Tickets (an Employee's own department)
+  //   a named department or person           -> inside the user's department view (an Employee: their own department)
+  //   nothing said                           -> an Employee's own tickets (ambiguous: the handler asks), staff: their departments
+  const scope = mine === "cc" ? "cc" : mine ? "mine" : myDepartment ? "department" : role === "EMPLOYEE" ? (department || subject || person ? "department" : "mine") : "staff";
+  const params = { scope, filter, mode };
+  if (mine && mine !== "cc") params.mine = mine;
+  if (myDepartment) params.myDepartment = true;
   // "show me the closed ticket reasons": the same list, with each ticket's recorded reason.
   if (/\b(reasons?|resolution notes?)\b/.test(m)) params.withReasons = true;
   if (tx) params.text = tx[1].trim().slice(0, 100);
@@ -173,6 +183,8 @@ function dashboardFrame(m, role) {
   const ticketish = /\b(tickets?|requests?|dashboard)\b/.test(m);
   if (!ticketish || /\b(departments?|depts?|teams?|everyone|overall|company|each|per)\b/.test(m)) return null;
   const rel = relationToMe(m);
+  // Tickets I'm CC'd on are not a dashboard tab: the ticket list counts them.
+  if (rel === "cc") return null;
   const view = /\b(how many|count|number of|total number)\b/.test(m) ? "count" : "summary";
   const relParam = rel === "requester" ? "created" : rel === "assignee" ? "assigned" : "both";
   if (view === "count" && (rel || role === "EMPLOYEE") && !personRef(m)) return { intent: "dashboard_summary", params: { view, rel: relParam } };
@@ -219,12 +231,17 @@ function parseFrame(message, role) {
     const people = peopleFrame(m);
     if (people) return people;
   }
-  if (GUIDANCE.test(m)) return null;
+  // "Can I see my completed tickets?" asks for the tickets, not how to do something.
+  const dataRequest = /^(?:can|could|may) (?:i|you) (?:please )?(?:see|view|get|check|look at|show me|list|display|have a look at)\b/.test(m) && TICKET_WORD.test(m);
+  if (GUIDANCE.test(m) && !dataRequest) return null;
   // "Show tickets" with nothing else: which tickets? (Admins just get the list.)
   if (role !== "ADMIN" && /^(?:(?:show|list|display|give|get|see|view)(?: me)?(?: all| the)? )?tickets?[?.!]*$/.test(m)) return { intent: "ticket_scope_question", params: {} };
   const own = notificationFrame(m) || dashboardFrame(m, role);
   if (own) return own;
-  const frame = TICKET_WORD.test(m) && !OTHER_OWNER.test(m) ? ticketFrame(m, role) : peopleFrame(m);
+  // "Anything still open that I raised last week?", "something assigned to me since Monday?": tickets without the word.
+  const rel = relationToMe(m);
+  const implicitTickets = !TICKET_WORD.test(m) && /\b(?:anything|something|stuff)\b/.test(m) && (rel === "requester" || rel === "assignee" || rel === "cc" || (STATUS_OR_PRIORITY.test(m) && /\b(?:i|my|me)\b/.test(m)));
+  const frame = (TICKET_WORD.test(m) || implicitTickets) && !OTHER_OWNER.test(m) ? ticketFrame(m, role) : peopleFrame(m);
   if (frame?.params?.personText) frame.params.personText = originalCase(message, frame.params.personText);
   return frame;
 }

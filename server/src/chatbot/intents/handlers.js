@@ -141,12 +141,19 @@ async function resolveListFilters(params, ctx) {
 // ---- people named in a question -------------------------------------------
 // A name is only ever looked up among the people this user may see (everyone for an Admin,
 // otherwise their own departments). Several matches are never guessed: the user chooses, and
-// the chosen id is held server-side. Employees cannot look other people up at all.
-const personScope = (ctx) => (ctx.scope.role === "ADMIN" ? null : ctx.scope.departmentIds);
+// the chosen id is held server-side. An Employee may name a person only to filter their own
+// department's tickets (the portal's Department Tickets "Assignee" filter offers exactly the people
+// of their department); they cannot look people up otherwise.
+const personScope = (ctx) => (ctx.scope.role === "ADMIN" ? null : ctx.scope.role === "EMPLOYEE" ? (ctx.scope.user.departmentId ? [ctx.scope.user.departmentId] : []) : ctx.scope.departmentIds);
 
-async function resolvePerson(ctx, text, params = {}) {
-  if (ctx.scope.role === "EMPLOYEE") {
-    throw new ChatError(CODES.ACCESS_DENIED, { internal: "employee person lookup", message: "I can only show your own tickets. I can't look up other people." });
+async function resolvePerson(ctx, text, params = {}, { forTickets = false } = {}) {
+  if (ctx.scope.role === "EMPLOYEE" && (!forTickets || !ctx.scope.user.departmentId)) {
+    throw new ChatError(CODES.ACCESS_DENIED, {
+      internal: "employee person lookup",
+      message: forTickets
+        ? "Your account has no department assigned, so there are no department tickets to filter by person. Contact an administrator."
+        : "I can't look up other people from the Employee portal. I can show your department's tickets assigned to someone, for example \"Show my department's tickets assigned to <name>\".",
+    });
   }
   try {
     return await resolveUserArg({ user: text, userId: params.userId }, "user", (v) => String(v).trim(), personScope(ctx));
@@ -179,6 +186,7 @@ async function outsideScopeMessage(ctx, text) {
   const mine = (await visibleDepartmentNames(ctx)) || [];
   const where = mine.length ? ` (${mine.join(", ")})` : "";
   const who = toPlainText(text, 60);
+  if (ctx.scope.role === "EMPLOYEE") return `You can only see the tickets of people in your own department${where}. "${who}" isn't in your department, so I can't show their tickets.`;
   return ctx.scope.role === "TEAMLEAD"
     ? `You don't have access to view employees or tickets of other departments. "${who}" isn't in your department${where}, so I can't show their details or tickets.`
     : `You don't have access to view employees or tickets of other departments. "${who}" isn't in the departments you manage${where}, so I can't show their details or tickets.`;
@@ -192,9 +200,8 @@ async function resolveSubject(ctx, params) {
   } catch (err) {
     if (!(err instanceof ChatError) || err.choices?.length) throw err;
   }
-  if (ctx.scope.role === "EMPLOYEE") throw invalid(`I couldn't find a department called "${params.subject}" that you have access to.`);
   try {
-    return { person: await resolvePerson(ctx, params.subject, params), relation: "either" };
+    return { person: await resolvePerson(ctx, params.subject, params, { forTickets: true }), relation: "either" };
   } catch (err) {
     if (err instanceof ChatError && !err.choices?.length) throw invalid(`I couldn't find a department or person called "${params.subject}" that you have access to.`);
     throw err;
@@ -223,29 +230,37 @@ const titleWords = (s) => s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
 
 // ---- ticket views: which tickets a list shows, its heading, and where to go next ----------------------------
 //
-// Each view is a distinct filter on search_authorized_tickets, always inside the signed-in user's own scope:
-//   mine     -> requester = me OR assignee = me      "My Tickets" (the portal's "My Tickets" tab)
-//   assigned -> assignee = me                        "Tickets Assigned to Me"
-//   raised   -> requester = me                       "Tickets Raised by Me"
-//   dept     -> the departments the user may see     "My Department's Tickets" (Manager / Team Lead; Admin: all)
+// Each view is a distinct filter on search_authorized_tickets, always inside the signed-in user's own scope, and the
+// same dataset as the matching portal tab:
+//   raised   -> requester = me                       "Tickets Raised by Me"     (My Tickets > Raised By Me)
+//   assigned -> assignee = me                        "Tickets Assigned to Me"   (My Tickets > Assigned To Me)
+//   both     -> requester = me OR assignee = me      "Tickets Raised by or Assigned to Me" (only when both are asked for)
+//   dept     -> the portal's Department Tickets      "My Department's Tickets"  (an Employee's own department; a Manager's /
+//                                                     Team Lead's accessible departments; Admin: "All Tickets")
 //   named    -> one named department, inside that   "Tickets in Hardware"
+//   cc       -> tickets I'm on the Custom CC list of "Tickets I'm CC'd On"
+//   search   -> a text search over all I may view   "Tickets" (the portal's global search)
 //   person   -> one named person, inside that        "Tickets assigned to Ravi"
-function ticketView(params, filters, person) {
+// "My tickets" on its own could mean raised by me or assigned to me: see mineChoice.
+function ticketView(scopeName, params, filters, person) {
   if (person) return "person";
+  if (scopeName === "cc") return "cc";
   if (params.mine === "assignee") return "assigned";
   if (params.mine === "requester") return "raised";
-  if (params.scope === "mine") return "mine";
+  if (scopeName === "mine") return "both";
+  if (scopeName === "authorized") return "search";
   return filters.department ? "named" : "dept";
 }
 
 function viewTitle(view, kind, { role, department, who }) {
   const k = titleWords(kind); // "Tickets", "Open Tickets", "High Priority Tickets"
   const where = department ? ` in ${department}` : "";
-  if (view === "mine") return `My ${k}${where}`;
+  if (view === "both") return `${k} Raised by or Assigned to Me${where}`;
   if (view === "assigned") return `${k} Assigned to Me${where}`;
   if (view === "raised") return `${k} Raised by Me${where}`;
+  if (view === "cc") return `${k} I'm CC'd On${where}`;
   if (view === "dept") return role === "ADMIN" ? `All ${k}` : `My Department's ${k}`;
-  if (view === "named") return `${k}${where}`;
+  if (view === "named" || view === "search") return `${k}${where}`;
   return `${cap(kind)} ${who}${where}`;
 }
 
@@ -256,9 +271,9 @@ function departmentScopeText(names) {
   return `your department${names.length === 1 ? "" : "s"} (${shown})`;
 }
 
-// One-click switches to the other views. Only views this role can use are offered: Employees have no department
-// view, a Manager is never a ticket's assignee, and an Admin neither raises nor is assigned tickets. Each prompt is
-// an ordinary question, classified afresh, so it runs the same filter as typing it.
+// One-click switches to the other views. Only views this role can use are offered: an Employee's department view is
+// their own department (and needs one), a Manager is never a ticket's assignee, and an Admin neither raises nor is
+// assigned tickets. Each prompt is an ordinary question, classified afresh, so it runs the same filter as typing it.
 const VIEW_SWITCHES = {
   mine: { label: "My Tickets", prompt: "Show my tickets" },
   assigned: { label: "Assigned to Me", prompt: "Show tickets assigned to me" },
@@ -267,33 +282,41 @@ const VIEW_SWITCHES = {
   deptOpen: { label: "Open in My Department", prompt: "Show open tickets in my department" },
   mineOpen: { label: "My Open Tickets", prompt: "Show my open tickets" },
   mineUnresolved: { label: "My Unresolved Tickets", prompt: "Show my unresolved tickets" },
+  cc: { label: "CC'd to Me", prompt: "Show tickets I'm CC'd on" },
   // An Admin's views (every department).
   allTickets: { label: "All Tickets", prompt: "Show all tickets" },
   allOpen: { label: "All Open Tickets", prompt: "Show all open tickets" },
   unassigned: { label: "Unassigned Tickets", prompt: "Show unassigned tickets" },
 };
 const NEXT_VIEWS = {
-  mine: ["assigned", "raised", "dept"],
+  both: ["assigned", "raised", "dept"],
   dept: ["assigned", "raised", "deptOpen"],
   named: ["dept", "assigned", "raised"],
   assigned: ["raised", "dept", "mineOpen"],
   raised: ["assigned", "dept", "mineUnresolved"],
+  cc: ["raised", "assigned", "dept"],
+  search: ["raised", "assigned", "dept"],
   person: ["dept", "mine"],
 };
-const FALLBACK_VIEWS = ["mine", "mineOpen", "assigned", "raised", "dept", "deptOpen", "allTickets", "allOpen", "unassigned"];
+const FALLBACK_VIEWS = ["mine", "mineOpen", "assigned", "raised", "dept", "deptOpen", "allTickets", "allOpen", "unassigned", "cc"];
 
-function viewAllowed(key, role) {
+function viewAllowed(key, role, hasDepartment = true) {
   if (key.startsWith("all") || key === "unassigned") return role === "ADMIN";
-  if (key.startsWith("dept")) return role === "MANAGER" || role === "TEAMLEAD";
+  if (key.startsWith("dept")) return role !== "ADMIN" && hasDepartment;
   if (key === "assigned") return role === "TEAMLEAD" || role === "EMPLOYEE";
+  if (key === "cc") return true;
   return role !== "ADMIN"; // mine / raised / my open tickets
 }
 
 // Up to `max` views to switch to after a list of `view`, never the one just shown.
-function viewSwitches(view, role, { open = false, plain = false, filter, max = 3 } = {}) {
+function viewSwitches(view, role, { open = false, plain = false, filter, max = 3, hasDepartment = true, empty = false } = {}) {
   const current = new Set();
-  if (plain && ["mine", "dept", "assigned", "raised"].includes(view)) current.add(view);
-  if (open && view === "mine") current.add("mineOpen").add("mineUnresolved");
+  if (plain && ["dept", "assigned", "raised", "cc"].includes(view)) current.add(view);
+  if (plain && view === "both") current.add("mine");
+  // A Manager's "my tickets" ARE the ones they raised (never an assignee): the same list, or (when it is empty) parts of it.
+  if (role === "MANAGER" && view === "raised" && plain) current.add("mine");
+  if (role === "MANAGER" && view === "raised" && empty) current.add("mine").add("mineOpen").add("mineUnresolved");
+  if (open && view === "both") current.add("mineOpen").add("mineUnresolved");
   if (open && view === "dept") current.add("deptOpen");
   // An Admin's department view is every department.
   if (view === "dept" && plain) current.add("allTickets");
@@ -302,7 +325,7 @@ function viewSwitches(view, role, { open = false, plain = false, filter, max = 3
   const keys = [];
   for (const key of [...(NEXT_VIEWS[view] || []), ...(view === "person" || view === "named" ? [] : FALLBACK_VIEWS)]) {
     if (keys.length >= max) break;
-    if (current.has(key) || keys.includes(key) || !viewAllowed(key, role)) continue;
+    if (current.has(key) || keys.includes(key) || !viewAllowed(key, role, hasDepartment)) continue;
     // "My open tickets" and "my unresolved tickets" are the same list: offer one.
     if ((key === "mineOpen" && keys.includes("mineUnresolved")) || (key === "mineUnresolved" && keys.includes("mineOpen"))) continue;
     keys.push(key);
@@ -311,8 +334,8 @@ function viewSwitches(view, role, { open = false, plain = false, filter, max = 3
 }
 
 // After a ticket list: the other views first, then narrowing steps on this same list, three at most.
-function listSuggestions(view, role, { open, plain, refine, params, filters }) {
-  const out = viewSwitches(view, role, { open, plain, filter: params.filter });
+function listSuggestions(view, role, { open, plain, refine, params, filters, hasDepartment }) {
+  const out = viewSwitches(view, role, { open, plain, filter: params.filter, hasDepartment });
   if (refine) {
     const offersOpen = out.some((s) => /\b(open|unresolved)\b/i.test(s.label));
     const narrowing = [
@@ -325,19 +348,84 @@ function listSuggestions(view, role, { open, plain, refine, params, filters }) {
   return out;
 }
 
-// An Employee asked for department / team tickets: the ticket tool refused (and audited it). Say why, and what they
-// can see instead, rather than a bare "no access" (or, worse, silently showing their own tickets as if they were it).
-function employeeDepartmentRefusal(params) {
-  return new ChatError(CODES.ACCESS_DENIED, {
-    internal: "employee requested department tickets",
-    message:
-      "Department tickets are available only to the Managers and Team Leads of that department. " +
-      "As an Employee, you can view the tickets you raised and the tickets assigned to you.",
+// An Employee with no department has no Department Tickets: the portal shows the same notice.
+function noDepartmentError() {
+  return new ChatError(CODES.NO_RESULTS, {
+    message: "Your account has no department assigned, so there are no department tickets to show. Contact an administrator.",
+    suggestions: [VIEW_SWITCHES.raised, VIEW_SWITCHES.assigned, VIEW_SWITCHES.cc],
+  });
+}
+
+const andJoin = (parts) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`);
+const orJoin = (parts) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} or ${parts[parts.length - 1]}`);
+
+// "My tickets" (and, for an Employee, a ticket question that doesn't say which tickets) could mean the tickets I
+// raised or the tickets assigned to me: two different tabs in the portal. It is never answered with one blended
+// count. Each option is counted with the same filters, then:
+//   two or more options have tickets -> ask, with the counts; the answer ("raised", "2", or a button) resumes the
+//                                       list with the filters held server-side;
+//   only one of mine has any         -> show that list, and say why;
+//   none                             -> say so (and how many the Employee's department has, when that was an option).
+// A count question gets every count, side by side.
+async function mineChoice(ctx, { params, filters, toolBase, kind, generic, frameParams, question }) {
+  const role = ctx.scope.role;
+  const deptNames = role === "EMPLOYEE" && generic ? (await visibleDepartmentNames(ctx)) || [] : [];
+  const where = filters.department ? ` in ${filters.department}` : "";
+  const dates = params.dateFrom ? ` from ${params.dateFrom} to ${params.dateTo}` : "";
+  const options = [
+    { key: "raised", label: "Raised by Me", aliases: ["raised", "raised by me", "created", "created by me", "i raised"], params: { scope: "mine", mine: "requester" }, input: { scope: "mine", requester: "me" }, phrase: "raised by you", prompt: `Show ${kind}${where} raised by me${dates}` },
+    ...(params.filter === "unassigned"
+      ? []
+      : [{ key: "assigned", label: "Assigned to Me", aliases: ["assigned", "assigned to me", "mine to work on"], params: { scope: "mine", mine: "assignee" }, input: { scope: "mine", assignee: "me" }, phrase: "assigned to you", prompt: `Show ${kind}${where} assigned to me${dates}` }]),
+    ...(deptNames.length
+      ? [{ key: "dept", dept: true, label: "My Department's Tickets", aliases: ["department", "dept", "my department", "department tickets", "my department's tickets"], params: { scope: "department", myDepartment: true }, input: { scope: "department" }, phrase: `in your department (${deptNames.join(", ")})`, prompt: filters.department ? `Show ${kind} in ${filters.department}${dates}` : `Show ${kind} in my department${dates}` }]
+      : []),
+  ];
+  for (const o of options) o.count = (await runTool("search_authorized_tickets", ctx, { ...toolBase, ...o.input, limit: 1 })).total;
+  const chip = (o) => ({ label: `${o.label} (${o.count})`, prompt: o.prompt });
+  const none = { data: {}, navigationTarget: null, useModel: false, ticketNumbers: [] };
+
+  if (params.mode === "count") {
+    return {
+      ...none,
+      message: `${cap(kind)}${where}: ${andJoin(options.map((o) => `${o.count} ${o.phrase}`))}.`,
+      data: { counts: Object.fromEntries(options.map((o) => [o.key, o.count])) },
+      suggestedActions: options.filter((o) => o.count).map(chip).slice(0, 3),
+    };
+  }
+
+  const mine = options.filter((o) => o.count && !o.dept);
+  const dept = options.find((o) => o.dept);
+  const asked = options.filter((o) => o.count);
+  if (mine.length >= 2 || (mine.length === 1 && dept?.count)) {
+    const empty = options.filter((o) => !o.count);
+    return {
+      ...none,
+      message:
+        `Would you like the ${kind}${where} ${orJoin(asked.map((o) => o.phrase))}? ` +
+        `You have ${andJoin(asked.map((o) => `${o.count} ${o.phrase}`))}${empty.length ? `; none are ${orJoin(empty.map((o) => o.phrase))}` : ""}.`,
+      // No headline: the bubble shows the whole question, counts included.
+      data: { counts: Object.fromEntries(options.map((o) => [o.key, o.count])) },
+      suggestedActions: asked.map(chip),
+      // The answer resumes THIS question with the filters already resolved here (never re-read from the reply).
+      state: { selection: { options: asked.map((o) => ({ id: o.key, label: o.label, aliases: o.aliases, prompt: o.prompt, params: o.params })), resume: { intent: "list_tickets", params: frameParams }, at: Date.now() } },
+    };
+  }
+  if (mine.length === 1) {
+    const other = options.find((o) => !o.dept && o !== mine[0]);
+    const note = other ? `You have no ${kind}${where} ${other.phrase}, so these are the ones ${mine[0].phrase}.` : null;
+    return listTickets(ctx, { ...frameParams, ...mine[0].params, ...(note ? { note } : {}) }, question);
+  }
+  const personal = options.filter((o) => !o.dept);
+  throw new ChatError(CODES.NO_RESULTS, {
+    message: dept?.count
+      ? `You have no ${kind}${where} ${orJoin(personal.map((o) => o.phrase))}. Your department (${deptNames.join(", ")}) has ${countOf(dept.count, kind.replace(/s$/, ""))}.`
+      : `You have no ${kind}${where} ${orJoin(personal.map((o) => o.phrase))}${dept ? `, and there are none in your department (${deptNames.join(", ")})` : ""}.`,
+    // Never "Raised by Me" / "Assigned to Me" here: both were just found empty.
     suggestions: [
-      params.filter === "open" ? VIEW_SWITCHES.mineOpen : VIEW_SWITCHES.mine,
-      VIEW_SWITCHES.assigned,
-      VIEW_SWITCHES.raised,
-    ],
+      ...(dept?.count ? [chip(dept)] : []),
+      ...[VIEW_SWITCHES.dept, VIEW_SWITCHES.deptOpen, VIEW_SWITCHES.cc].filter((s) => !(dept && s === VIEW_SWITCHES.dept) && (s === VIEW_SWITCHES.cc || viewAllowed("dept", role, role !== "EMPLOYEE" || Boolean(ctx.scope.user.departmentId)))),
+    ].slice(0, 3),
   });
 }
 
@@ -351,7 +439,7 @@ async function listTickets(ctx, params0, question) {
     else (person = r.person), (relation = r.relation);
   }
   // "Jamie tickets": one word before "tickets" is a department, then a person, and only then a topic to search for.
-  if (base.departmentOrText && !base.department && !person && ctx.scope.role !== "EMPLOYEE") {
+  if (base.departmentOrText && !base.department && !person && (ctx.scope.role !== "EMPLOYEE" || ctx.scope.user.departmentId)) {
     let isDepartment = true;
     try {
       await resolveDepartment(base.departmentOrText, await visibleDepartmentNames(ctx));
@@ -360,7 +448,7 @@ async function listTickets(ctx, params0, question) {
     }
     if (!isDepartment) {
       try {
-        person = await resolvePerson(ctx, base.departmentOrText, base);
+        person = await resolvePerson(ctx, base.departmentOrText, base, { forTickets: true });
         relation = "either";
         delete base.departmentOrText;
       } catch (err) {
@@ -372,7 +460,7 @@ async function listTickets(ctx, params0, question) {
   }
   if (!person && (base.personText || base.userId)) {
     try {
-      person = await resolvePerson(ctx, base.personText, base);
+      person = await resolvePerson(ctx, base.personText, base, { forTickets: true });
     } catch (err) {
       // "assigned to Finance" names a department, not a person.
       if (!(err instanceof ChatError) || err.choices?.length || !base.personText || err.code === CODES.ACCESS_DENIED) throw err;
@@ -387,6 +475,8 @@ async function listTickets(ctx, params0, question) {
 
   const { params, used = [] } = await withEntities(ctx, base, question);
   const filters = await resolveListFilters(params, ctx);
+  const role = ctx.scope.role;
+  const hasDepartment = role !== "EMPLOYEE" || Boolean(ctx.scope.user.departmentId);
   const applied = [
     ...(filters.department ? [`department ${filters.department}`] : []),
     ...(filters.priority ? [`${filters.priority} priority`] : []),
@@ -397,67 +487,104 @@ async function listTickets(ctx, params0, question) {
   // Wording pieces shared by the count and the list answer.
   const qual = [params.filter === "open" ? "open" : params.filter === "pending" ? "pending" : null, params.status ? STATUS_LABEL[params.status].toLowerCase() : null, filters.priority ? `${filters.priority} priority` : null].filter(Boolean).join(" ");
   const kind = qual ? `${qual} tickets` : "tickets";
+  const filterWord = { unassigned: "unassigned", stale: "inactive", recent: "recently updated" }[params.filter];
+  const listKind = filterWord ? `${filterWord} ${kind}` : kind; // "unassigned tickets", "open tickets"
   const who = person ? { assignee: `assigned to ${person.name}`, requester: `raised by ${person.name}`, either: `assigned to or raised by ${person.name}` }[relation] : null;
-  const whom = params.mine === "requester" ? "you raised" : params.mine === "assignee" ? "assigned to you" : null;
 
-  const toolInput = {
-    scope: params.scope,
+  // Which tickets: the final scope comes from the AUTHENTICATED role; the words only choose between the views that
+  // role has (see ticketView). The ticket tool builds every scope from the signed-in user again.
+  const searching = Boolean(filters.text || params.text);
+  let mine = params.mine; // requester | assignee | both | either | undefined
+  let scopeName = params.scope || (role === "EMPLOYEE" ? "mine" : "staff");
+  if (scopeName === "cc") mine = undefined;
+  // "My ..." always means my own tickets, even with a department named ("my tickets from BI/Copilot").
+  else if (["requester", "assignee", "both", "either"].includes(mine)) scopeName = "mine";
+  // An Employee's department / a person / a named department: their own department's tickets (Department Tickets).
+  else if (role === "EMPLOYEE" && (person || filters.department || params.myDepartment || scopeName === "staff" || scopeName === "department")) scopeName = "department";
+  // For a Manager / Team Lead / Admin, Department Tickets are exactly their usual department view.
+  else if (scopeName === "department") scopeName = "staff";
+  if (mine === "either" && searching) mine = "both";
+  // A text search that says nothing about whose tickets: everything the user may view (the portal's global search).
+  if (searching && !mine && scopeName !== "cc" && !person && !filters.department && !params.myDepartment) scopeName = "authorized";
+
+  const toolBase = {
     filter: params.filter,
     text: params.text,
     staleDays: params.staleDays,
     status: params.status,
-    requester: params.mine === "requester" ? "me" : undefined,
-    assignee: params.mine === "assignee" ? "me" : undefined,
     ...(person ? { [{ assignee: "assigneeId", requester: "requesterId", either: "involvedId" }[relation]]: person.id } : {}),
     assignedTo: params.assignedTo,
     raisedBy: params.raisedBy,
     dateFrom: params.dateFrom,
     dateTo: params.dateTo,
+    ...filters,
+  };
+  // What a follow-up like "only open ones" (or the answer to "raised or assigned?") builds on: resolved values only,
+  // no text from the message.
+  const frameParams = {
+    filter: params.filter, status: params.status, mode: "list",
+    department: filters.department, priority: filters.priority, dateFrom: params.dateFrom, dateTo: params.dateTo, page: 1,
+    ...(params.withReasons ? { withReasons: true } : {}),
+    ...(params.staleDays ? { staleDays: params.staleDays } : {}),
+  };
+
+  if (scopeName === "mine" && (!mine || mine === "either") && !params.latest && !params.recentCreated) {
+    // "My tickets": ask (Employee / Team Lead). A Manager is never a ticket's assignee, so theirs are the ones they
+    // raised; an Admin neither raises nor is assigned tickets (their empty list says so).
+    if (role === "EMPLOYEE" || role === "TEAMLEAD") {
+      return mineChoice(ctx, { params, filters, toolBase, kind: listKind, generic: !mine, frameParams: { ...frameParams, mode: params.mode === "count" ? "count" : "list" }, question });
+    }
+    mine = "requester";
+  }
+  // "My latest ticket" / "recently created": the newest of both, as before.
+  if (scopeName === "mine" && (!mine || mine === "either")) mine = "both";
+  if (scopeName === "department" && !hasDepartment) throw noDepartmentError();
+
+  const whom = mine === "requester" ? "you raised" : mine === "assignee" ? "assigned to you" : null;
+  const toolInput = {
+    ...toolBase,
+    scope: scopeName,
+    requester: mine === "requester" ? "me" : undefined,
+    assignee: mine === "assignee" ? "me" : undefined,
     page: params.page,
     ...(params.withReasons ? { withReasons: "yes" } : {}),
-    ...filters,
     limit: params.mode === "count" || params.latest ? 1 : PAGE_SIZE,
     ...(params.latest || params.recentCreated ? { sort: "created" } : {}),
   };
-  let result;
-  try {
-    result = await runTool("search_authorized_tickets", ctx, toolInput);
-  } catch (err) {
-    if (err instanceof ChatError && err.code === CODES.ACCESS_DENIED && params.scope === "staff" && ctx.scope.role === "EMPLOYEE") throw employeeDepartmentRefusal(params);
-    throw err;
-  }
+  const result = await runTool("search_authorized_tickets", ctx, toolInput);
 
   // Which view this is, its heading, and (for "my department") which departments it covered.
-  const role = ctx.scope.role;
-  const view = ticketView(params, filters, person);
-  const filterWord = { unassigned: "unassigned", stale: "inactive", recent: "recently updated" }[params.filter];
-  const listKind = filterWord ? `${filterWord} ${kind}` : kind; // "unassigned tickets", "open tickets"
+  const view = ticketView(scopeName, { mine }, filters, person);
   const title = viewTitle(view, listKind, { role, department: filters.department, who });
   const deptNames = view === "dept" && role !== "ADMIN" ? await visibleDepartmentNames(ctx) : null;
   const scopeText = view === "dept" ? (role === "ADMIN" ? "across all departments" : `in ${departmentScopeText(deptNames)}`) : "";
   const isOpen = params.filter === "open" && !params.status;
   const isPlain = (params.filter || "any") === "any" && !params.status && !filters.priority && !filters.department && !params.dateFrom && !filters.text && !params.text;
 
-  // What a follow-up like "only open ones" builds on: resolved values only, no text from the message.
   const frame = {
     intent: "list_tickets",
     params: {
-      scope: params.scope, filter: params.filter, status: params.status, mine: params.mine, mode: "list",
-      department: filters.department, priority: filters.priority, dateFrom: params.dateFrom, dateTo: params.dateTo, page: params.page || 1,
+      ...frameParams,
+      scope: scopeName, mine, page: params.page || 1,
+      ...(params.myDepartment ? { myDepartment: true } : {}),
       ...(person ? { userId: person.id, personRelation: relation } : {}),
     },
     at: Date.now(),
   };
 
   if (params.mode === "count") {
-    const subjectLabel = person ? `${person.name} has` : filters.department ? `${filters.department} has` : params.scope === "mine" ? "You have" : result.total === 1 ? "There is" : "There are";
+    const subjectLabel = person ? `${person.name} has` : filters.department ? `${filters.department} has` : scopeName === "mine" || scopeName === "cc" ? "You have" : result.total === 1 ? "There is" : "There are";
     // Say which tickets were counted: "(raised by you or assigned to you)", "in your department (BI/Copilot)".
-    const tail = who ? ` (${who.replace(` ${person.name}`, " them")})` : whom ? (whom === "you raised" ? " that you raised" : ` ${whom}`) : view === "mine" && !filters.department ? " (raised by you or assigned to you)" : view === "dept" ? ` ${scopeText}` : "";
+    const tail = who
+      ? ` (${who.replace(` ${person.name}`, " them")})`
+      : whom
+        ? whom === "you raised" ? " that you raised" : ` ${whom}`
+        : view === "both" && !filters.department ? " (raised by you or assigned to you)" : view === "dept" ? ` ${scopeText}` : view === "cc" ? " that you're CC'd on" : "";
     return {
       message: result.total ? `${subjectLabel} ${countOf(result.total, qual ? `${qual} ticket` : "ticket")}${tail}.` : `${subjectLabel === "There are" || subjectLabel === "There is" ? "There are" : subjectLabel} no ${kind}${tail}.`,
       data: { total: result.total },
       navigationTarget: null,
-      suggestedActions: [...(result.total ? [{ label: "Show them", prompt: "Show them" }] : []), ...viewSwitches(view, role, { open: isOpen, plain: isPlain, filter: params.filter, max: 2 })],
+      suggestedActions: [...(result.total ? [{ label: "Show them", prompt: "Show them" }] : []), ...viewSwitches(view, role, { open: isOpen, plain: isPlain, filter: params.filter, max: 2, hasDepartment })],
       state: { frame },
       useModel: false,
       ticketNumbers: [],
@@ -472,22 +599,24 @@ async function listTickets(ctx, params0, question) {
     if (filters.department) suggestions.push({ label: `All tickets in ${filters.department}`, prompt: `Show tickets in ${filters.department}` });
     if (filters.priority) suggestions.push({ label: `All ${filters.priority} priority tickets`, prompt: `Show ${filters.priority} priority tickets` });
     // A word that matched no department or person was searched in the ticket text: offer the likelier meanings.
-    if (filters.text && ctx.scope.role !== "EMPLOYEE") {
+    if (filters.text && role !== "EMPLOYEE") {
       suggestions.push({ label: `Assigned to ${filters.text}`, prompt: `Show tickets assigned to ${filters.text}` }, { label: `Raised by ${filters.text}`, prompt: `Show tickets raised by ${filters.text}` });
     }
     // Then the other views ("Raised by Me", "My Department's Tickets"...), so an empty view is never a dead end.
-    for (const s of viewSwitches(view, role, { open: isOpen, plain: isPlain, filter: params.filter })) if (!suggestions.some((x) => x.prompt === s.prompt)) suggestions.push(s);
+    for (const s of viewSwitches(view, role, { open: isOpen, plain: isPlain, filter: params.filter, hasDepartment, empty: true })) if (!suggestions.some((x) => x.prompt === s.prompt)) suggestions.push(s);
     suggestions.push({ label: "Recently updated tickets", prompt: "Show recently updated tickets" });
     const target = [person ? who : null, filters.department ? filters.department : null].filter(Boolean).join(" in ");
     // With no other filter, name the view that was empty ("raised by you or assigned to you", "in your department").
-    const emptyView = view === "mine" ? " raised by you or assigned to you" : view === "dept" && role !== "ADMIN" ? ` ${scopeText}` : null;
+    const emptyView = view === "both" ? " raised by you or assigned to you" : view === "dept" && role !== "ADMIN" ? ` ${scopeText}` : view === "cc" ? " that you're CC'd on" : null;
     // An Admin never raises tickets or gets them assigned, so their own views are always empty: say so plainly.
-    const adminOwn = role === "ADMIN" && ["mine", "assigned", "raised"].includes(view) && !filters.department;
+    const adminOwn = role === "ADMIN" && ["both", "assigned", "raised"].includes(view) && !filters.department;
     throw new ChatError(CODES.NO_RESULTS, {
       message: adminOwn
         ? "Admins don't raise tickets and are never assigned tickets, so there are no tickets of yours to show. As an Admin, you can view tickets from every department."
-        : applied.length || who || whom
-          ? `I couldn't find any ${listKind}${target ? ` for ${person ? who : target}` : whom ? ` ${whom}` : ""}${params.dateFrom ? ` (${used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}`})` : ""}. You can widen the search:`
+        : whom && !applied.length && !who
+          ? `I couldn't find any ${listKind} ${whom}.`
+          : applied.length || who || whom
+          ? `I couldn't find any ${listKind}${target ? ` for ${person ? who : target}` : whom ? ` ${whom}` : ""}${emptyView && !whom && !who ? emptyView : ""}${params.dateFrom ? ` (${used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}`})` : ""}. You can widen the search:`
           : emptyView
             ? `I couldn't find any ${listKind}${emptyView}.`
             : "I didn't find any matching tickets.",
@@ -509,12 +638,14 @@ async function listTickets(ctx, params0, question) {
   // What the list is, shown above the cards: the filters in force, the range shown, and what a word means.
   const dateUsed = params.dateFrom ? used.find((u) => !/department|priority|status/.test(u)) || `${params.dateFrom} to ${params.dateTo}` : null;
   const listing = {
-    // What the list is, as the card's title ("My Tickets", "Tickets Assigned to Me", "My Department's Open Tickets").
+    // What the list is, as the card's title ("Tickets Raised by Me", "Tickets Assigned to Me", "My Department's Open Tickets").
     title,
     showing: `${first}–${last} of ${result.total}`,
     filters: [
       ...(whom ? [whom === "you raised" ? "Raised by you" : "Assigned to you"] : []),
-      ...(view === "mine" ? ["Raised by you or assigned to you"] : []),
+      ...(view === "both" ? ["Raised by you or assigned to you"] : []),
+      ...(view === "cc" ? ["You're on the Custom CC list"] : []),
+      ...(view === "search" ? ["Every ticket you can view"] : []),
       ...(view === "dept" ? [role === "ADMIN" ? "All departments" : deptNames?.length === 1 ? deptNames[0] : "Your departments"] : []),
       ...(who ? [cap(who)] : []),
       ...({ open: ["Open (all active statuses)"], pending: ["On Hold"], unassigned: ["Unassigned"], stale: ["No recent activity"] }[params.filter] || []),
@@ -525,14 +656,27 @@ async function listTickets(ctx, params0, question) {
       ...(filters.text ? [`Matching "${filters.text}"`] : []),
     ],
     notes: [
+      // Why this list, when the user's "my tickets" had only one possible meaning.
+      params.note || null,
       // Which tickets the view covers, in the portal's own terms.
-      view === "mine" ? "\"My Tickets\" are the tickets you raised plus the tickets assigned to you." : null,
+      view === "both" ? "Both My Tickets tabs together: the tickets you raised plus the tickets assigned to you." : null,
       view === "dept"
         ? role === "ADMIN"
           ? "As an Admin, you see tickets from every department."
-          : deptNames?.length
-            ? `Shows tickets in the department${deptNames.length === 1 ? "" : "s"} you have access to: ${deptNames.join(", ")}.`
-            : "Shows tickets in the departments you have access to."
+          : role === "EMPLOYEE"
+            ? `Department Tickets are the tickets routed to your department${deptNames?.length ? ` (${deptNames.join(", ")})` : ""}. You can view them and add public comments; other changes are made by the people handling each ticket.`
+            : deptNames?.length
+              ? `Shows tickets in the department${deptNames.length === 1 ? "" : "s"} you have access to: ${deptNames.join(", ")}.`
+              : "Shows tickets in the departments you have access to."
+        : null,
+      view === "person" && role === "EMPLOYEE" ? "Shows your department's tickets for this person (the Department Tickets Assignee filter)." : null,
+      view === "cc" ? "Tickets where you're on the Custom CC list. You can view them and add public comments; other changes are made by the people handling each ticket." : null,
+      view === "search"
+        ? role === "ADMIN"
+          ? "Searched every ticket."
+          : role === "EMPLOYEE"
+            ? "Searched every ticket you can view: the ones you raised or are assigned, your department's tickets, and tickets you're CC'd on."
+            : "Searched every ticket you can view: your departments' tickets, tickets you raised, and tickets you're CC'd on."
         : null,
       params.filter === "pending" ? "\"Pending\" means tickets with status On Hold." : null,
       params.filter === "open" ? "\"Open\" includes Open, In Progress, On Hold and Reopened." : null,
@@ -541,7 +685,7 @@ async function listTickets(ctx, params0, question) {
     ].filter(Boolean),
   };
   return {
-    message: params.latest ? (params.scope === "mine" ? "Your latest ticket:" : "The latest ticket:") : message,
+    message: params.latest ? (scopeName === "mine" ? "Your latest ticket:" : "The latest ticket:") : message,
     data: {
       tickets: result.tickets,
       total: params.latest ? result.tickets.length : result.total,
@@ -554,7 +698,7 @@ async function listTickets(ctx, params0, question) {
       ...(last < result.total ? [{ label: "Show more", prompt: "Show more" }] : []),
       // "You can also try": first the other views this role can use, then (to fill up to three) narrowing steps that
       // fit what was just shown (those go through the normal follow-up rules, on this same list).
-      ...listSuggestions(view, role, { open: isOpen, plain: isPlain, refine: result.total > 1, params, filters }),
+      ...listSuggestions(view, role, { open: isOpen, plain: isPlain, refine: result.total > 1, params, filters, hasDepartment }),
     ],
     state: { frame: { ...frame, results: result.tickets.map((t) => t.ticketNumber) } },
     useModel: true,
@@ -600,7 +744,16 @@ async function ticketScopeQuestion(ctx) {
   const depts = (await visibleDepartmentNames(ctx)) || [];
   const mineChips = [{ label: "Raised by me", prompt: "Show tickets raised by me" }, { label: "Assigned to me", prompt: "Show tickets assigned to me" }];
   if (role === "EMPLOYEE") {
-    return { message: "Do you want tickets raised by you, assigned to you, or both?", data: {}, navigationTarget: null, suggestedActions: [...mineChips, { label: "Both", prompt: "Show my tickets" }], useModel: false, ticketNumbers: [] };
+    // The Employee portal's tabs: My Tickets (Raised By Me / Assigned To Me) and Department Tickets.
+    const dept = depts[0];
+    return {
+      message: dept ? `Do you want tickets raised by you, tickets assigned to you, or your department's tickets (${dept})?` : "Do you want tickets raised by you or tickets assigned to you?",
+      data: {},
+      navigationTarget: null,
+      suggestedActions: [...mineChips, ...(dept ? [{ label: "My Department's Tickets", prompt: "Show my department's tickets" }] : [])],
+      useModel: false,
+      ticketNumbers: [],
+    };
   }
   if (role === "TEAMLEAD") {
     return { message: "Do you want your department tickets, tickets assigned to you, or tickets raised by you?", data: {}, navigationTarget: null, suggestedActions: [...depts.slice(0, 3).map((d) => ({ label: `${d} tickets`, prompt: `Show tickets in ${d}` })), ...mineChips], useModel: false, ticketNumbers: [] };
@@ -641,12 +794,23 @@ async function personLookup(ctx, params) {
   };
 }
 
+// Why a user who doesn't handle a ticket can still see it, and what that lets them do (the ticket page's rules:
+// Department Tickets and Custom CC give view + public comments; a Manager / Team Lead who raised a ticket now in a
+// department they don't manage may only view it). Nothing is said for full access.
+function accessNote(access, summary) {
+  if (!access || access.level === "full") return null;
+  if (access.via === "cc") return "you're on this ticket's Custom CC list, so you can view it and add public comments.";
+  if (access.via === "department") return `this ticket belongs to your department${summary.department ? ` (${summary.department})` : ""}, so you can view it and add public comments.`;
+  return `you raised this ticket, but it is now handled by ${summary.department || "another department"}, so you can only view it.`;
+}
+
 async function findTicket(ctx, params) {
   const ticketNumber = resolveTicketNumber(ctx, params);
 
   // A plain "show ticket N" shows the ticket's details (only fields this user may see).
   if (!params.focus) {
-    const { summary } = await runTool("summarize_authorized_ticket", ctx, { ticketNumber });
+    const { summary, access } = await runTool("summarize_authorized_ticket", ctx, { ticketNumber });
+    const accessLine = accessNote(access, summary);
     const lines = [
       // The title and problem summary are ticket content: they appear in the card below, never in this prose.
       `Ticket ${summary.ticketId} details:`,
@@ -657,13 +821,19 @@ async function findTicket(ctx, params) {
       `Assigned to: ${summary.assignedTo || "Not assigned"}`,
       `Created: ${summary.createdAt ? utc(summary.createdAt) : "Not available"}`,
       `Last updated: ${summary.lastUpdatedAt ? utc(summary.lastUpdatedAt) : "Not available"}`,
+      ...(accessLine ? [`Your access: ${accessLine}`] : []),
     ];
     return {
       message: lines.join("\n"),
       // The card shows every field; the bubble only says what the card is.
-      data: { summary, lastTicketNumber: summary.ticketId, headline: `Here are the details of ticket ${summary.ticketId}.` },
+      // The chat bubble shows the headline, so a view-only user's access is said there too.
+      data: { summary, ...(accessLine ? { access: { level: access.level, note: accessLine } } : {}), lastTicketNumber: summary.ticketId, headline: `Here are the details of ticket ${summary.ticketId}.${accessLine ? ` Your access: ${accessLine}` : ""}` },
       navigationTarget: ticketTarget(summary.ticketRouteId),
-      suggestedActions: [{ label: "Show history", prompt: `Show history of ticket ${summary.ticketId}` }, { label: "Show comments", prompt: `Show comments on ticket ${summary.ticketId}` }],
+      suggestedActions: [
+        { label: "Show history", prompt: `Show history of ticket ${summary.ticketId}` },
+        { label: "Show comments", prompt: `Show comments on ticket ${summary.ticketId}` },
+        ...(access?.level === "participant" ? [{ label: "Add a comment", prompt: `Add a comment on ticket ${summary.ticketId}` }] : []),
+      ],
       useModel: false,
       ticketNumbers: [summary.ticketId],
     };
@@ -785,11 +955,13 @@ async function ticketStatistics(ctx, params) {
   const word = params.word;
   // Scope words are checked against the ROLE here as well as in the tool.
   if (word === "overall" && role !== "ADMIN") throw new ChatError(CODES.ACCESS_DENIED, { internal: "system-wide stats for non-admin" });
-  if (word === "department" && role === "EMPLOYEE") throw new ChatError(CODES.ACCESS_DENIED, { internal: "department stats for employee" });
+  // An Employee's department numbers are their Department Tickets (their own department only).
+  if (word === "department" && role === "EMPLOYEE" && !ctx.scope.user.departmentId) throw noDepartmentError();
 
-  const scope = word === "mine" ? "mine" : "staff";
+  const scope = word === "mine" ? "mine" : role === "EMPLOYEE" ? "department" : "staff";
   const stats = await runTool("get_authorized_ticket_statistics", ctx, { scope });
-  const label = role === "ADMIN" && scope === "staff" ? "System-wide" : scope === "staff" ? "Your departments" : "Your tickets";
+  const ownDept = scope === "department" ? (await visibleDepartmentNames(ctx))?.[0] : null;
+  const label = role === "ADMIN" && scope === "staff" ? "System-wide" : scope === "staff" ? "Your departments" : scope === "department" ? `Your department${ownDept ? ` (${ownDept})` : ""}` : "Your tickets";
   if (!stats.total) throw new ChatError(CODES.NO_RESULTS);
 
   const statusText = Object.entries(stats.byStatus).map(([s, n]) => `${statusLabel(s)} ${n}`).join(", ");
@@ -1491,7 +1663,7 @@ async function adminAction(ctx, params) {
   const message = `I can do that. ${pending.summary} Nothing has been changed yet. Please review the change below and confirm or cancel; this request expires in 10 minutes.`;
   return {
     message,
-    data: { pendingAction: { id: pending.id, title: pending.title, summary: pending.summary, impact: pending.impact, expiresAt: pending.expiresAt, confirmationToken: pending.confirmationToken, ...(pending.edit ? { edit: pending.edit } : {}) } },
+    data: { pendingAction: { id: pending.id, title: pending.title, summary: pending.summary, impact: pending.impact, expiresAt: pending.expiresAt, confirmationToken: pending.confirmationToken, ...(pending.editable === false ? { editable: false } : {}), ...(pending.edit ? { edit: pending.edit } : {}) } },
     navigationTarget: null,
     suggestedActions: [],
     useModel: false,
@@ -1552,8 +1724,11 @@ ${roles.map((r) => `${r.role}: ${r.count}`).join("\n")}`, { roles });
 }
 
 async function ticketsByDepartment(ctx, params = {}) {
-  const { departments } = await runTool("get_tickets_by_department", ctx);
-  if (!departments.length) throw new ChatError(CODES.NO_RESULTS);
+  // "this month", "since Monday": tickets CREATED in that window (open = those of them still open now).
+  const windowed = Boolean(params.dateFrom);
+  const { departments } = await runTool("get_tickets_by_department", ctx, windowed ? { dateFrom: params.dateFrom, dateTo: params.dateTo } : {});
+  const period = windowed ? `Created ${params.period || `${params.dateFrom} to ${params.dateTo}`}` : "All time";
+  if (!departments.length) throw new ChatError(CODES.NO_RESULTS, windowed ? { message: `No tickets were created ${params.period || `from ${params.dateFrom} to ${params.dateTo}`} in the departments you can see.` } : {});
 
   // Ranking is computed HERE, in application code, from the tool's counts. A
   // model never ranks or counts anything.
@@ -1569,13 +1744,13 @@ async function ticketsByDepartment(ctx, params = {}) {
     const headline = `${lead === "most" ? "Most" : "Fewest"} ${what}: ${tied.join(" and ")} (${top[key]}${tied.length > 1 ? " each" : ""}).`;
     const lines = sorted.map((d) => `${d.name}: ${d[key]}`);
     return report(`${headline}
-All departments (${what}):
-${lines.join("\n")}`, { ticketsByDepartment: departments });
+All departments (${what}${windowed ? `, ${period.toLowerCase()}` : ""}):
+${lines.join("\n")}`, { ticketsByDepartment: departments, ticketsByDepartmentPeriod: period });
   }
 
   const lines = departments.map((d) => `${d.name}: ${plural(d.total, "ticket", "tickets")} (${d.open} open)`);
-  return report(`Tickets by department:
-${lines.join("\n")}`, { ticketsByDepartment: departments });
+  return report(`Tickets by department${windowed ? ` (${period.toLowerCase()})` : ""}:
+${lines.join("\n")}`, { ticketsByDepartment: departments, ticketsByDepartmentPeriod: period });
 }
 
 async function weeklyReport(ctx) {

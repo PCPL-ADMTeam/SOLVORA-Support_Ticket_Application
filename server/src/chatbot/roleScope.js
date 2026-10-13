@@ -1,4 +1,5 @@
 const ticketService = require("../services/ticket.service");
+const { ccScopeWhere } = require("../utils/ticketAccess");
 const { permissionsFor } = require("./permissions");
 
 // Single place where the chatbot turns the AUTHENTICATED user (req.user, set
@@ -41,6 +42,17 @@ function staffScopeWhere(scope) {
   return ticketService.scopeWhereForTab(scope.user, undefined, scope.departmentIds);
 }
 
+// The portal's "Department Tickets" tab: an EMPLOYEE's own department (the server-side User.departmentId, never a
+// department named in the message), a MANAGER/TEAMLEAD's accessible departments, every department for an ADMIN.
+function departmentWhere(scope) {
+  return ticketService.scopeWhereForTab(scope.user, "department", scope.departmentIds);
+}
+
+// Tickets this user is on the Custom CC list of (TicketCC), inside what they may view at all.
+function ccWhere(scope) {
+  return { AND: [authorizedWhere(scope), ccScopeWhere(scope.user)] };
+}
+
 const PORTALS = {
   ADMIN: { key: "admin", name: "Admin Portal", home: "/admin" },
   MANAGER: { key: "manager", name: "Manager Portal", home: "/agent" },
@@ -52,4 +64,4 @@ function portalFor(role) {
   return PORTALS[role] || null;
 }
 
-module.exports = { resolveRoleScope, authorizedWhere, mineWhere, staffScopeWhere, portalFor, PORTALS };
+module.exports = { resolveRoleScope, authorizedWhere, mineWhere, staffScopeWhere, departmentWhere, ccWhere, portalFor, PORTALS };

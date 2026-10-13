@@ -254,7 +254,7 @@ export function DepartmentListCard({ departments }) {
 }
 
 // Per-department counts: headcount, tickets by department, Manager / Team Lead assignments.
-export function DepartmentStatsCard({ headcount, ticketsByDepartment, assignments }) {
+export function DepartmentStatsCard({ headcount, ticketsByDepartment, ticketsPeriod, assignments }) {
   if (headcount?.length) {
     return (
       <CardFrame label="People by department" icon={GroupsOutlinedIcon} title="People by department" subtitle="Active people, by role">
@@ -272,7 +272,7 @@ export function DepartmentStatsCard({ headcount, ticketsByDepartment, assignment
   }
   if (ticketsByDepartment?.length) {
     return (
-      <CardFrame label="Tickets by department" icon={ConfirmationNumberOutlinedIcon} title="Tickets by department" subtitle="Total and open tickets you can see" badge={<PeriodBadge period="All time" />}>
+      <CardFrame label="Tickets by department" icon={ConfirmationNumberOutlinedIcon} title="Tickets by department" subtitle="Total and open tickets you can see" badge={<PeriodBadge period={ticketsPeriod || "All time"} />}>
         {ticketsByDepartment.map((d) => (
           <Section key={d.name} icon={BusinessOutlinedIcon} title={d.name} count={d.total}>
             <StatList label={`${d.name} tickets`}>

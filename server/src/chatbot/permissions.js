@@ -38,7 +38,8 @@ const ROLE_PERMISSIONS = {
   ],
   EMPLOYEE: [
     "chat.use",
-    "tickets.create.self", "tickets.read.raisedBySelf", "tickets.read.assignedToSelf", "tickets.update.assignedToSelf",
+    // ownDepartment = the portal's Department Tickets tab (view + public comments only; see utils/ticketAccess.js).
+    "tickets.create.self", "tickets.read.raisedBySelf", "tickets.read.assignedToSelf", "tickets.read.ownDepartment", "tickets.update.assignedToSelf",
     "tickets.comment.accessible", "tickets.attach.accessible", "tickets.close.accessible", "tickets.reopen.accessible",
     "departments.read.own",
     "dashboard.read.self", "notifications.read.self", "notifications.manage.self",
@@ -53,7 +54,7 @@ const READ_TICKETS = {
   ADMIN: ["tickets.read.all"],
   MANAGER: ["tickets.read.allocatedDepartments"],
   TEAMLEAD: ["tickets.read.allocatedDepartments"],
-  EMPLOYEE: ["tickets.read.raisedBySelf", "tickets.read.assignedToSelf"],
+  EMPLOYEE: ["tickets.read.raisedBySelf", "tickets.read.assignedToSelf", "tickets.read.ownDepartment"],
 };
 const STAFF_TICKETS = { ADMIN: ["tickets.read.all"], MANAGER: ["tickets.read.allocatedDepartments"], TEAMLEAD: ["tickets.read.allocatedDepartments"] };
 const SELF = (permission) => ({ ADMIN: [permission], MANAGER: [permission], TEAMLEAD: [permission], EMPLOYEE: [permission] });

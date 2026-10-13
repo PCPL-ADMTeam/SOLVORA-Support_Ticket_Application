@@ -7,16 +7,26 @@
 const ACTION = (label, prompt, icon) => ({ label, prompt, icon });
 
 const HOME = {
+  // The Employee portal's tabs: My Tickets (Raised By Me / Assigned To Me) and Department Tickets.
   EMPLOYEE: {
     subtitle: "How can I help you with your tickets today?",
     quickActions: [
-      ACTION("My Tickets", "Show my tickets", "tickets"),
-      ACTION("Open Tickets", "Show my open tickets", "open"),
+      ACTION("Raised by Me", "Show tickets raised by me", "tickets"),
+      ACTION("Assigned to Me", "Show tickets assigned to me", "assigned"),
+      ACTION("Department Tickets", "Show my department's tickets", "department"),
       ACTION("Raise Ticket", "Raise a ticket", "raise"),
       ACTION("Notifications", "Show my notifications", "notifications"),
     ],
     capabilities: [
-      { title: "Tickets", items: ["View your tickets", "Check a ticket's status, priority and assignee", "View tickets assigned to you", "Raise a ticket (without attachments; files go on the Create Ticket page)"] },
+      {
+        title: "Tickets",
+        items: [
+          "View the tickets you raised and the tickets assigned to you",
+          "View your department's tickets and tickets you're CC'd on, and add public comments to them",
+          "Check a ticket's status, priority and assignee",
+          "Raise a ticket (without attachments; files go on the Create Ticket page)",
+        ],
+      },
       { title: "Notifications", items: ["View your notifications"] },
       { title: "Guidance", items: ["Ask how to use Solvora"] },
     ],

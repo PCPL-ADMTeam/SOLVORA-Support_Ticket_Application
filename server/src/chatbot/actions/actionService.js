@@ -86,7 +86,7 @@ async function proposeAction(ctx, parsed, meta = {}) {
   await audit(scope.user, conversationId, "ACTION_PROPOSED", row.id, "SUCCESS");
   // The raw token is returned ONCE, to this admin's browser, and never stored.
   // `edit` (some actions): what the preview's Edit may change, for a NEW preview. Names only; nothing is trusted from it.
-  return { id: row.id, action: parsed.action, title: def.title, summary: prepared.summary, impact: prepared.impact, expiresAt, confirmationToken, ...(prepared.edit ? { edit: prepared.edit } : {}) };
+  return { id: row.id, action: parsed.action, title: def.title, summary: prepared.summary, impact: prepared.impact, expiresAt, confirmationToken, ...(def.editable === false ? { editable: false } : {}), ...(prepared.edit ? { edit: prepared.edit } : {}) };
 }
 
 async function loadOwnPending(user, actionId, { token, conversationId, typed } = {}) {

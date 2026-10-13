@@ -53,7 +53,10 @@ const CASES = [
   { name: "Admin: Manoj Kumar R's tickets (raised or assigned)", role: "ADMIN", steps: [{ say: "show Manoj Kumar R's tickets", tickets: ["2600269", "2600270", "2600271"] }] },
   { name: "Admin: Manoj Kumar R's open tickets", role: "ADMIN", steps: [{ say: "show Manoj Kumar R's open tickets", tickets: ["2600269", "2600270"] }] },
   { name: "Admin: unknown person", role: "ADMIN", steps: [{ say: "tickets assigned to Zebedee Quux", has: ["Zebedee"], noTickets: true }] },
-  { name: "Employee: cannot look up another person's tickets", role: "EMPLOYEE", steps: [{ say: "show Manoj Kumar R's tickets", code: "CHAT_ACCESS_DENIED", noTickets: true }] },
+  // An Employee may filter their OWN department's tickets by a colleague (the Department Tickets Assignee filter); a
+  // person of another department is refused.
+  { name: "Employee: a colleague's tickets in their own department", role: "EMPLOYEE", steps: [{ say: "show Manoj Kumar R's tickets", tickets: ["2600269", "2600270", "2600271"] }] },
+  { name: "Employee: cannot look up a person of another department", role: "EMPLOYEE", steps: [{ say: "show Manoj Kumar S's tickets", code: "CHAT_ACCESS_DENIED", noTickets: true }] },
 
   // ---- departments and roles ----
   { name: "Admin: who is the manager in BI/Copilot", role: "ADMIN", steps: [{ say: "who is the manager in BI/Copilot", has: ["BI/Copilot", "Jayakumar J — Manager"], not: ["Pavithran", "Srihari", "Manoj"] }] },

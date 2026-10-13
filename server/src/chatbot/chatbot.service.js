@@ -134,7 +134,12 @@ function accessReply(role, departments = []) {
 function accessReplyBase(role, departments) {
   switch (role) {
     case "EMPLOYEE":
-      return { message: "I don't have access to that information from your Employee portal. I can help with your own tickets and tickets assigned to you.", prompts: ["Show my tickets", "Show tickets assigned to me", "Show my notifications"] };
+      return {
+        message: departments.length
+          ? `I don't have access to that information from your Employee portal. You can see the tickets you raised, the tickets assigned to you, and Department Tickets for your own department (${departments.join(", ")}) only.`
+          : "I don't have access to that information from your Employee portal. You can see the tickets you raised and the tickets assigned to you.",
+        prompts: [...(departments.length ? ["Show my department's tickets"] : []), "Show tickets raised by me", "Show tickets assigned to me"],
+      };
     case "TEAMLEAD":
       return { message: "I can only access tickets for your assigned department.", prompts: ["Show my department tickets", "Show tickets assigned to me", "Show unassigned tickets"] };
     case "MANAGER":

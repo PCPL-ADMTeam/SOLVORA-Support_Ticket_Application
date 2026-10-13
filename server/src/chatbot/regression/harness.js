@@ -49,7 +49,7 @@ function outcomeOf(r) {
   if (["CHAT_INVALID_TICKET_ID", "CHAT_ACTION_INVALID", "CHAT_INVALID_TICKET_TRANSITION", "CHAT_INVALID_ROLE_OPERATION"].includes(code)) return "INVALID";
   if (code) return "ERROR";
   if (r.intent === "ticket_draft" || r.data?.ticketDraft) return "CLARIFY";
-  if (["ticket_scope_question", "clarification_required"].includes(r.intent) || /^(which|do you want|what should|what is the reason|why are you|who should)\b/i.test(msg)) return "CLARIFY";
+  if (["ticket_scope_question", "clarification_required"].includes(r.intent) || r.responseType === "clarification" || /^(which|do you want|would you like|what should|what is the reason|why are you|who should)\b/i.test(msg)) return "CLARIFY";
   if (/\byou have no\b|\bhas no comments\b|\bno (matching )?(tickets|notifications|comments)\b/i.test(msg)) return "NO_DATA";
   return "DATA";
 }

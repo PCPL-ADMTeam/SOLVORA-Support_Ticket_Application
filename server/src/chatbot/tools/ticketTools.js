@@ -1,6 +1,7 @@
 const prisma = require("../../config/prisma");
 const { ChatError, CODES } = require("../chatbot.errors");
-const { authorizedWhere, mineWhere, staffScopeWhere } = require("../roleScope");
+const { authorizedWhere, mineWhere, staffScopeWhere, departmentWhere, ccWhere } = require("../roleScope");
+const { resolveTicketAccess, isDepartmentEmployeeViewer, ccScopeWhere } = require("../../utils/ticketAccess");
 const { toPlainText } = require("../text");
 const { TICKET_CARD_SELECT, toTicketCard, toTicketSummary, toHistoryEntry } = require("../dto");
 
@@ -16,6 +17,13 @@ const normalizeTicketNumber = (ref) => String(ref).replace(/^TKT-?/i, "");
 
 // ---- scope helpers ---------------------------------------------------------
 
+// Every scope is built from the AUTHENTICATED user (ticket.service's own scope functions); filters are only ever
+// ANDed on top of it.
+//   mine        raised by me OR assigned to me
+//   staff       a Manager's / Team Lead's departments, everything for an Admin (never an Employee)
+//   department  the portal's Department Tickets tab: an Employee's own department, otherwise as staff
+//   cc          tickets I am on the Custom CC list of
+//   authorized  everything I may view (the portal's global search)
 function baseWhere(ctx, scopeName) {
   const { scope } = ctx;
   if (scopeName === "staff") {
@@ -27,8 +35,37 @@ function baseWhere(ctx, scopeName) {
     }
     return staffScopeWhere(scope);
   }
+  if (scopeName === "department") return departmentWhere(scope);
+  if (scopeName === "cc") return ccWhere(scope);
+  if (scopeName === "authorized") return authorizedWhere(scope);
   return mineWhere(scope);
 }
+
+// ---- access level of one ticket ---------------------------------------------
+
+// What the signed-in user may DO with a ticket they can see, by the application's own rule
+// (utils/ticketAccess.js#resolveTicketAccess):
+//   full            operational access (status, assignment, transfer, edits, internal notes as the app allows)
+//   participant     view + public comments only: an Employee of the ticket's department, or a Custom CC recipient
+//   requester-read  view only: a Manager / Team Lead who raised a ticket now in a department they don't manage
+// `via` says why a non-full level applies: "department", "cc" or "requester". The CC check is a server-side
+// lookup of THIS user on THIS ticket, never anything from the message.
+const ACCESS_FIELDS = { id: true, requesterId: true, assigneeId: true, toDepartmentId: true };
+
+async function accessOf(ctx, t) {
+  const { user, departmentIds } = ctx.scope;
+  const direct = resolveTicketAccess(user, t, { userDepartmentIds: departmentIds });
+  if (direct === "full") return { level: "full", via: null };
+  const isCc = (await prisma.ticket.count({ where: { AND: [{ id: t.id }, ccScopeWhere(user)] } })) > 0;
+  const level = resolveTicketAccess(user, t, { userDepartmentIds: departmentIds, isCcUser: isCc });
+  const via = level === "requester-read" ? "requester" : isDepartmentEmployeeViewer(user, t) ? "department" : isCc ? "cc" : null;
+  return { level, via };
+}
+
+// Attachments the ticket page shows to everyone who can see the ticket: the ticket's own files and files on
+// PUBLIC comments. Files on internal notes stay as hidden as the notes themselves (the assistant never shows
+// internal notes to anyone).
+const PUBLIC_ATTACHMENT = { OR: [{ commentId: null }, { comment: { isInternal: false } }] };
 
 // ---- single-ticket loading -------------------------------------------------
 
@@ -40,7 +77,7 @@ async function loadAuthorizedTicket(ctx, ticketRef, select) {
   const ticketNumber = normalizeTicketNumber(ticketRef);
   const ticket = await prisma.ticket.findFirst({
     where: { AND: [{ ticketNumber }, authorizedWhere(ctx.scope)] },
-    select,
+    select: { ...select, ...ACCESS_FIELDS },
   });
   if (ticket) return ticket;
 
@@ -54,7 +91,7 @@ const DETAIL_SELECT = {
   problemSummary: true,
   resolutionNotes: true,
   onHoldReason: true,
-  _count: { select: { attachments: true } },
+  _count: { select: { attachments: { where: PUBLIC_ATTACHMENT } } },
   comments: {
     where: { isInternal: false },
     orderBy: { createdAt: "desc" },
@@ -76,7 +113,7 @@ const searchAuthorizedTickets = {
   name: "search_authorized_tickets",
   description: "List tickets inside the caller's authorized scope, optionally filtered.",
   inputSchema: {
-    scope: { type: "enum", values: ["mine", "staff"] },
+    scope: { type: "enum", values: ["mine", "staff", "department", "cc", "authorized"] },
     filter: { type: "enum", values: ["any", "open", "pending", "recent", "unassigned", "stale"] },
     text: { type: "string", max: 100 },
     // Exact (case-insensitive) names, already resolved by the handler. They only NARROW the
@@ -170,7 +207,7 @@ const getAuthorizedTicket = {
   async run(ctx, input) {
     const t = await loadAuthorizedTicket(ctx, input.ticketNumber, TICKET_CARD_SELECT);
     await ctx.audit("TOOL_GET_TICKET", "Ticket", t.ticketNumber, "SUCCESS");
-    return { ticket: toTicketCard(t) };
+    return { ticket: toTicketCard(t), access: await accessOf(ctx, t) };
   },
 };
 
@@ -181,7 +218,9 @@ const summarizeAuthorizedTicket = {
   async run(ctx, input) {
     const t = await loadAuthorizedTicket(ctx, input.ticketNumber, DETAIL_SELECT);
     await ctx.audit("TOOL_SUMMARIZE_TICKET", "Ticket", t.ticketNumber, "SUCCESS");
-    return { summary: toTicketSummary(t, { isStaff: ctx.scope.role !== "EMPLOYEE" }) };
+    const access = await accessOf(ctx, t);
+    // Staff-only hints ("a Manager or Team Lead can assign it") only for staff who actually manage this ticket.
+    return { summary: toTicketSummary(t, { isStaff: ctx.scope.role !== "EMPLOYEE" && access.level === "full" }), access };
   },
 };
 
@@ -231,7 +270,7 @@ const getAuthorizedTicketAttachments = {
   async run(ctx, input) {
     const t = await loadAuthorizedTicket(ctx, input.ticketNumber, {
       ...TICKET_CARD_SELECT,
-      attachments: { orderBy: { createdAt: "desc" }, take: 20, select: { fileName: true, fileSize: true, createdAt: true, uploadedBy: { select: { name: true } } } },
+      attachments: { where: PUBLIC_ATTACHMENT, orderBy: { createdAt: "desc" }, take: 20, select: { fileName: true, fileSize: true, createdAt: true, uploadedBy: { select: { name: true } } } },
     });
     await ctx.audit("TOOL_TICKET_ATTACHMENTS", "Ticket", t.ticketNumber, "SUCCESS");
     return {
@@ -297,7 +336,7 @@ const getAuthorizedTicketReasons = {
 const getAuthorizedTicketStatistics = {
   name: "get_authorized_ticket_statistics",
   description: "Counts and short-term trends over the caller's authorized tickets.",
-  inputSchema: { scope: { type: "enum", values: ["mine", "staff"] } },
+  inputSchema: { scope: { type: "enum", values: ["mine", "staff", "department"] } },
   async run(ctx, input) {
     const scopeName = input.scope || "mine";
     const base = baseWhere(ctx, scopeName);
@@ -340,6 +379,7 @@ module.exports = {
   tools: [searchAuthorizedTickets, getAuthorizedTicket, summarizeAuthorizedTicket, getAuthorizedTicketHistory, getAuthorizedTicketComments, getAuthorizedTicketAttachments, getAuthorizedTicketReasons, getAuthorizedTicketStatistics],
   OPEN_STATUSES,
   loadAuthorizedTicket,
+  accessOf,
   TICKET_REF_PATTERN,
   normalizeTicketNumber,
 };

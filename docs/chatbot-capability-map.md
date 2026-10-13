@@ -69,6 +69,52 @@ Tickets assigned to the user.
   - `tickets I'm responsible for` -> `list_tickets`
   - `show me the assigned tickets` -> `list_tickets`
 
+## MY_TICKETS
+
+"My tickets" without saying which: raised by me and assigned to me are two different portal tabs, so the assistant asks, showing each tab's count, or shows the only one that has tickets (never one blended count). An Employee asking with no "my" is also offered their Department Tickets. A Manager's are the tickets they raised; an Admin has none. Asking for both ("raised by me or assigned to me", "associated with me") lists both together.
+
+- Roles: ADMIN, MANAGER, TEAMLEAD, EMPLOYEE
+- Source: ticket search (scoped): requester = me / assignee = me / Department Tickets, each counted separately
+- Details read from the message: status, priority, department, dateRange
+- Asks when unclear: Raised by me or assigned to me (or the department), with the counts, when more than one has tickets.
+- Example phrasings:
+  - `show my tickets` -> `list_tickets`
+  - `show my resolved tickets` -> `list_tickets`
+  - `which tickets have I resolved` -> `list_tickets`
+  - `list the tickets that are resolved and belong to me` -> `list_tickets`
+  - `can I see my completed tickets` -> `list_tickets`
+  - `show tickets raised by me or assigned to me` -> `list_tickets`
+  - `tickets associated with me` -> `list_tickets`
+
+## DEPARTMENT_TICKETS
+
+The portal's Department Tickets: an Employee's own department (view and public comments only), a Manager's or Team Lead's accessible departments, every department for an Admin. Filters: status, priority, assignee, assignment state, dates.
+
+- Roles: ADMIN, MANAGER, TEAMLEAD, EMPLOYEE
+- Source: ticket search (scoped) with the Department Tickets scope (utils/ticketAccess.js#departmentScopeWhere)
+- Details read from the message: status, priority, assignee, dateRange
+- Asks when unclear: None.
+- Example phrasings:
+  - `show my department's tickets` -> `list_tickets`
+  - `show my department tickets` -> `list_tickets`
+  - `show open tickets in my department` -> `list_tickets`
+  - `how many tickets are in my department` -> `list_tickets`
+  - `show unassigned tickets in my department` -> `list_tickets`
+
+## CC_TICKETS
+
+Tickets the user is on the Custom CC list of: view and public comments only, as on the ticket page.
+
+- Roles: ADMIN, MANAGER, TEAMLEAD, EMPLOYEE
+- Source: ticket search (scoped) with TicketCC = the signed-in user (utils/ticketAccess.js#ccScopeWhere)
+- Details read from the message: status, priority, dateRange
+- Asks when unclear: None.
+- Example phrasings:
+  - `show tickets I'm CC'd on` -> `list_tickets`
+  - `which tickets am I cc'd in` -> `list_tickets`
+  - `show tickets where I am in cc` -> `list_tickets`
+  - `how many tickets am I copied on` -> `list_tickets`
+
 ## TICKET_SEARCH
 
 Tickets by status, priority, department, person or date, inside what the user may see.

@@ -219,7 +219,7 @@ export default function ChatMessage({ message, onNavigate, onSend, onFeedback, d
           {data.people ? <PeopleResultCard people={data.people} /> : data.departmentMembers && <PeopleCard departments={data.departmentMembers} />}
           {(data.person || data.userSummary) && <PersonCard person={data.person || data.userSummary} />}
           {data.departments && data.headline && <DepartmentListCard departments={data.departments} />}
-          {(data.headcount || data.ticketsByDepartment || data.assignments) && <DepartmentStatsCard headcount={data.headcount} ticketsByDepartment={data.ticketsByDepartment} assignments={data.assignments} />}
+          {(data.headcount || data.ticketsByDepartment || data.assignments) && <DepartmentStatsCard headcount={data.headcount} ticketsByDepartment={data.ticketsByDepartment} ticketsPeriod={data.ticketsByDepartmentPeriod} assignments={data.assignments} />}
           {data.roles && <RoleCountsCard roles={data.roles} />}
           {data.weeklyReport && <WeeklyReportCard report={data.weeklyReport} />}
           {data.tickets && <TicketListCard tickets={data.tickets} total={data.total} listing={data.listing} onNavigate={onNavigate} onSend={onSend} />}

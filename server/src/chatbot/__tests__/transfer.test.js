@@ -103,7 +103,8 @@ describe("the answer, per role", () => {
   });
 
   test("a ticket the user cannot see gets the usual neutral answer and nothing about it", async () => {
-    const r = await ask(users.empB, "2627001 transfer to Finance");
+    // Dan (Finance) has no relation to this IT Support ticket: not his, not his department's, not CC'd.
+    const r = await ask(users.empD, "2627001 transfer to Finance");
     expect(r.message).toBe(NEUTRAL);
     expect(r.data.guide).toBeUndefined();
     expect(JSON.stringify(r)).not.toMatch(/Printer on floor 2|IT Support/);

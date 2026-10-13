@@ -43,11 +43,13 @@ each(ROLES, (role) => {
 });
 
 // The Info panel and quick actions never claim what the role cannot do.
-add("EMPLOYEE", "ROLE_HOME", "Employee home never offers department, assignment or user features", {
+// An Employee's home mirrors their portal tabs (Raised By Me, Assigned To Me, Department Tickets) and never offers
+// assignment, workload or people features.
+add("EMPLOYEE", "ROLE_HOME", "Employee home never offers assignment, workload or user features", {
   say: "help", outcome: "DATA",
   check: () => {
     const text = JSON.stringify(getSuggestions(WHO.EMPLOYEE).capabilities) + JSON.stringify(getSuggestions(WHO.EMPLOYEE).quickActions);
-    return /department tickets|assign,|reassign|transfer|workload|employees|users|managers/i.test(text) ? "the Employee home mentions something an Employee cannot use" : null;
+    return /assign,|reassign|transfer|workload|employees|users|managers/i.test(text) ? "the Employee home mentions something an Employee cannot use" : null;
   },
 });
 add("ADMIN", "ROLE_HOME", "Admin home never offers raising, assigning or transferring tickets (the application does not allow it)", {
@@ -79,8 +81,9 @@ add("MANAGER", "AUTHORIZATION", "Manager's suggestions offer only the department
   say: "Show HR tickets", outcome: "DENIED",
   check: (r) => ((r.suggestedActions || []).some((a) => /Hardware|HR\b/.test(a.prompt)) ? "suggested a department the Manager cannot reach" : (r.suggestedActions || []).some((a) => /BI\/Copilot/.test(a.prompt)) ? null : "did not suggest the Manager's own department"),
 });
-add("EMPLOYEE", "AUTHORIZATION", "Employee asking for department-wide data is refused in the Employee portal's words", {
-  say: "Show all department tickets", outcome: "DENIED", has: "Employee portal",
+// "All department tickets" from an Employee is their own department's Department Tickets, never more.
+add("EMPLOYEE", "AUTHORIZATION", "Employee asking for department-wide tickets gets their own department's only", {
+  say: "Show all department tickets", web: web(() => true, { scope: "department" }), allPages: true, noLeak: [...OUTSIDE_BI.numbers, ...OUTSIDE_BI.titles],
 });
 
 // ---- latest ticket, summaries, workload, "who" and workflow ---------------------------------------

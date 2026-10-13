@@ -89,26 +89,46 @@ describe("refusals", () => {
   });
 
   test("a ticket outside the user's scope is answered neutrally and nothing about it leaks", async () => {
-    const r = await ask(users.empB, "show ticket 2627001");
+    // Dan (Finance): not the requester, assignee, a member of its department, or on its CC list.
+    const r = await ask(users.empD, "show ticket 2627001");
     expect(r.message).toBe(NEUTRAL);
     expect(JSON.stringify(r)).not.toMatch(/Printer on floor 2|Alice Employee|id_2627001/);
   });
 
-  test("being on a ticket's Custom CC list alone does not open it (the same rule as the ticket page)", async () => {
-    // The application sends CC'd people e-mail copies; viewing still needs requester, assignee or department access.
-    db.tickets.find((t) => t.ticketNumber === "2627001").ccUsers = [{ user: { id: users.empB.id, name: users.empB.name } }];
-    expect((await ask(users.empB, "show ticket 2627001")).message).toBe(NEUTRAL);
-    const digest = (await ask(users.empB, "what's new")).data.digest;
-    expect(digest.updated.tickets.map((t) => t.ticketNumber)).not.toContain("2627001");
-    // ...and it never widens what else they can see.
-    for (const t of (await ask(users.empB, "show my tickets")).data.tickets || []) expect([t.raisedBy, t.assignedTo]).toContain("Bob Employee");
+  // The ticket page's rule (utils/ticketAccess.js): a Custom CC recipient may VIEW that ticket and add public comments.
+  // It opens that one ticket only, never its department, and nothing else about the ticket can be changed.
+  test("being on a ticket's Custom CC list opens that ticket for viewing and public comments only", async () => {
+    const t = db.tickets.find((x) => x.ticketNumber === "2627001");
+    t.ccUsers = [{ userId: users.empD.id, user: { id: users.empD.id, name: users.empD.name } }];
+    const shown = await ask(users.empD, "show ticket 2627001");
+    expect(shown.error).toBeNull();
+    expect(shown.data.access).toEqual({ level: "participant", note: expect.stringMatching(/Custom CC list/) });
+    expect(JSON.stringify(shown)).not.toContain("INTERNAL-SECRET-NOTE");
+    const cc = await ask(users.empD, "show tickets I'm CC'd on");
+    expect(cc.data.tickets.map((x) => x.ticketNumber)).toEqual(["2627001"]);
+    const close = await ask(users.empD, "Close ticket 2627001 reason: done");
+    expect(close.error.code).toBe("CHAT_ACCESS_DENIED");
+    expect(close.message).toMatch(/Custom CC list of ticket 2627001/);
+    expect(close.pendingAction).toBeNull();
+    expect((await ask(users.empD, "Add a comment on ticket 2627001: thanks")).pendingAction).toBeTruthy();
+    // ...it never widens what else they can see: their department view is still Finance only.
+    const dept = await ask(users.empD, "show my department's tickets");
+    for (const x of dept.data.tickets) expect({ n: x.ticketNumber, dept: x.department }).toEqual({ n: x.ticketNumber, dept: "Finance" });
+    expect(dept.data.tickets.map((x) => x.ticketNumber)).not.toContain("2627001");
+    // Removing them from the CC list removes the access.
+    t.ccUsers = [];
+    expect((await ask(users.empD, "show ticket 2627001")).message).toBe(NEUTRAL);
   });
 
-  test("an Employee cannot ask for workload, people or another person's tickets", async () => {
-    for (const q of ["show employee workload", "who works in IT Support", "show tickets assigned to Carol Worker"]) {
+  test("an Employee cannot ask for workload or people; a person filter stays inside their own department", async () => {
+    for (const q of ["show employee workload", "who works in IT Support", "show tickets assigned to Mark Manager"]) {
       const r = await ask(users.empA, q);
       expect({ q, code: r.error?.code }).toEqual({ q, code: "CHAT_ACCESS_DENIED" });
     }
+    // The Department Tickets "Assignee" filter: a colleague of the same department.
+    const carol = await ask(users.empA, "show tickets assigned to Carol Worker");
+    expect(carol.error).toBeNull();
+    for (const x of carol.data.tickets) expect({ dept: x.department, to: x.assignedTo }).toEqual({ dept: "IT Support", to: "Carol Worker" });
   });
 });
 

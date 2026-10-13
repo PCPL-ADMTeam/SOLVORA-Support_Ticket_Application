@@ -4,7 +4,7 @@ const { MAX_TEAMLEADS_PER_DEPARTMENT } = require("../../config/constants");
 const { resolveDepartment, resolveUser, resolveUserArg, resolvePriority, invalid } = require("./resolvers");
 const { toPlainText } = require("../text");
 const { ChatError, CODES } = require("../chatbot.errors");
-const { normalizeTicketNumber, TICKET_REF_PATTERN, loadAuthorizedTicket, OPEN_STATUSES } = require("../tools/ticketTools");
+const { normalizeTicketNumber, TICKET_REF_PATTERN, loadAuthorizedTicket, accessOf, OPEN_STATUSES } = require("../tools/ticketTools");
 const { countWords, MAX_PROBLEM_SUMMARY_WORDS } = require("../../utils/wordCount");
 const { actionRoles } = require("../permissions");
 
@@ -83,15 +83,59 @@ async function eligibleAssignees(ctx, ticket) {
 
 // "Assign ticket N" with nobody named: the ticket (checked as for any action) and who can take it.
 async function assigneeOptions(ctx, ticketRef) {
-  const ticket = await loadTicket(ctx, ticketRef);
+  const ticket = await loadTicket(ctx, ticketRef, "assign_ticket");
   return { ticketNumber: ticket.ticketNumber, people: await eligibleAssignees(ctx, ticket), canSelfAssign: ctx.scope.role === "TEAMLEAD" && ticket.assigneeId !== ctx.scope.userId };
 }
 
 // The ticket, only if it is inside the caller's authorized scope. Anything else
-// (missing, or exists but not theirs) throws the SAME neutral error.
-async function loadTicket(ctx, ref) {
+// (missing, or exists but not theirs) throws the SAME neutral error. With `action`, the caller must also be
+// allowed to DO it: see assertMayAct.
+async function loadTicket(ctx, ref, action) {
   if (!ref || !TICKET_REF_PATTERN.test(ref)) throw invalid("That doesn't look like a valid ticket number. Ticket numbers are digits only, for example 2627001.");
-  return loadAuthorizedTicket(ctx, normalizeTicketNumber(ref), TICKET_SELECT);
+  const ticket = await loadAuthorizedTicket(ctx, normalizeTicketNumber(ref), TICKET_SELECT);
+  if (action) await assertMayAct(ctx, ticket, action);
+  return ticket;
+}
+
+// What each ticket change is called, and who may make it in Solvora (ticket.service.js#updateTicket,
+// #transferDepartment, #addComment).
+const WHO_MAY = {
+  change_ticket_priority: ["change its priority", "a Manager or Team Lead of its department, or an Admin"],
+  change_ticket_status: ["change its status", "the person it is assigned to, a Manager or Team Lead of its department, or an Admin"],
+  assign_ticket: ["assign or reassign it", "a Manager or Team Lead of its department"],
+  close_ticket: ["close it", "the person it is assigned to, a Manager or Team Lead of its department, or an Admin"],
+  transfer_ticket: ["transfer it", "the person it is assigned to, or a Manager or Team Lead of its department"],
+  reopen_ticket: ["reopen it", "the person who raised it, the person it is assigned to, a Manager or Team Lead of its department, or an Admin"],
+  add_ticket_comment: ["add comments to it", "the people working on it, the employees of its department and the people on its Custom CC list"],
+};
+
+// Seeing a ticket is not the same as being allowed to change it. The ticket service gives VIEW-ONLY access to an
+// Employee of the ticket's department and to its Custom CC recipients (both may still add public comments), and to
+// a Manager / Team Lead who raised a ticket that is now in a department they don't manage (view only). Every change
+// needs the service's full access. Checked here so the user is told before a preview, not after Confirm; the
+// service checks again when the change is made.
+async function assertMayAct(ctx, ticket, action) {
+  const access = await accessOf(ctx, ticket);
+  if (access.level === "full" || (action === "add_ticket_comment" && access.level === "participant")) return;
+  const n = ticket.ticketNumber;
+  const dept = ticket.toDepartment?.name;
+  const [verb, who] = WHO_MAY[action];
+  const why =
+    access.via === "cc"
+      ? `You're on the Custom CC list of ticket ${n}, so you can view it and add public comments`
+      : access.via === "department"
+        ? `Ticket ${n} belongs to your department${dept ? ` (${dept})` : ""}, so you can view it and add public comments`
+        : `You raised ticket ${n}, but it is now handled by ${dept || "another department"}, which you don't manage, so you can only view it`;
+  await ctx.audit("ACTION_TICKET_ACCESS_DENIED", "Ticket", n, "DENIED");
+  throw new ChatError(CODES.ACCESS_DENIED, {
+    internal: `${action} needs full ticket access (caller has ${access.level})`,
+    message: `${why}. You can't ${verb}: only ${who} can.`,
+    suggestions: [
+      { label: `Show ticket ${n}`, prompt: `Show ticket ${n}` },
+      ...(access.level === "participant" && action !== "add_ticket_comment" ? [{ label: "Add a comment", prompt: `Add a comment on ticket ${n}` }] : []),
+      { label: "Show comments", prompt: `Show comments on ticket ${n}` },
+    ],
+  });
 }
 
 function assertTransition(ticket, to) {
@@ -105,8 +149,11 @@ const ACTIONS = {
   // ======================= departments & people (Admin) =======================
   // ---- the signed-in user's own notifications (the bell) --------------------
   // Always the actor's own rows: the existing service scopes every call by userId.
+  // `editable: false` = nothing in the preview can be changed (no person, ticket or text to correct), so the
+  // card offers only Confirm and Cancel.
   mark_all_notifications_read: {
     title: "Mark notifications as read",
+    editable: false,
     async prepare(ctx) {
       const unread = await services.notification().countUnread(ctx.actorId);
       if (!unread) throw invalid("You have no unread notifications.");
@@ -124,6 +171,7 @@ const ACTIONS = {
 
   mark_notification_read: {
     title: "Mark a notification as read",
+    editable: false,
     async prepare(ctx) {
       const [latest] = await services.notification().listForUser(ctx.actorId, { unreadOnly: true });
       if (!latest) throw invalid("You have no unread notifications.");
@@ -141,6 +189,7 @@ const ACTIONS = {
 
   clear_notifications: {
     title: "Clear notifications",
+    editable: false,
     async prepare(ctx) {
       const total = await prisma.notification.count({ where: { userId: ctx.actorId } });
       if (!total) throw invalid("You have no notifications to clear.");
@@ -454,7 +503,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   change_ticket_priority: {
     title: "Change ticket priority",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "change_ticket_priority");
       const priority = await resolvePriority(cleanName(args.priority, "priority"));
       if (ticket.priority?.name === priority.name) throw invalid(`Ticket ${ticket.ticketNumber} already has ${priority.name} priority.`);
       return {
@@ -472,7 +521,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   change_ticket_status: {
     title: "Change ticket status",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "change_ticket_status");
       const status = String(args.status || "").toUpperCase().replace(/\s+/g, "_");
       if (!["IN_PROGRESS", "ON_HOLD", "RESOLVED", "OPEN"].includes(status)) throw invalid('I can set a ticket to In Progress, On Hold, Resolved or Open. To close or reopen one, say "close ticket" or "reopen ticket".');
       if (ctx.scope.role === "EMPLOYEE" && ticket.assigneeId !== ctx.actorId) {
@@ -508,7 +557,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   assign_ticket: {
     title: "Assign ticket",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "assign_ticket");
       if (ticket.status === "CLOSED") throw new ChatError(CODES.INVALID_TICKET_TRANSITION, { message: `Ticket ${ticket.ticketNumber} is closed. Reopen it before assigning it.` });
       const note = args.note ? cleanText(args.note, "note", { max: 1000 }) : "";
       const offer = async () => (await eligibleAssignees(ctx, ticket)).map((u) => ({ label: u.name, prompt: `Assign ticket ${ticket.ticketNumber} to ${u.name}` }));
@@ -529,7 +578,16 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
       // What the preview's Edit offers: the eligible people (names only) and the note, for a new preview.
       const editFor = async (current) => ({ kind: "assign", ticketNumber: ticket.ticketNumber, assignee: current, note, options: (await eligibleAssignees(ctx, ticket)).map((u) => u.name), canSelfAssign: ctx.scope.role === "TEAMLEAD" && ticket.assigneeId !== ctx.actorId });
       if (toSelf || assignee.id === ctx.actorId) {
-        if (ctx.scope.role !== "TEAMLEAD") throw new ChatError(CODES.INVALID_ROLE_OPERATION, { message: "Managers can't be assigned tickets in Solvora. Assign it to an employee of the ticket's department." });
+        if (ctx.scope.role !== "TEAMLEAD") {
+          // Never a dead end: offer the people who CAN take it (one click prepares that assignment's preview).
+          const people = await offer();
+          throw new ChatError(CODES.INVALID_ROLE_OPERATION, {
+            message: people.length
+              ? `Managers can't be assigned tickets in Solvora. Choose who should handle ticket ${ticket.ticketNumber} in ${ticket.toDepartment?.name || "its department"}:`
+              : `Managers can't be assigned tickets in Solvora, and ${ticket.toDepartment?.name || "the ticket's department"} has no other active employee to assign ticket ${ticket.ticketNumber} to.`,
+            suggestions: people,
+          });
+        }
         if (ticket.assigneeId === ctx.actorId) throw invalid(`Ticket ${ticket.ticketNumber} is already assigned to you.`);
         return {
           edit: await editFor("me"),
@@ -569,7 +627,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   close_ticket: {
     title: "Close ticket",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "close_ticket");
       const reason = args.reason ? toPlainText(args.reason, 300) : null;
       if (!reason) {
         throw invalid(`Closing a ticket requires a reason. Say, for example: "Close ticket ${ticket.ticketNumber} reason: duplicate of an earlier request".`);
@@ -594,7 +652,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   transfer_ticket: {
     title: "Transfer ticket",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "transfer_ticket");
       // The department the ticket moves to may be any department (as on the ticket page).
       const dest = await resolveDepartment(cleanName(args.department, "department"));
       const reason = args.reason ? cleanText(args.reason, "reason", { max: 1000 }) : null;
@@ -618,7 +676,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   reopen_ticket: {
     title: "Reopen ticket",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "reopen_ticket");
       const reason = args.reason ? cleanText(args.reason, "reason", { max: 1000 }) : null;
       if (!reason) throw invalid(`Reopening a ticket needs a reason. Say, for example: "Reopen ticket ${ticket.ticketNumber} because the problem came back".`);
       // ticket.service allows the requester to reopen their own RESOLVED/CLOSED ticket and the
@@ -644,7 +702,7 @@ Status: ${STATUS_LABEL[t.status] || t.status}`,
   add_ticket_comment: {
     title: "Add comment",
     async prepare(ctx, args) {
-      const ticket = await loadTicket(ctx, args.ticket);
+      const ticket = await loadTicket(ctx, args.ticket, "add_ticket_comment");
       const body = cleanText(args.comment, "comment", { max: 2000 });
       return {
         params: { ticketId: ticket.id, ticketNumber: ticket.ticketNumber, body },

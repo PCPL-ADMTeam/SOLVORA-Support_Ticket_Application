@@ -37,8 +37,12 @@ describe("lists with reasons ('show me the closed ticket reasons')", () => {
   });
 
   test("only tickets the user may see", async () => {
-    const emp = await ask(P.empBI, "show the closed ticket reasons"); // Srihari raised 2600272
+    const emp = await ask(P.empBI, "show my closed ticket reasons"); // Srihari raised 2600272 (and is assigned none)
     expect(emp.data.tickets.map((t) => t.ticketNumber)).toEqual(["2600272"]);
+    // Without "my", an Employee's question may mean their own tickets or their department's: asked, with the counts.
+    const which = await ask(P.empBI, "show the closed ticket reasons");
+    expect(which.responseType).toBe("clarification");
+    expect(which.data.counts).toEqual({ raised: 1, assigned: 0, dept: 1 });
     const mgr = await ask(P.mgrBI, "show me the resolved ticket reasons"); // BI/Copilot only
     expect(mgr.data.tickets.map((t) => t.ticketNumber)).toEqual(["2600271"]);
   });

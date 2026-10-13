@@ -50,6 +50,8 @@ module.exports = [
     steps: [
       "Open the ticket from Tickets.",
       "If a ticket you raised is Resolved or Closed, select Reopen Ticket at the top of the ticket page.",
+      "Enter why it needs to be reopened (a reason is required) and confirm. The reason is saved on the ticket and in its history.",
+      "You can also ask here, for example: \"Reopen ticket 2600270 because the problem came back\".",
     ],
     warning: "Employees cannot close tickets they raised; closing is done by the person working the ticket or their department's management.",
     keywords: ["close ticket", "reopen", "re-open", "reopen ticket", "close a ticket"],

@@ -153,7 +153,8 @@ export default function ActionConfirmCard({ action, state, onConfirm, onCancel, 
               </Button>
             </Stack>
           )}
-          {onEdit && !discarding && (
+          {/* Edit only where there is something to correct (not for e.g. clearing notifications). */}
+          {onEdit && !discarding && action.editable !== false && (
             <Button
               variant="text"
               size="small"

@@ -90,10 +90,17 @@ async function departmentNames(ids) {
 
 const ticketsByDepartment = {
   name: "get_tickets_by_department",
-  description: "Ticket counts per department inside the caller's authorized scope.",
-  inputSchema: {},
-  async run(ctx) {
-    const base = await staffWhere(ctx, "tickets by department");
+  description: "Ticket counts per department inside the caller's authorized scope, optionally for tickets created in a date window.",
+  // Optional creation-date window (inclusive whole days, like the ticket list's From/To). It only narrows.
+  inputSchema: { dateFrom: { type: "string", max: 10, pattern: /^\d{4}-\d{2}-\d{2}$/ }, dateTo: { type: "string", max: 10, pattern: /^\d{4}-\d{2}-\d{2}$/ } },
+  async run(ctx, input = {}) {
+    const scoped = await staffWhere(ctx, "tickets by department");
+    const created = {
+      // Same day boundaries as the ticket list (ticket.service.js#listTickets, search_authorized_tickets).
+      ...(input.dateFrom ? { gte: new Date(input.dateFrom) } : {}),
+      ...(input.dateTo ? { lt: new Date(new Date(input.dateTo).getTime() + DAY_MS) } : {}),
+    };
+    const base = Object.keys(created).length ? { AND: [scoped, { createdAt: created }] } : scoped;
     const groups = await prisma.ticket.groupBy({ by: ["toDepartmentId"], where: base, _count: { _all: true } });
     const open = await prisma.ticket.groupBy({ by: ["toDepartmentId"], where: { AND: [base, { status: { in: OPEN_STATUSES } }] }, _count: { _all: true } });
     const names = await departmentNames(groups.map((g) => g.toDepartmentId).filter(Boolean));

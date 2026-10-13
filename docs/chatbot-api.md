@@ -213,26 +213,45 @@ time). What's New with no range means today plus the six days before it.
 
 ### Ticket views
 
-Every ticket list is one of these views. Each is a separate filter on `search_authorized_tickets`, applied inside the
-signed-in user's own scope (the role and departments come from the authenticated user, never from the message).
-`total` is the count of that same query.
+Every ticket list is one of these views. Each is a scope of `search_authorized_tickets` built from the signed-in user
+by the application's own rules (`utils/ticketAccess.js#scopeWhereForTab`; the role and departments come from the
+authenticated user, never from the message), and each matches a portal tab. `total` is the count of that same query.
 
-| View | Example questions | Filter | Title | Who can use it |
+| View | Example questions | Scope (portal tab) | Title | Who can use it |
 |---|---|---|---|---|
-| My Tickets | "Show my tickets", "What tickets are associated with me?" | requester = me OR assignee = me (the portal's "My Tickets" tab) | My Tickets | Employee, Team Lead, Manager |
-| Assigned to me | "Show tickets assigned to me", "What tickets am I handling?" | assignee = me | Tickets Assigned to Me | Employee, Team Lead (a Manager is never an assignee) |
-| Raised by me | "Show tickets raised by me", "What issues have I reported?" | requester = me | Tickets Raised by Me | Employee, Team Lead, Manager |
-| My department | "Show my department's tickets", "Show open tickets in my department" | the departments the user has access to | My Department's Tickets (Admin: All Tickets) | Team Lead, Manager, Admin |
-| A named department | "Show tickets in Hardware", "What issues are reported in Hardware?" | that department, still inside the user's scope | Tickets in Hardware (Employee: My Tickets in Hardware) | all roles |
+| Raised by me | "Show tickets raised by me", "What issues have I reported?" | requester = me (My Tickets > Raised By Me) | Tickets Raised by Me | Employee, Team Lead, Manager |
+| Assigned to me | "Show tickets assigned to me", "What tickets am I handling?" | assignee = me (My Tickets > Assigned To Me) | Tickets Assigned to Me | Employee, Team Lead (a Manager is never an assignee) |
+| Both | "Show tickets raised by me or assigned to me", "What tickets are associated with me?" | requester = me OR assignee = me | Tickets Raised by or Assigned to Me | Employee, Team Lead, Manager |
+| Department Tickets | "Show my department's tickets", "Show open tickets in my department" | `department`: an Employee's own department (`User.departmentId`); a Manager's / Team Lead's accessible departments; every department for an Admin | My Department's Tickets (Admin: All Tickets) | all roles |
+| A named department | "Show tickets in Hardware" | that department, inside the user's department view | Tickets in Hardware | all roles (an Employee: their own department only) |
+| CC'd to me | "Show tickets I'm CC'd on" | Custom CC (`TicketCC`) = me | Tickets I'm CC'd On | all roles |
+| Text search | "Show tickets about VPN" | `authorized`: everything the user may view (the portal's global search) | Tickets | all roles |
 
-Status, priority and date words narrow a view ("My Open Tickets", "My Department's High Priority Tickets").
-An Employee who asks for department tickets gets `CHAT_ACCESS_DENIED` with an explanation and links to their own
-views (the ticket tool refuses the department scope and audits it). An Admin's own views are always empty (Admins
-don't raise tickets and are never assigned), and the reply says so.
+**"My tickets" is ambiguous.** Raised by me and assigned to me are two tabs, so "show my tickets" (and the same with
+filters: "my resolved tickets", "which tickets have I resolved?", "tickets that belong to me") never returns one
+blended list or count. Each option is counted with the same filters, then:
+
+- two or more options have tickets: the reply asks (`responseType: "clarification"`, `data.counts`), with one button
+  per option labelled with its count. The answer may be typed ("raised", "assigned", "department", "2") or clicked; it
+  resumes the same question with the filters held server-side (`_state.selection`);
+- only one of the user's own tabs has tickets: that list is shown, with a note saying why;
+- none: the reply says so and, for an Employee, how many their department has.
+
+An Employee's ticket question that says nothing about whose tickets ("show open tickets", "resolved") is asked the
+same way, with Department Tickets as a third option. A Manager's "my tickets" are the ones they raised; an Admin's own
+views are always empty (Admins don't raise tickets and are never assigned), and the reply says so. Counts
+("how many open tickets do I have?") are answered per tab, side by side.
+
+**View-only access.** An Employee may open a colleague's ticket in their own department, and anyone on a ticket's
+Custom CC list may open that ticket: view and public comments only. A Manager / Team Lead who raised a ticket now in a
+department they don't manage may only view it. `show ticket N` then adds a `Your access: ...` line and `data.access`
+(`{ level: "participant" | "requester-read", note }`), and every change (status, priority, assignment, close, reopen,
+transfer) is refused with `CHAT_ACCESS_DENIED` before any preview, saying who can make it. Internal notes, and files
+attached to internal notes, are never shown by the assistant to anyone.
 
 After every list, count or empty result, `suggestedActions` offers up to three other views the role can use (for
-example after My Tickets: Assigned to Me, Raised by Me, My Department's Tickets), then narrowing steps such as
-"Only open". Each suggestion is a normal question, so it runs the same filter as typing it.
+example after Raised by Me: Assigned to Me, My Department's Tickets, My Unresolved Tickets), then narrowing steps
+such as "Only open". Each suggestion is a normal question, so it runs the same filter as typing it.
 
 ## Raising a ticket (drafts)
 

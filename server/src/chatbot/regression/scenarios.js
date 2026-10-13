@@ -54,9 +54,10 @@ const thisMonth = (t) => new Date(t.createdAt) >= monthStart();
 const and = (...fs) => (t) => fs.every((f) => f(t));
 const web = (pred, query) => ({ pred, query });
 
-// What the answer may list: only tickets the backend lists for this user.
+// What the answer may list: only tickets the backend lets this user view (its global-search scope: own, department,
+// Custom CC, and for a Manager / Team Lead the tickets they raised elsewhere).
 async function outsideAccess(role, got) {
-  const want = numbers(await getAccessibleTickets(role));
+  const want = numbers(await getAccessibleTickets(role, { scope: "authorized" }));
   const extra = got.filter((n) => !want.includes(n));
   return extra.length ? "listed tickets outside the user's access: " + extra.join(",") : null;
 }
@@ -124,7 +125,12 @@ each(STAFF, (role) => {
 });
 add("EMPLOYEE", "FILTERING", "Filter: raised by me", { say: "Show tickets raised by me", web: web(() => true, { scope: "created" }), allPages: true });
 add("EMPLOYEE", "FILTERING", "Filter: assigned to me", { say: "Show tickets assigned to me", web: web(() => true, { scope: "assigned" }), allPages: true });
-add("EMPLOYEE", "AUTHORIZATION", "An Employee cannot filter by another person", { say: "Show tickets assigned to Manoj Kumar R", outcome: "DENIED", noLeak: ["Manoj Kumar R"] });
+// Department Tickets (the Employee's own department) and its Assignee filter, as in the Employee portal.
+add("EMPLOYEE", "FILTERING", "Filter: my department's tickets (Department Tickets)", { say: "Show my department's tickets", web: web(() => true, { scope: "department" }), allPages: true });
+add("EMPLOYEE", "FILTERING", "Filter: open tickets in my department", { say: "Show open tickets in my department", web: web(OPEN, { scope: "department" }), allPages: true });
+add("EMPLOYEE", "FILTERING", "Filter: a colleague in my department (the Department Tickets Assignee filter)", { say: "Show tickets assigned to Manoj Kumar R", web: web(assignedTo("Manoj Kumar R"), { scope: "department" }), allPages: true });
+add("EMPLOYEE", "AUTHORIZATION", "An Employee cannot filter by a person of another department", { say: "Show tickets assigned to Manoj Kumar S", outcome: "DENIED", noLeak: ["Laptop order", "Monitor flicker"] });
+add("EMPLOYEE", "FILTERING", "Filter: tickets I'm CC'd on (none in the fixture)", { say: "Show tickets I'm CC'd on", outcome: "NO_DATA" });
 add("ADMIN", "FILTERING", "Filter: a department the Admin may see (Hardware)", { say: "Show Hardware tickets", web: web(inDept("Hardware")), allPages: true });
 add("ADMIN", "FILTERING", "Filter: open Hardware tickets", { say: "Show open Hardware tickets", web: web(and(OPEN, inDept("Hardware"))), allPages: true });
 add("ADMIN", "FILTERING", "Filter: high priority open Hardware tickets", { say: "Show high priority open Hardware tickets", web: web(and(prio("High"), OPEN, inDept("Hardware"))), allPages: true });
@@ -268,8 +274,10 @@ each(["TEAMLEAD", "MANAGER"], (role) => {
   add(role, "AUTHORIZATION", "Assign to an employee of an unauthorized department", { say: "Assign ticket 2600270 to Manoj Kumar S", outcome: ["DENIED", "INVALID", "NOT_FOUND"], check: (r, ctx) => noWrite(ctx), noLeak: ["Hardware"] });
   add(role, "AUTHORIZATION", "Transfer a ticket outside the user's access", { say: "Transfer ticket 2600280 to BI/Copilot", outcome: ["DENIED", "NOT_FOUND", "INVALID"], check: (r, ctx) => noWrite(ctx), noLeak: ["Laptop order"] });
 });
-add("EMPLOYEE", "AUTHORIZATION", "Another employee's ticket (same department) is neutral", { say: "Show ticket 2600271", outcome: "NOT_FOUND", has: NEUTRAL, noLeak: ["Dashboard refresh is slow"] });
-add("EMPLOYEE", "AUTHORIZATION", "Show department tickets is not available", { say: "Show my department tickets", outcome: "DENIED" });
+// Department Tickets: a colleague's ticket in the Employee's own department opens VIEW-ONLY (public comments allowed).
+add("EMPLOYEE", "AUTHORIZATION", "Another employee's ticket in my department opens view-only", { say: "Show ticket 2600271", outcome: "DATA", has: ["Your access", "so you can view it and add public comments"] });
+add("EMPLOYEE", "AUTHORIZATION", "Another employee's ticket in my department cannot be changed", { say: "Close ticket 2600271 reason: done", outcome: "DENIED", has: "so you can view it and add public comments", check: (r, ctx) => noWrite(ctx) });
+add("EMPLOYEE", "AUTHORIZATION", "Show department tickets lists only my own department", { say: "Show my department tickets", web: web(inDept("BI/Copilot"), { scope: "department" }), allPages: true, noLeak: forbiddenFor("EMPLOYEE") });
 for (const q of ["Assign ticket 2600270 to Jamie User", "Reassign ticket 2600269 to Jamie User", "Assign ticket 2600270 to me"]) {
   add("EMPLOYEE", "AUTHORIZATION", 'Employee cannot assign: "' + q + '"', { say: q, outcome: "DENIED", check: (r, ctx) => noWrite(ctx) });
 }
@@ -302,7 +310,7 @@ each(ROLES, (role) => {
   add(role, "INVALID_DATA", "A ticket that does not exist answers exactly like one the user may not see", role === "ADMIN" ? [{ say: "Show ticket 999999999", has: NEUTRAL }] : [{ say: "Show ticket 999999999", has: NEUTRAL }, { say: "Show ticket 2600280", has: NEUTRAL }], { expected: "the same neutral answer, so the ticket's existence is not revealed" });
   add(role, "INVALID_DATA", "Employee that does not exist", { say: "Show employee Nobody", outcome: role === "EMPLOYEE" ? ["DENIED"] : ["NO_DATA", "NOT_FOUND", "INVALID"], suggest: "Show employees in BI/Copilot" });
   add(role, "INVALID_DATA", "Department that does not exist", { say: "Show department XYZ", outcome: ["NO_DATA", "NOT_FOUND", "INVALID"], suggest: "Show departments" });
-  add(role, "INVALID_DATA", "Tickets assigned to a person that does not exist", { say: "Show tickets assigned to Nobody", outcome: role === "EMPLOYEE" ? ["DENIED"] : ["NO_DATA", "NOT_FOUND", "INVALID"] });
+  add(role, "INVALID_DATA", "Tickets assigned to a person that does not exist", { say: "Show tickets assigned to Nobody", outcome: ["NO_DATA", "NOT_FOUND", "INVALID"] });
 });
 
 // ============================================================================================
@@ -358,11 +366,13 @@ each(ROLES, (role) => {
     } },
     { say: "What priority is it?", outcome: "DATA", check: (r, ctx, st) => lacks(r, [st.firstRow.priority.name]) },
   ]);
+  // An Employee naming their own department sees its Department Tickets (and may filter them by a colleague).
+  const deptTab = role === "EMPLOYEE" ? { scope: "department" } : undefined;
   add(role, "CONVERSATION", "Correction chain: Hardware, actually BI/Copilot, only open ones, assigned to Jamie", [
     role === "ADMIN" ? { say: "Show Hardware tickets", web: web(inDept("Hardware")), allPages: true } : { say: "Show Hardware tickets", outcome: "DENIED" },
-    { say: "Actually show BI/Copilot tickets", web: web(inDept("BI/Copilot")), allPages: true },
-    { say: "Only open ones", web: web(and(inDept("BI/Copilot"), OPEN)), allPages: true },
-    role === "EMPLOYEE" ? { say: "Assigned to Jamie", outcome: "DENIED" } : { say: "Assigned to Jamie", web: web(and(inDept("BI/Copilot"), OPEN, assignedTo("Jamie User"))), allPages: true },
+    { say: "Actually show BI/Copilot tickets", web: web(inDept("BI/Copilot"), deptTab), allPages: true },
+    { say: "Only open ones", web: web(and(inDept("BI/Copilot"), OPEN), deptTab), allPages: true },
+    { say: "Assigned to Jamie", web: web(and(inDept("BI/Copilot"), OPEN, assignedTo("Jamie User")), deptTab), allPages: true },
   ]);
 });
 each(["TEAMLEAD", "MANAGER"], (role) => {
@@ -391,8 +401,8 @@ const SWITCH = [
   ["Show Hardware tickets", { EMPLOYEE: { outcome: "DENIED" }, TEAMLEAD: { outcome: "DENIED" }, MANAGER: { outcome: "DENIED" }, ADMIN: { web: web(inDept("Hardware")), allPages: true } }],
   ["Show HR tickets", { EMPLOYEE: { outcome: "DENIED" }, TEAMLEAD: { outcome: "DENIED" }, MANAGER: { outcome: "DENIED" }, ADMIN: { web: web(inDept("HR")), allPages: true } }],
   ["Show all tickets", { EMPLOYEE: { outcome: ["DATA", "CLARIFY", "DENIED"], allPages: true, check: scopedOnly("EMPLOYEE") }, TEAMLEAD: { outcome: ["DATA", "CLARIFY"], allPages: true, check: scopedOnly("TEAMLEAD") }, MANAGER: { outcome: ["DATA", "CLARIFY"], allPages: true, check: scopedOnly("MANAGER") }, ADMIN: { web: web(() => true), allPages: true } }],
-  ["Show my department tickets", { EMPLOYEE: { outcome: "DENIED" }, TEAMLEAD: { web: web(inDept("BI/Copilot")), allPages: true }, MANAGER: { web: web(inDept("BI/Copilot")), allPages: true }, ADMIN: { outcome: ["DENIED", "CLARIFY", "INVALID", "DATA"] } }],
-  ["Show Jamie's tickets", { EMPLOYEE: { outcome: "DENIED" }, TEAMLEAD: { web: web(jamieTickets), allPages: true }, MANAGER: { web: web(jamieTickets), allPages: true }, ADMIN: { web: web(jamieTickets), allPages: true } }],
+  ["Show my department tickets", { EMPLOYEE: { web: web(inDept("BI/Copilot"), { scope: "department" }), allPages: true }, TEAMLEAD: { web: web(inDept("BI/Copilot")), allPages: true }, MANAGER: { web: web(inDept("BI/Copilot")), allPages: true }, ADMIN: { outcome: ["DENIED", "CLARIFY", "INVALID", "DATA"] } }],
+  ["Show Jamie's tickets", { EMPLOYEE: { web: web(jamieTickets, { scope: "department" }), allPages: true }, TEAMLEAD: { web: web(jamieTickets), allPages: true }, MANAGER: { web: web(jamieTickets), allPages: true }, ADMIN: { web: web(jamieTickets), allPages: true } }],
   ["Show ticket 2600280", { EMPLOYEE: { outcome: "NOT_FOUND" }, TEAMLEAD: { outcome: "NOT_FOUND" }, MANAGER: { outcome: "NOT_FOUND" }, ADMIN: { outcome: "DATA" } }],
   ["Assign ticket 2600270 to Jamie User", { EMPLOYEE: { outcome: "DENIED" }, TEAMLEAD: { outcome: "PREVIEW" }, MANAGER: { outcome: "PREVIEW" }, ADMIN: { outcome: "DENIED" } }],
   ["Reassign ticket 2600269 to Jamie User", { EMPLOYEE: { outcome: "DENIED" }, TEAMLEAD: { outcome: "PREVIEW" }, MANAGER: { outcome: "PREVIEW" }, ADMIN: { outcome: "DENIED" } }],

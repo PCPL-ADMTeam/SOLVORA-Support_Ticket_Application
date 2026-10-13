@@ -165,7 +165,7 @@ describe("ticket information", () => {
   test("no-result response", async () => {
     const r = await ask(users.empA, "Show my pending tickets");
     expect(r.error.code).toBe("CHAT_NO_RESULTS");
-    expect(r.message).toBe("I couldn't find any pending tickets raised by you or assigned to you.");
+    expect(r.message).toBe("You have no pending tickets raised by you or assigned to you.");
   });
 
   test("invalid ticket ids", async () => {

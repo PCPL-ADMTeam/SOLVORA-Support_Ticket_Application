@@ -11,6 +11,8 @@ const addDays = (d, n) => {
 };
 const startOfWeek = (d) => addDays(d, -((d.getDay() + 6) % 7));
 
+const WEEKDAYS = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const MONTHS = { jan: 0, january: 0, feb: 1, february: 1, mar: 2, march: 2, apr: 3, april: 3, may: 4, jun: 5, june: 5, jul: 6, july: 6, aug: 7, august: 7, sep: 8, sept: 8, september: 8, oct: 9, october: 9, nov: 10, november: 10, dec: 11, december: 11 };
 const MONTH_RE = "(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)";
 // "October 1", "1 Oct", "Oct 1st 2026", "2026-10-01". A missing year means this year.
@@ -63,6 +65,19 @@ function extractRelativeRange(m, now = new Date()) {
   if ((hit = m.match(/\b(?:last|past|previous)\s+(\d{1,3})\s+days?\b/))) {
     const n = Math.min(Number(hit[1]), 365);
     return { from: ymd(addDays(today, -(n - 1))), to: ymd(today), label: `the last ${n} days` };
+  }
+  // "since Monday", "from last Friday", "after Tue": from the most recent such day (today, if it is that day) until today.
+  // Only with since/from/after, so a weekday in other words ("the Monday meeting") is never read as a date.
+  if ((hit = m.match(/\b(?:since|from|after)\s+(?:last\s+|this\s+|the\s+)?(mon|tue|tues|wed|thu|thur|thurs|fri|sat|sun)(?:day|nesday|rsday|urday|sday)?\b/))) {
+    const target = WEEKDAYS[hit[1].slice(0, 3)];
+    const back = (today.getDay() - target + 7) % 7;
+    const start = addDays(today, -back);
+    return { from: ymd(start), to: ymd(today), label: `since ${WEEKDAY_NAMES[target]} (${ymd(start)})` };
+  }
+  // "since last week" runs until today; "from last week" means during last week (handled just below).
+  if (/\bsince\s+last\s+week\b/.test(m)) {
+    const start = addDays(startOfWeek(today), -7);
+    return { from: ymd(start), to: ymd(today), label: "since last week" };
   }
   if (/\b(last|past|previous)\s+week\b/.test(m)) {
     const start = addDays(startOfWeek(today), -7);
