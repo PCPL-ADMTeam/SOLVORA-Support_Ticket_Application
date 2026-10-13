@@ -322,6 +322,17 @@ model Ticket {
   // in TicketHistory as a REOPENED_REASON entry.
   reopenedReason  String? @db.Text
 
+  // Assignment workflow state (see ticket.service.js#updateTicket):
+  // - assignmentCycle: starts at 1, +1 each time the ticket is reopened from
+  //   RESOLVED/CLOSED (a new delegation cycle).
+  // - delegationUsed: whether the one employee-to-employee delegation of the
+  //   current cycle has been used; reset only when a new cycle starts.
+  // - assignmentVersion: +1 on every assignee/department/cycle change; used
+  //   for optimistic concurrency (stale assignment changes get a 409).
+  assignmentCycle   Int     @default(1)
+  delegationUsed    Boolean @default(false)
+  assignmentVersion Int     @default(0)
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -431,6 +442,11 @@ model TicketHistory {
   fieldName String?
   oldValue  String?
   newValue  String?
+  // Stable identifiers for assignment/transfer events (oldValue/newValue are
+  // display names): actorRole, kind, fromAssigneeId, toAssigneeId,
+  // fromDepartmentId, toDepartmentId, statusBefore, statusAfter, cycle,
+  // reason. Null on older rows and on other actions.
+  metadata  Json?
   createdAt DateTime @default(now())
 
   ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)

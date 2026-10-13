@@ -187,8 +187,34 @@ async function buildSelfAssignedRecipients(ticket, actingUserId) {
   return { userIds, ccUserIds };
 }
 
+// TICKET_DEPARTMENT_TRANSFERRED only:
+//   TO = every ACTIVE TEAMLEAD + MANAGER of the DESTINATION department
+//   CC = the requester + the assignee from before the transfer (if any) +
+//        every ACTIVE TEAMLEAD + MANAGER of the SOURCE department + the
+//        ticket's Custom CC
+// Both department ids are passed in explicitly — the source id and the
+// previous assignee must be the values read BEFORE the ticket was moved
+// (the updated ticket only knows the destination). Anyone in TO is removed
+// from CC here (e.g. management of both departments); address-level dedupe
+// and inactive/invalid filtering happen in notification.service.js#notify.
+async function buildTransferRecipients({ ticketId, requesterId, fromDepartmentId, toDepartmentId, previousAssigneeId }) {
+  const [toTeamLeads, toManagers, fromTeamLeads, fromManagers, ticketCcUserIds] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(toDepartmentId),
+    fromDepartmentId ? userDepartmentAccessService.getActiveDepartmentTeamLeads(fromDepartmentId) : [],
+    fromDepartmentId ? userDepartmentAccessService.getActiveDepartmentManagers(fromDepartmentId) : [],
+    getTicketCcUserIds(ticketId),
+  ]);
+  const userIds = [...new Set([...toTeamLeads, ...toManagers].map((u) => u.id))];
+  const ccUserIds = [
+    ...new Set([requesterId, previousAssigneeId, ...fromTeamLeads.map((u) => u.id), ...fromManagers.map((u) => u.id), ...ticketCcUserIds].filter(Boolean)),
+  ].filter((id) => !userIds.includes(id));
+  return { userIds, ccUserIds };
+}
+
 module.exports = {
   buildCreatedRecipients,
+  buildTransferRecipients,
   buildStandardRecipients,
   buildAssignedOrCommentRecipients,
   buildCommentRecipients,

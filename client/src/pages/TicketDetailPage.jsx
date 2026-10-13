@@ -18,9 +18,11 @@ import {
   Autocomplete,
   Tabs,
   Tab,
+  Alert,
 } from "@mui/material";
 import EditIcon from "@mui/icons-material/Edit";
 import SwapHorizIcon from "@mui/icons-material/SwapHoriz";
+import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import { format } from "date-fns";
 import { useSnackbar } from "notistack";
 import { ticketsApi } from "../api/tickets";
@@ -82,7 +84,7 @@ const REASON_CONFIG = {
     field: "reopenedReason",
     label: "Reopened Reason",
     placeholder: "Explain why this ticket is being reopened...",
-    requiredMessage: "Reopened reason is required.",
+    requiredMessage: "Please provide a reason before reopening this ticket.",
     confirmLabel: "Reopen Ticket",
   },
   CLOSED: {
@@ -131,8 +133,15 @@ export default function TicketDetailPage() {
   const [draftReason, setDraftReason] = useState("");
   const [reasonError, setReasonError] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  // "Assign first" message: a status change needs an assignee (the backend
+  // enforces this too and answers 409 TICKET_UNASSIGNED).
+  const [assignRequiredOpen, setAssignRequiredOpen] = useState(false);
 
   const [assignOpen, setAssignOpen] = useState(false);
+  // "manage" = Team Lead/Manager assign/reassign; "delegate" = the assigned
+  // employee's one delegation per cycle (same dialog, narrower options).
+  const [assignMode, setAssignMode] = useState("manage");
+  const [delegateOptions, setDelegateOptions] = useState([]);
   const [draftAssigneeId, setDraftAssigneeId] = useState("");
   const [draftAssignmentComment, setDraftAssignmentComment] = useState("");
   const [savingAssign, setSavingAssign] = useState(false);
@@ -179,7 +188,14 @@ export default function TicketDetailPage() {
   // Assignment (assign/reassign) is Manager/Team-Lead-ONLY — Admin is
   // deliberately excluded here even though canEditContent includes them,
   // per the final role rules ("Admin cannot assign/reassign").
-  const canAssign = isManagement && hasDeptAccess;
+  // Resolved/Closed tickets must be reopened before any assignment change or
+  // transfer (the backend enforces the same rule).
+  const isTerminalStatus = Boolean(ticket) && ["RESOLVED", "CLOSED"].includes(ticket.status);
+  const canAssign = isManagement && hasDeptAccess && !isTerminalStatus;
+  // Employee delegation: the assigned EMPLOYEE may hand the ticket to another
+  // employee once per assignment cycle (ticket.delegationUsed resets only
+  // when the ticket is reopened). The backend is authoritative.
+  const canDelegate = user.role.name === "EMPLOYEE" && isAssignedToMe && !ticket?.delegationUsed && !isTerminalStatus;
   const canDriveStatus = canEditContent || isAssignedToMe;
   const nextStatusOptions = ticket ? VALID_TRANSITIONS[ticket.status] || [] : [];
   // Only the requester of the ticket, and only while it's still open —
@@ -191,7 +207,7 @@ export default function TicketDetailPage() {
   // exactly: ADMIN is explicitly excluded even though canEditContent
   // includes them, and only the ticket's current ASSIGNEE (never merely the
   // requester) may transfer as an EMPLOYEE.
-  const canTransferDepartment = (isManagement && hasDeptAccess) || isAssignedToMe;
+  const canTransferDepartment = ((isManagement && hasDeptAccess) || isAssignedToMe) && !isTerminalStatus;
 
   // Under the status, only when it is Resolved, Closed, On Hold or Reopened: the reason recorded for it.
   // (Tickets reopened before reasons were stored may carry a "Reopened: ..." comment instead.)
@@ -206,6 +222,33 @@ export default function TicketDetailPage() {
       return { label: "Reopened Reason", text: note ? note.body.replace(/^Reopened:\s*/i, "") : "No reason was recorded." };
     }
     return null;
+  }, [ticket]);
+
+  // Latest department transfer, from the ticket's own history (already in the
+  // ticket response, newest first): source/destination are the department
+  // names recorded at transfer time, the actor is the history row's user.
+  // The reason is in the row's metadata (newer transfers) or, for older ones,
+  // in the TRANSFER_REASON row written by the same user in the same
+  // transaction. Null when the ticket was never transferred.
+  const latestTransfer = useMemo(() => {
+    const history = ticket?.history || [];
+    const entry = history.find((h) => h.action === "DEPARTMENT_TRANSFERRED");
+    if (!entry) return null;
+    let reason = entry.metadata?.reason || null;
+    if (!reason) {
+      const at = new Date(entry.createdAt).getTime();
+      const reasonRow = history
+        .filter((h) => h.action === "TRANSFER_REASON" && h.userId === entry.userId && new Date(h.createdAt).getTime() >= at && new Date(h.createdAt).getTime() - at < 10000)
+        .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))[0];
+      reason = reasonRow?.newValue || null;
+    }
+    return {
+      from: entry.oldValue || "Not recorded",
+      to: entry.newValue || "Not recorded",
+      by: entry.user?.name || "Unknown",
+      on: entry.createdAt ? format(new Date(entry.createdAt), "MMM d, yyyy h:mm a") : "Not recorded",
+      reason: reason || "Not recorded",
+    };
   }, [ticket]);
 
   const load = useCallback(async () => {
@@ -245,13 +288,44 @@ export default function TicketDetailPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [canAssign, ticket?.toDepartment?.id]);
 
+  // Delegation targets: active employees of the ticket's own department
+  // (GET /users/assignable-agents is already department-scoped server-side
+  // for an EMPLOYEE caller), excluding the caller.
+  useEffect(() => {
+    if (canDelegate && ticket?.toDepartment?.id) {
+      usersApi.assignableAgents().then(({ data }) =>
+        setDelegateOptions(
+          data.data
+            .filter((a) => a.role?.name === "EMPLOYEE" && a.id !== user.id && a.departmentId === ticket.toDepartment.id)
+            .map((a) => ({ ...a, group: "Team Members" }))
+        )
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canDelegate, ticket?.toDepartment?.id]);
+
+  // Returns true on success. A 409 means someone else changed the
+  // assignment/department meanwhile — reload so the user sees the current
+  // state instead of overwriting it.
   const applyUpdate = async (payload) => {
     try {
       const { data } = await ticketsApi.update(id, payload);
-      setTicket((prev) => ({ ...data.data, viewerAccess: prev?.viewerAccess }));
+      setTicket((prev) => ({ ...data.data, viewerAccess: prev?.viewerAccess, visitedDepartmentIds: prev?.visitedDepartmentIds }));
       enqueueSnackbar("Ticket updated", { variant: "success" });
+      return true;
     } catch (err) {
-      enqueueSnackbar(err.response?.data?.message || "Update failed", { variant: "error" });
+      if (err.response?.status === 409 && err.response.data?.details?.code === "TICKET_UNASSIGNED") {
+        // The ticket is (now) unassigned — possibly changed by someone else
+        // since this page loaded. Show current data and the assign-first message.
+        await load();
+        setAssignRequiredOpen(true);
+      } else if (err.response?.status === 409) {
+        enqueueSnackbar(err.response.data?.message || "This ticket was changed by someone else. It has been refreshed.", { variant: "warning" });
+        await load();
+      } else {
+        enqueueSnackbar(err.response?.data?.message || "Update failed", { variant: "error" });
+      }
+      return false;
     }
   };
 
@@ -285,6 +359,13 @@ export default function TicketDetailPage() {
   const handleSaveEdit = async () => {
     const payload = {};
     const statusChanged = draftStatus !== ticket.status;
+    // Reopening a Resolved/Closed ticket keeps its existing workflow; every
+    // other status change needs an assignee first (backend re-checks).
+    const isReopen = draftStatus === "REOPENED" && ["RESOLVED", "CLOSED"].includes(ticket.status);
+    if (statusChanged && !isReopen && !ticket.assignee) {
+      setAssignRequiredOpen(true);
+      return;
+    }
     if (statusChanged) payload.status = draftStatus;
     // Priority is a staff-only field server-side — never sent for an
     // EMPLOYEE assignee, who only ever sees the Status field in this same
@@ -293,11 +374,11 @@ export default function TicketDetailPage() {
 
     const reasonConfig = statusChanged ? REASON_CONFIG[draftStatus] : null;
     if (reasonConfig) {
-      if (!draftReason.trim()) {
+      if (!reasonConfig.optional && !draftReason.trim()) {
         setReasonError(reasonConfig.requiredMessage);
         return;
       }
-      payload[reasonConfig.field] = draftReason.trim();
+      if (draftReason.trim()) payload[reasonConfig.field] = draftReason.trim();
     }
 
     if (Object.keys(payload).length === 0) {
@@ -314,9 +395,10 @@ export default function TicketDetailPage() {
     }
   };
 
-  const openAssignDialog = () => {
+  const openAssignDialog = (mode = "manage") => {
+    setAssignMode(mode);
     setDraftAssigneeId(
-      ticket.assignee?.id === user.id ? ASSIGN_TO_ME_VALUE : (ticket.assignee?.id || "")
+      mode === "delegate" ? "" : ticket.assignee?.id === user.id ? ASSIGN_TO_ME_VALUE : (ticket.assignee?.id || "")
     );
     setDraftAssignmentComment("");
     setAssignOpen(true);
@@ -346,6 +428,7 @@ export default function TicketDetailPage() {
     const teamMembers = assignableEmployees.filter((a) => a.role?.name !== "TEAMLEAD").map((a) => ({ ...a, group: "Team Members" }));
     return [...actions, ...teamLeads, ...teamMembers];
   }, [assignableEmployees, isTeamLead]);
+  const dialogOptions = assignMode === "delegate" ? delegateOptions : assigneeOptions;
 
   const handleSaveAssign = async () => {
     const isAssignToMe = draftAssigneeId === ASSIGN_TO_ME_VALUE;
@@ -354,6 +437,7 @@ export default function TicketDetailPage() {
       setAssignOpen(false);
       return;
     }
+    if (assignMode === "delegate" && !newAssigneeId) return;
 
     setSavingAssign(true);
     try {
@@ -365,11 +449,14 @@ export default function TicketDetailPage() {
       // omitted entirely when blank so the backend never has to
       // distinguish "no comment" from "whitespace-only comment" itself.
       const trimmedComment = draftAssignmentComment.trim();
-      await applyUpdate(
-        isAssignToMe
+      // expectedAssignmentVersion: the backend rejects (409) the change if
+      // someone else reassigned/transferred the ticket since it was loaded.
+      await applyUpdate({
+        ...(isAssignToMe
           ? { assignToMe: true }
-          : { assigneeId: newAssigneeId, ...(trimmedComment ? { assignmentComment: trimmedComment } : {}) }
-      );
+          : { assigneeId: newAssigneeId, ...(trimmedComment ? { assignmentComment: trimmedComment } : {}) }),
+        expectedAssignmentVersion: ticket.assignmentVersion,
+      });
       setAssignOpen(false);
     } finally {
       setSavingAssign(false);
@@ -393,7 +480,7 @@ export default function TicketDetailPage() {
   const handleSaveTransfer = async () => {
     const reason = draftTransferReason.trim();
     if (!reason) {
-      setTransferReasonError("Transfer reason is required.");
+      setTransferReasonError("Please provide a reason before transferring this ticket.");
       return;
     }
     if (!draftToDepartmentId) return;
@@ -403,11 +490,18 @@ export default function TicketDetailPage() {
       const { data } = await ticketsApi.transferDepartment(id, {
         toDepartmentId: draftToDepartmentId,
         transferReason: reason,
+        expectedAssignmentVersion: ticket.assignmentVersion,
       });
       setTicket((prev) => ({ ...data.data, viewerAccess: prev?.viewerAccess }));
       setTransferOpen(false);
       enqueueSnackbar(`Ticket transferred to ${data.data.toDepartment?.name || "the new department"}`, { variant: "success" });
     } catch (err) {
+      if (err.response?.status === 409) {
+        setTransferOpen(false);
+        enqueueSnackbar(err.response.data?.message || "This ticket was changed by someone else. It has been refreshed.", { variant: "warning" });
+        await load();
+        return;
+      }
       enqueueSnackbar(err.response?.data?.message || "Transfer failed", { variant: "error" });
     } finally {
       setSavingTransfer(false);
@@ -425,6 +519,9 @@ export default function TicketDetailPage() {
   // enforcement point for "destination must have active management" and
   // independently rejects the transfer if selected anyway.
   const transferableDepartments = departments.filter((d) => d.id !== ticket.toDepartment?.id);
+  // The ticket has been handled by this department before (from its transfer
+  // history) — warn, but allow the transfer.
+  const isRepeatTransfer = Boolean(draftToDepartmentId) && (ticket.visitedDepartmentIds || []).includes(draftToDepartmentId);
 
   const canReopen = isOwner && !isStaff && ["RESOLVED", "CLOSED"].includes(ticket.status);
 
@@ -545,8 +642,13 @@ export default function TicketDetailPage() {
                     independently enforces the same rule regardless of this
                     button. */}
                 {canAssign && (
-                  <Button size="small" variant="contained" onClick={openAssignDialog}>
+                  <Button size="small" variant="contained" onClick={() => openAssignDialog("manage")}>
                     {ticket.assignee ? "Reassign" : "Assign Ticket"}
+                  </Button>
+                )}
+                {canDelegate && (
+                  <Button size="small" variant="contained" onClick={() => openAssignDialog("delegate")}>
+                    Delegate
                   </Button>
                 )}
                 {/* Separate action from Edit Ticket — its own permission
@@ -564,10 +666,44 @@ export default function TicketDetailPage() {
             )}
 
             <Stack spacing={2}>
-              <InfoRow label="Status" value={<StatusBadge status={ticket.status} />} />
+              {/* Status | Priority side by side; wraps to two lines only when
+                  the panel is too narrow for both. */}
+              <Box sx={{ display: "flex", flexWrap: "wrap", columnGap: 2, rowGap: 2 }}>
+                <Box sx={{ flex: "1 1 120px", minWidth: 0 }}>
+                  <InfoRow label="Status" value={<StatusBadge status={ticket.status} />} />
+                </Box>
+                <Box sx={{ flex: "1 1 120px", minWidth: 0 }}>
+                  <InfoRow label="Priority" value={<PriorityBadge name={ticket.priority.name} color={ticket.priority.color} />} />
+                </Box>
+              </Box>
               {statusReason && <InfoRow label={statusReason.label} value={<Typography variant="body2" sx={{ whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{statusReason.text}</Typography>} />}
-              <InfoRow label="Priority" value={<PriorityBadge name={ticket.priority.name} color={ticket.priority.color} />} />
               <InfoRow label="Department" value={ticket.toDepartment?.name || "—"} />
+              {/* Latest transfer only — the full trail stays in Activity History. */}
+              {latestTransfer && (
+                <Box sx={{ border: 1, borderColor: "divider", borderRadius: 2, px: 1.25, py: 1, bgcolor: "action.hover" }}>
+                  <Stack direction="row" alignItems="center" spacing={0.5} sx={{ mb: 0.75 }}>
+                    <SwapHorizIcon sx={{ fontSize: 18 }} color="secondary" />
+                    <Typography variant="body2" fontWeight={700}>Latest Department Transfer</Typography>
+                  </Stack>
+                  {/* Row 1: FROM → TO (destination slightly more prominent) */}
+                  <Stack direction="row" alignItems="flex-end" spacing={0.75} sx={{ mb: 0.75 }}>
+                    <CompactField label="From" value={latestTransfer.from} />
+                    <ArrowForwardIcon sx={{ fontSize: 16, color: "text.disabled", mb: 0.25, flexShrink: 0 }} />
+                    <CompactField label="To" value={latestTransfer.to} emphasis />
+                  </Stack>
+                  {/* Row 2: by / on — wraps to two lines on narrow widths */}
+                  <Box sx={{ display: "flex", flexWrap: "wrap", columnGap: 1.5, rowGap: 0.75, mb: 0.75 }}>
+                    <Box sx={{ flex: "1 1 120px", minWidth: 0 }}>
+                      <CompactField label="Transferred By" value={latestTransfer.by} />
+                    </Box>
+                    <Box sx={{ flex: "1 1 120px", minWidth: 0 }}>
+                      <CompactField label="Transferred On" value={latestTransfer.on} />
+                    </Box>
+                  </Box>
+                  {/* Row 3: reason, full width */}
+                  <CompactField label="Transfer Reason" value={latestTransfer.reason} multiline />
+                </Box>
+              )}
               <InfoRow
                 label="Team Leads"
                 value={ticket.toDepartment?.teamLeads?.length ? ticket.toDepartment.teamLeads.map((a) => a.name).join(", ") : "—"}
@@ -656,6 +792,40 @@ export default function TicketDetailPage() {
         </DialogActions>
       </Dialog>
 
+      {/* Assignment required before a status change — opened from Edit
+          Status, or when the server answers 409 TICKET_UNASSIGNED. "Assign
+          Ticket" reuses the existing Assign dialog (Assign to Me / Team
+          Member); it never assigns anything by itself. */}
+      <Dialog open={assignRequiredOpen} onClose={ignoreBackdropClick(() => setAssignRequiredOpen(false))} maxWidth="xs" fullWidth>
+        <DialogCloseButton onClose={() => setAssignRequiredOpen(false)} />
+        <DialogTitle>Assignment required</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2">
+            This ticket is unassigned. Please assign the ticket to yourself or an eligible team member before changing its status.
+          </Typography>
+          {!canAssign && (
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Ask a Team Lead or Manager of this ticket's department to assign it.
+            </Typography>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setAssignRequiredOpen(false)}>Cancel</Button>
+          {canAssign && (
+            <Button
+              variant="contained"
+              onClick={() => {
+                setAssignRequiredOpen(false);
+                setEditOpen(false);
+                openAssignDialog("manage");
+              }}
+            >
+              Assign Ticket
+            </Button>
+          )}
+        </DialogActions>
+      </Dialog>
+
       <Dialog open={reopenOpen} onClose={() => setReopenOpen(false)} fullWidth maxWidth="xs">
         <DialogTitle>{`Reopen ${ticket.ticketNumber}`}</DialogTitle>
         <DialogContent>
@@ -680,11 +850,12 @@ export default function TicketDetailPage() {
           <Button
             variant="contained"
             onClick={async () => {
-              if (!reopenReason.trim()) {
+              const reason = reopenReason.trim();
+              if (!reason) {
                 setReopenError(REASON_CONFIG.REOPENED.requiredMessage);
                 return;
               }
-              await applyUpdate({ status: "REOPENED", reopenedReason: reopenReason.trim() });
+              await applyUpdate({ status: "REOPENED", reopenedReason: reason });
               setReopenOpen(false);
             }}
           >
@@ -705,7 +876,7 @@ export default function TicketDetailPage() {
           as the source of truth. */}
       <Dialog open={assignOpen} onClose={ignoreBackdropClick(() => setAssignOpen(false))} maxWidth="xs" fullWidth>
         <DialogCloseButton onClose={() => setAssignOpen(false)} />
-        <DialogTitle>{ticket.assignee ? "Reassign Ticket" : "Assign Ticket"}</DialogTitle>
+        <DialogTitle>{assignMode === "delegate" ? "Delegate Ticket" : ticket.assignee ? "Reassign Ticket" : "Assign Ticket"}</DialogTitle>
         <DialogContent>
           <Stack spacing={2} sx={{ mt: 1 }}>
             {ticket.assignee && (
@@ -713,18 +884,23 @@ export default function TicketDetailPage() {
                 Current assignee: <strong>{ticket.assignee.name}</strong>
               </Typography>
             )}
+            {assignMode === "delegate" && (
+              <Alert severity="info">
+                You can delegate this ticket once. The employee you choose will not be able to delegate it again until the ticket is reopened.
+              </Alert>
+            )}
             <Autocomplete
               size="small"
-              options={assigneeOptions}
+              options={dialogOptions}
               groupBy={(option) => option.group}
               getOptionLabel={(option) => option.name}
               isOptionEqualToValue={(a, b) => a.id === b.id}
-              value={assigneeOptions.find((o) => o.id === draftAssigneeId) || null}
+              value={dialogOptions.find((o) => o.id === draftAssigneeId) || null}
               onChange={(_e, option) => setDraftAssigneeId(option?.id || "")}
               renderInput={(params) => (
                 <TextField
                   {...params}
-                  label={ticket.assignee ? "New assignee" : "Assignee"}
+                  label={assignMode === "delegate" ? "Delegate to" : ticket.assignee ? "New assignee" : "Assignee"}
                   placeholder="Search employee..."
                 />
               )}
@@ -749,8 +925,8 @@ export default function TicketDetailPage() {
         </DialogContent>
         <DialogActions>
           <Button onClick={() => setAssignOpen(false)}>Cancel</Button>
-          <Button variant="contained" onClick={handleSaveAssign} disabled={savingAssign}>
-            {ticket.assignee ? "Reassign" : "Assign"}
+          <Button variant="contained" onClick={handleSaveAssign} disabled={savingAssign || (assignMode === "delegate" && !draftAssigneeId)}>
+            {assignMode === "delegate" ? "Delegate" : ticket.assignee ? "Reassign" : "Assign"}
           </Button>
         </DialogActions>
       </Dialog>
@@ -789,6 +965,12 @@ export default function TicketDetailPage() {
               ))}
             </TextField>
 
+            {isRepeatTransfer && (
+              <Alert severity="warning">
+                This ticket has already been handled by this department before. Transferring it back may create a repeated transfer cycle. You can continue or cancel.
+              </Alert>
+            )}
+
             <TextField
               required
               multiline
@@ -806,10 +988,30 @@ export default function TicketDetailPage() {
         <DialogActions>
           <Button onClick={() => setTransferOpen(false)}>Cancel</Button>
           <Button variant="contained" onClick={handleSaveTransfer} disabled={savingTransfer || !draftToDepartmentId}>
-            Transfer Ticket
+            {isRepeatTransfer ? "Transfer Anyway" : "Transfer Ticket"}
           </Button>
         </DialogActions>
       </Dialog>
+    </Box>
+  );
+}
+
+// Tight label/value pair for the Latest Department Transfer card: smaller
+// secondary label, minimal gap, values wrap instead of overflowing.
+function CompactField({ label, value, emphasis = false, multiline = false }) {
+  return (
+    <Box sx={{ flex: 1, minWidth: 0 }}>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.3, fontSize: "0.7rem" }}>
+        {label}
+      </Typography>
+      <Typography
+        variant="body2"
+        fontWeight={emphasis ? 700 : 600}
+        color={emphasis ? "primary" : "text.primary"}
+        sx={{ lineHeight: 1.35, wordBreak: "break-word", ...(multiline ? { whiteSpace: "pre-wrap", fontWeight: 400 } : {}) }}
+      >
+        {value}
+      </Typography>
     </Box>
   );
 }

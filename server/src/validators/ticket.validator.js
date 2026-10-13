@@ -75,13 +75,18 @@ const updateTicketValidator = [
   body("resolutionNotes").optional().isString(),
   body("onHoldReason").optional().isString(),
   body("closedReason").optional().isString(),
-  body("reopenedReason").optional().isString(),
+  body("reopenedReason").optional({ nullable: true }).isString(),
+  // Optimistic concurrency for assignment changes: the assignmentVersion the
+  // client last saw (ticket.service.js#assertExpectedAssignmentVersion).
+  body("expectedAssignmentVersion").optional({ nullable: true }).isInt({ min: 0 }),
 ];
 
 const transferDepartmentValidator = [
   param("id").notEmpty(),
   body("toDepartmentId").notEmpty().withMessage("Destination department is required"),
-  body("transferReason").trim().notEmpty().withMessage("Transfer reason is required"),
+  // Mandatory — recorded in the transfer history (service re-checks too).
+  body("transferReason").isString().withMessage("Transfer reason is required").trim().notEmpty().withMessage("Please provide a reason before transferring this ticket."),
+  body("expectedAssignmentVersion").optional({ nullable: true }).isInt({ min: 0 }),
 ];
 
 const commentValidator = [
@@ -113,6 +118,8 @@ const bulkUpdateValidator = [
   body("priorityId").optional().isString(),
   body("assigneeId").optional({ nullable: true }).isString(),
   body("teamId").optional({ nullable: true }).isString(),
+  // Required (service-enforced) when status is ON_HOLD/RESOLVED/CLOSED/REOPENED.
+  body("reason").optional({ nullable: true }).isString(),
 ];
 
 const listTicketsValidator = [

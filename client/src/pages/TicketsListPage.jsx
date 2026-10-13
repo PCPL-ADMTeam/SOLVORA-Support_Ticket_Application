@@ -21,6 +21,7 @@ import {
 } from "@mui/material";
 import AddIcon from "@mui/icons-material/Add";
 import { format } from "date-fns";
+import { useSnackbar } from "notistack";
 import { ticketsApi } from "../api/tickets";
 import { prioritiesApi } from "../api/catalog";
 import StatusBadge from "../components/common/StatusBadge";
@@ -52,6 +53,7 @@ export default function TicketsListPage({
   additionalFilters = EMPTY_FILTERS,
 }) {
   const [searchParams] = useSearchParams();
+  const { enqueueSnackbar } = useSnackbar();
 
   const [filters, setFilters] = useState({
     page: 1,
@@ -128,11 +130,29 @@ export default function TicketsListPage({
 
   const [bulkField, setBulkField] = useState("status");
   const [bulkValue, setBulkValue] = useState("");
+  // On Hold / Resolved / Closed need a reason here too (the server rejects
+  // the bulk change without one).
+  const [bulkReason, setBulkReason] = useState("");
+  const [bulkReasonError, setBulkReasonError] = useState("");
+  const bulkNeedsReason = bulkField === "status" && ["ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"].includes(bulkValue);
   const handleBulkApply = async () => {
     if (!bulkValue || selected.length === 0) return;
-    await ticketsApi.bulkUpdate({ ticketIds: selected, [bulkField]: bulkValue });
+    const reason = bulkReason.trim();
+    if (bulkNeedsReason && !reason) {
+      setBulkReasonError("Please provide a reason for this status change.");
+      return;
+    }
+    try {
+      await ticketsApi.bulkUpdate({ ticketIds: selected, [bulkField]: bulkValue, ...(bulkNeedsReason ? { reason } : {}) });
+    } catch (err) {
+      // e.g. 409 TICKET_UNASSIGNED: the server lists the unassigned tickets;
+      // nothing was changed, so the selection is kept.
+      enqueueSnackbar(err.response?.data?.message || "Bulk update failed", { variant: "error" });
+      return;
+    }
     setSelected([]);
     setBulkValue("");
+    setBulkReason("");
     load();
   };
 
@@ -167,14 +187,14 @@ export default function TicketsListPage({
               select
               label="Field"
               value={bulkField}
-              onChange={(e) => { setBulkField(e.target.value); setBulkValue(""); }}
+              onChange={(e) => { setBulkField(e.target.value); setBulkValue(""); setBulkReasonError(""); }}
               sx={{ minWidth: 140 }}
             >
               <MenuItem value="status">Status</MenuItem>
               <MenuItem value="priorityId">Priority</MenuItem>
             </TextField>
 
-            <TextField size="small" select label="Value" value={bulkValue} onChange={(e) => setBulkValue(e.target.value)} sx={{ minWidth: 180 }}>
+            <TextField size="small" select label="Value" value={bulkValue} onChange={(e) => { setBulkValue(e.target.value); setBulkReasonError(""); }} sx={{ minWidth: 180 }}>
               {bulkField === "status" && [
                 <MenuItem key="IN_PROGRESS" value="IN_PROGRESS">In Progress</MenuItem>,
                 <MenuItem key="ON_HOLD" value="ON_HOLD">On Hold</MenuItem>,
@@ -183,6 +203,19 @@ export default function TicketsListPage({
               ]}
               {bulkField === "priorityId" && priorities.map((p) => <MenuItem key={p.id} value={p.id}>{p.name}</MenuItem>)}
             </TextField>
+
+            {bulkNeedsReason && (
+              <TextField
+                size="small"
+                required
+                label="Reason"
+                value={bulkReason}
+                onChange={(e) => { setBulkReason(e.target.value); setBulkReasonError(""); }}
+                error={Boolean(bulkReasonError)}
+                helperText={bulkReasonError}
+                sx={{ minWidth: 240 }}
+              />
+            )}
 
             <Button variant="contained" onClick={handleBulkApply} disabled={!bulkValue}>Apply</Button>
           </Stack>

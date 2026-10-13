@@ -12,7 +12,7 @@ const { countWords, MAX_PROBLEM_SUMMARY_WORDS } = require("../utils/wordCount");
 const userDepartmentAccessService = require("./userDepartmentAccess.service");
 const {
   buildCreatedRecipients,
-  buildStandardRecipients,
+  buildTransferRecipients,
   buildAssignedOrCommentRecipients,
   buildCommentRecipients,
   buildRequesterOnlyRecipients,
@@ -402,10 +402,125 @@ function assertCanTransferDepartment(user, ticket, userDepartmentIds = []) {
   throw new ApiError(403, "Only an authorized department Manager/Team Lead or the employee currently assigned to this ticket can transfer it.");
 }
 
-async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue, newValue }) {
+async function recordHistory(tx, { ticketId, userId, action, fieldName, oldValue, newValue, metadata }) {
   await tx.ticketHistory.create({
-    data: { ticketId, userId, action, fieldName, oldValue: oldValue != null ? String(oldValue) : null, newValue: newValue != null ? String(newValue) : null },
+    data: {
+      ticketId,
+      userId,
+      action,
+      fieldName,
+      oldValue: oldValue != null ? String(oldValue) : null,
+      newValue: newValue != null ? String(newValue) : null,
+      ...(metadata ? { metadata } : {}),
+    },
   });
+}
+
+// ---- Assignment workflow helpers --------------------------------------------
+
+const TERMINAL_STATUSES = ["RESOLVED", "CLOSED"];
+const STALE_ASSIGNMENT_MESSAGE = "This ticket's assignment or department was changed by someone else. Refresh the ticket and try again.";
+
+// Assignment, delegation and transfer are only allowed on an active ticket —
+// a RESOLVED/CLOSED ticket must be reopened first.
+function assertActiveForAssignment(ticket, action = "change this ticket's assignment") {
+  if (TERMINAL_STATUSES.includes(ticket.status)) {
+    throw new ApiError(400, `This ticket is ${ticket.status}. Reopen it before you ${action}.`);
+  }
+}
+
+// Optimistic concurrency: a client may send the assignmentVersion it last
+// saw; a mismatch means someone else changed the assignment/department.
+function assertExpectedAssignmentVersion(ticket, expected) {
+  if (expected === undefined || expected === null || expected === "") return;
+  if (Number(expected) !== ticket.assignmentVersion) throw new ApiError(409, STALE_ASSIGNMENT_MESSAGE);
+}
+
+// Conditional write: only succeeds if nobody changed assignmentVersion since
+// `ticket` was read (otherwise 409, rolling back the surrounding
+// transaction so no history/notification is produced for the stale change).
+// A status change on an unassigned ticket — 409 with a stable code the
+// frontend recognises (details.code) to show its "assign first" message.
+const TICKET_UNASSIGNED_CODE = "TICKET_UNASSIGNED";
+function unassignedStatusChangeError() {
+  return new ApiError(
+    409,
+    "This ticket is unassigned. Please assign the ticket to yourself or an eligible team member before changing its status.",
+    { code: TICKET_UNASSIGNED_CODE }
+  );
+}
+
+// Status-only write that still requires an assignee AT WRITE TIME: if the
+// ticket was unassigned (or transferred, which clears the assignee) after it
+// was read, nothing is written and the surrounding transaction rolls back —
+// no history, no notification.
+async function guardedStatusUpdate(tx, ticket, data) {
+  const res = await tx.ticket.updateMany({ where: { id: ticket.id, assigneeId: { not: null } }, data });
+  if (res.count === 0) throw unassignedStatusChangeError();
+  return tx.ticket.findUnique({ where: { id: ticket.id }, include: ticketDetailInclude });
+}
+
+async function versionedTicketUpdate(tx, ticket, data) {
+  const res = await tx.ticket.updateMany({
+    where: { id: ticket.id, assignmentVersion: ticket.assignmentVersion },
+    data: { ...data, assignmentVersion: { increment: 1 } },
+  });
+  if (res.count === 0) throw new ApiError(409, STALE_ASSIGNMENT_MESSAGE);
+  return tx.ticket.findUnique({ where: { id: ticket.id }, include: ticketDetailInclude });
+}
+
+// Same eligibility as assertValidAssignee (active EMPLOYEE of the department,
+// or active TEAMLEAD with access to it), as a boolean — used when a reopened
+// ticket is returned to its last resolver automatically.
+async function isEligibleAssignee(userId, departmentId) {
+  if (!userId || !departmentId) return false;
+  const candidate = await prisma.user.findUnique({ where: { id: userId }, include: { role: true } });
+  if (!candidate || !candidate.isActive) return false;
+  if (candidate.role.name === "EMPLOYEE") return candidate.departmentId === departmentId;
+  if (candidate.role.name === "TEAMLEAD") return userDepartmentAccessService.hasAccess(candidate.id, departmentId);
+  return false;
+}
+
+// The user who last moved the ticket to RESOLVED in the cycle that is now
+// ending (i.e. after the most recent REOPENED), from TicketHistory's stable
+// userId. Null if it was never resolved in this cycle (e.g. closed directly).
+async function findLastResolverId(ticketId) {
+  const lastReopen = await prisma.ticketHistory.findFirst({
+    where: { ticketId, action: "STATUS_CHANGE", newValue: "REOPENED" },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+  const resolved = await prisma.ticketHistory.findFirst({
+    where: { ticketId, action: "STATUS_CHANGE", newValue: "RESOLVED", ...(lastReopen ? { createdAt: { gt: lastReopen.createdAt } } : {}) },
+    orderBy: { createdAt: "desc" },
+    select: { userId: true },
+  });
+  return resolved?.userId || null;
+}
+
+// Every department this ticket has been handled by: its current department,
+// plus both sides of every recorded transfer/department change. New rows
+// carry department ids in metadata; older rows only carry department NAMES,
+// which are mapped back to ids (department names are unique).
+async function getVisitedDepartmentIds(ticket) {
+  const rows = await prisma.ticketHistory.findMany({
+    where: { ticketId: ticket.id, action: { in: ["DEPARTMENT_TRANSFERRED", "DEPARTMENT_CHANGE"] } },
+    select: { oldValue: true, newValue: true, metadata: true },
+  });
+  const ids = new Set(ticket.toDepartmentId ? [ticket.toDepartmentId] : []);
+  const names = new Set();
+  for (const row of rows) {
+    const m = row.metadata || {};
+    if (m.fromDepartmentId) ids.add(m.fromDepartmentId);
+    if (m.toDepartmentId) ids.add(m.toDepartmentId);
+    if (!m.fromDepartmentId && row.oldValue) names.add(row.oldValue);
+    if (!m.toDepartmentId && row.newValue) names.add(row.newValue);
+  }
+  if (names.size) {
+    const named = await prisma.department.findMany({ where: { name: { in: [...names] } }, select: { id: true } });
+    named.forEach((d) => ids.add(d.id));
+  }
+  return [...ids];
 }
 
 
@@ -499,7 +614,13 @@ async function getTicketById(user, id) {
   const access = await assertCanViewDetails(user, ticket, userDepartmentIds);
   // viewerAccess ("full" | "participant" | "requester-read") lets the UI hide
   // controls the backend would reject anyway; it is never trusted back.
-  return { ...shapeTicketDetail(scrubInternalComments(ticket, user, userDepartmentIds)), viewerAccess: access };
+  // visitedDepartmentIds: departments this ticket has been handled by (from
+  // transfer history) — lets the Transfer dialog warn before a repeat visit.
+  return {
+    ...shapeTicketDetail(scrubInternalComments(ticket, user, userDepartmentIds)),
+    viewerAccess: access,
+    visitedDepartmentIds: await getVisitedDepartmentIds(ticket),
+  };
 }
 
 async function createTicket(user, payload, files = []) {
@@ -545,7 +666,17 @@ async function createTicket(user, payload, files = []) {
   if (!priority) throw new ApiError(400, "Invalid priority");
   if (categoryId && !category) throw new ApiError(400, "Invalid category");
   if (!toDepartment) throw new ApiError(400, "Invalid department");
-  await assertValidAssignee(assigneeId, toDepartmentId, user);
+  // Initial assignment at creation is a management action: only a Team Lead
+  // or Manager with access to the destination department may pre-assign.
+  if (assigneeId) {
+    if (!isManagementRole(user)) {
+      throw new ApiError(403, "Only a Team Lead or Manager of the department can assign a ticket.");
+    }
+    if (!(await resolveUserDepartmentIds(user)).includes(toDepartmentId)) {
+      throw new ApiError(403, "You can only assign tickets in a department you have access to.");
+    }
+  }
+  const initialAssignee = await assertValidAssignee(assigneeId, toDepartmentId, user);
 
   const ticket = await prisma.$transaction(async (tx) => {
     const created = await tx.ticket.create({
@@ -581,6 +712,17 @@ async function createTicket(user, payload, files = []) {
     await tx.ticket.update({ where: { id: created.id }, data: { ticketNumber: buildTicketNumber(created.seq) } });
 
     await recordHistory(tx, { ticketId: created.id, userId: user.id, action: "CREATED" });
+    if (initialAssignee) {
+      await recordHistory(tx, {
+        ticketId: created.id,
+        userId: user.id,
+        action: "ASSIGNED",
+        fieldName: "assigneeId",
+        oldValue: "Unassigned",
+        newValue: initialAssignee.name,
+        metadata: { kind: "INITIAL_ASSIGNMENT", actorRole: user.role.name, fromAssigneeId: null, toAssigneeId: initialAssignee.id, statusBefore: null, statusAfter: "OPEN", cycle: 1 },
+      });
+    }
 
     // Custom CC — fixed for the life of the ticket (never changes on a
     // later department transfer, see transferDepartment below).
@@ -728,6 +870,27 @@ async function updateTicket(user, id, payload) {
   // as an empty email section.
   let assignmentComment = "";
 
+  // ---- Assignment / routing intent — validated before anything changes ----
+  const wantsAssignToMe = payload.assignToMe === true && ticket.assigneeId !== user.id;
+  const wantsAssigneeChange = payload.assigneeId !== undefined && (payload.assigneeId || null) !== (ticket.assigneeId || null);
+  // A department change has exactly one entry point: the Transfer Department
+  // action (transferDepartment), which enforces the transfer rules.
+  if (payload.toDepartmentId !== undefined && (payload.toDepartmentId || null) !== (ticket.toDepartmentId || null)) {
+    throw new ApiError(400, "A ticket's department can only be changed with the Transfer Department action.");
+  }
+  // Employee delegation: the ticket's current assignee (an EMPLOYEE) hands it
+  // to another employee — at most once per assignment cycle (see below).
+  // Every other assignment change is a Team Lead/Manager action.
+  const isDelegation = wantsAssigneeChange && !wantsAssignToMe && !isManagement && isAssignee && user.role.name === "EMPLOYEE";
+  if ((wantsAssignToMe || wantsAssigneeChange) && !isManagement && !isDelegation) {
+    throw new ApiError(403, "You are not allowed to change this ticket's assignment.");
+  }
+  if (wantsAssignToMe || wantsAssigneeChange) {
+    assertActiveForAssignment(ticket);
+    assertExpectedAssignmentVersion(ticket, payload.expectedAssignmentVersion);
+  }
+
+  let statusNeedsAssignee = false;
   if (payload.status !== undefined && payload.status !== ticket.status) {
     // The requester may only reopen their own resolved/closed ticket — every
     // other status transition requires managing the ticket (manager/admin)
@@ -739,6 +902,16 @@ async function updateTicket(user, id, payload) {
     } else if (!VALID_TRANSITIONS[ticket.status]?.includes(payload.status)) {
       throw new ApiError(400, `Cannot transition from ${ticket.status} to ${payload.status}`);
     }
+
+    // Assignment before status: a status change needs a current assignee —
+    // checked against the ticket as stored (not anything in this request, so
+    // assigning and changing status in one call cannot bypass it). The one
+    // exception is the existing reopen workflow (RESOLVED/CLOSED ->
+    // REOPENED), which may leave or find the ticket unassigned. Re-checked
+    // atomically at write time (see guardedStatusUpdate) in case the ticket
+    // is unassigned/transferred concurrently.
+    statusNeedsAssignee = !(payload.status === "REOPENED" && TERMINAL_STATUSES.includes(ticket.status));
+    if (statusNeedsAssignee && !ticket.assigneeId) throw unassignedStatusChangeError();
 
     // RESOLVED/ON_HOLD/CLOSED each require a persisted explanation —
     // enforced here server-side regardless of role or caller, so a direct
@@ -752,11 +925,11 @@ async function updateTicket(user, id, payload) {
     if (payload.status === "ON_HOLD" && !payload.onHoldReason?.trim()) {
       throw new ApiError(400, "On-hold reason is required.");
     }
-    if (payload.status === "REOPENED" && !payload.reopenedReason?.trim()) {
-      throw new ApiError(400, "Reopened reason is required.");
-    }
     if (payload.status === "CLOSED" && !payload.closedReason?.trim()) {
       throw new ApiError(400, "Closed reason is required.");
+    }
+    if (payload.status === "REOPENED" && !payload.reopenedReason?.trim()) {
+      throw new ApiError(400, "Please provide a reason before reopening this ticket.");
     }
 
     data.status = payload.status;
@@ -799,6 +972,44 @@ async function updateTicket(user, id, payload) {
     }
   }
 
+  // ---- Reopening from RESOLVED/CLOSED starts a new assignment cycle ----
+  // The employee delegation allowance resets, and the ticket goes back to
+  // the user who last resolved it in the cycle that is ending, if they are
+  // still an active, eligible assignee of the ticket's department. (If it was
+  // never resolved in this cycle — e.g. closed directly — the current
+  // assignee is the candidate.) Otherwise it is left unassigned in the
+  // department queue and management is notified (see after the update).
+  let reopenUnassigned = null;
+  if (data.status === "REOPENED" && TERMINAL_STATUSES.includes(ticket.status)) {
+    data.assignmentCycle = ticket.assignmentCycle + 1;
+    data.delegationUsed = false;
+    const candidateId = (await findLastResolverId(ticket.id)) || ticket.assigneeId || null;
+    const returnToId = (await isEligibleAssignee(candidateId, ticket.toDepartmentId)) ? candidateId : null;
+    if (returnToId !== (ticket.assigneeId || null)) {
+      data.assigneeId = returnToId;
+      const returnTo = returnToId ? await prisma.user.findUnique({ where: { id: returnToId }, select: { name: true } }) : null;
+      historyEntries.push({
+        action: "ASSIGNED",
+        fieldName: "assigneeId",
+        oldValue: ticket.assignee?.name || "Unassigned",
+        newValue: returnTo?.name || "Unassigned",
+        metadata: {
+          kind: returnToId ? "REOPEN_RETURN" : "REOPEN_UNASSIGNED",
+          actorRole: user.role.name,
+          fromAssigneeId: ticket.assigneeId || null,
+          toAssigneeId: returnToId,
+          statusBefore: ticket.status,
+          statusAfter: "REOPENED",
+          cycle: data.assignmentCycle,
+        },
+      });
+    }
+    if (!returnToId) {
+      const candidate = candidateId ? await prisma.user.findUnique({ where: { id: candidateId }, select: { name: true } }) : null;
+      reopenUnassigned = { lastResolverName: candidate?.name || null };
+    }
+  }
+
   // Assignment / routing — MANAGER or TEAMLEAD ONLY. ADMIN is deliberately
   // excluded from this entire block per the final role rules ("Admin cannot
   // assign, reassign, or transfer") even though isAdmin still participates
@@ -824,30 +1035,73 @@ async function updateTicket(user, id, payload) {
       if (ticket.assigneeId !== user.id) {
         data.assigneeId = user.id;
         // TicketHistory.oldValue/newValue are plain display strings, shown
-        // verbatim by the Activity History UI (see ActivityTimeline.jsx) —
-        // never the raw id. The old assignee's name is already loaded on
-        // `ticket` (see the include above); the new one is simply the
-        // acting Team Lead's own name (assignToMe), always already in hand.
-        historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assignee?.name || "Unassigned", newValue: user.name });
+        // verbatim by the Activity History UI (see ActivityTimeline.jsx);
+        // stable ids go in metadata.
+        historyEntries.push({
+          action: "ASSIGNED",
+          fieldName: "assigneeId",
+          oldValue: ticket.assignee?.name || "Unassigned",
+          newValue: user.name,
+          metadata: { kind: "SELF_ASSIGNMENT", actorRole: user.role.name, fromAssigneeId: ticket.assigneeId || null, toAssigneeId: user.id, statusBefore: ticket.status, statusAfter: ticket.status, cycle: ticket.assignmentCycle },
+        });
       }
-    } else if (payload.assigneeId !== undefined && payload.assigneeId !== ticket.assigneeId) {
-      const targetDepartmentId = payload.toDepartmentId !== undefined ? payload.toDepartmentId : ticket.toDepartmentId;
-      // assertValidAssignee already fetches this exact user to validate it —
-      // reusing that return value here avoids a second, redundant lookup
-      // just to get a display name for history.
-      const newAssignee = await assertValidAssignee(payload.assigneeId, targetDepartmentId, user);
+    } else if (wantsAssigneeChange) {
+      // Management reassignment — unlimited within the caller's department
+      // access; it never resets (or uses up) the employee delegation allowance.
+      const newAssignee = await assertValidAssignee(payload.assigneeId, ticket.toDepartmentId, user);
       data.assigneeId = payload.assigneeId || null;
-      historyEntries.push({ action: "ASSIGNED", fieldName: "assigneeId", oldValue: ticket.assignee?.name || "Unassigned", newValue: newAssignee?.name || "Unassigned" });
       assignmentComment = (payload.assignmentComment || "").trim();
+      historyEntries.push({
+        action: "ASSIGNED",
+        fieldName: "assigneeId",
+        oldValue: ticket.assignee?.name || "Unassigned",
+        newValue: newAssignee?.name || "Unassigned",
+        metadata: {
+          kind: newAssignee ? "MANAGEMENT_ASSIGNMENT" : "UNASSIGNMENT",
+          actorRole: user.role.name,
+          fromAssigneeId: ticket.assigneeId || null,
+          toAssigneeId: newAssignee?.id || null,
+          statusBefore: ticket.status,
+          statusAfter: ticket.status,
+          cycle: ticket.assignmentCycle,
+          ...(assignmentComment ? { reason: assignmentComment } : {}),
+        },
+      });
     }
-    if (payload.toDepartmentId !== undefined && payload.toDepartmentId !== ticket.toDepartmentId) {
-      data.toDepartmentId = payload.toDepartmentId || null;
-      // The new department's name needs its own lookup — nothing else in
-      // this branch already fetched it (unlike the assignee/manager cases
-      // above/below, which reuse an existing validation query).
-      const newToDepartment = payload.toDepartmentId ? await prisma.department.findUnique({ where: { id: payload.toDepartmentId }, select: { name: true } }) : null;
-      historyEntries.push({ action: "DEPARTMENT_CHANGE", fieldName: "toDepartmentId", oldValue: ticket.toDepartment?.name || "—", newValue: newToDepartment?.name || "—" });
+    // (A department change via toDepartmentId is rejected above — only the
+    // Transfer Department action may move a ticket.)
+  }
+
+  // ---- Employee delegation (one per assignment cycle) ----
+  // The current assignee hands the ticket to another active employee of the
+  // same department. Allowed once per cycle: the delegate cannot delegate
+  // again until the ticket is reopened (new cycle). Management reassignment
+  // above never resets this.
+  if (isDelegation) {
+    if (ticket.delegationUsed) {
+      throw new ApiError(403, "This ticket has already been delegated once in its current cycle. Ask a Team Lead or Manager to reassign it.");
     }
+    if (!payload.assigneeId) throw new ApiError(400, "Choose an employee to delegate this ticket to.");
+    const delegate = await assertValidAssignee(payload.assigneeId, ticket.toDepartmentId, user);
+    data.assigneeId = delegate.id;
+    data.delegationUsed = true;
+    assignmentComment = (payload.assignmentComment || "").trim();
+    historyEntries.push({
+      action: "ASSIGNED",
+      fieldName: "assigneeId",
+      oldValue: ticket.assignee?.name || "Unassigned",
+      newValue: delegate.name,
+      metadata: {
+        kind: "DELEGATION",
+        actorRole: user.role.name,
+        fromAssigneeId: ticket.assigneeId,
+        toAssigneeId: delegate.id,
+        statusBefore: ticket.status,
+        statusAfter: ticket.status,
+        cycle: ticket.assignmentCycle,
+        ...(assignmentComment ? { reason: assignmentComment } : {}),
+      },
+    });
   }
 
   // Ticket metadata (team/category) and the Admin-only manager override —
@@ -926,8 +1180,24 @@ async function updateTicket(user, id, payload) {
 
   if (Object.keys(data).length === 0) return getTicketById(user, id);
 
+  // Any change to who owns the ticket (assignee or cycle) is a conditional,
+  // versioned write: if another request changed the assignment since this
+  // one read the ticket, it fails with 409 and the whole transaction (history,
+  // assignment comment) rolls back — no notification is sent.
+  const changesAssignmentState = "assigneeId" in data || "assignmentCycle" in data;
+  // Changing status while unassigning in the same request would leave the
+  // new status on an unassigned ticket — assignment changes and status
+  // changes must happen as separate steps in that case.
+  if (statusNeedsAssignee && "assigneeId" in data && !data.assigneeId) throw unassignedStatusChangeError();
+
   const updated = await prisma.$transaction(async (tx) => {
-    const result = await tx.ticket.update({ where: { id }, data, include: ticketDetailInclude });
+    // (A versioned write also covers the assignee rule: unassigning or
+    // transferring bumps assignmentVersion, so a concurrent one yields 409.)
+    const result = changesAssignmentState
+      ? await versionedTicketUpdate(tx, ticket, data)
+      : statusNeedsAssignee
+        ? await guardedStatusUpdate(tx, ticket, data)
+        : await tx.ticket.update({ where: { id }, data, include: ticketDetailInclude });
     for (const entry of historyEntries) {
       await recordHistory(tx, { ticketId: id, userId: user.id, ...entry });
     }
@@ -947,6 +1217,7 @@ async function updateTicket(user, id, payload) {
   });
 
   await notifyOnUpdate(ticket, updated, historyEntries, user, assignmentComment);
+  if (reopenUnassigned) await notifyReopenedUnassigned(updated, reopenUnassigned);
   return shapeTicketDetail(scrubInternalComments(updated, user, userDepartmentIds));
 }
 
@@ -1005,6 +1276,23 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
     // ("Assign to Me") is a dedicated event handled in its own block below
     // — never reuses this one, and is excluded here via
     // `after.assigneeId !== actor.id`.
+    // The previous assignee (when ownership moves away from them) is CC'd on
+    // the assignment email; when the ticket ends up unassigned they get the
+    // reassignment notice directly (TO), since there is no new assignee.
+    const previousAssigneeId = entry.action === "ASSIGNED" ? entry.metadata?.fromAssigneeId ?? before.assigneeId ?? null : null;
+    const ccWithPrevious = (cc) =>
+      previousAssigneeId && previousAssigneeId !== after.assigneeId && !cc.includes(previousAssigneeId) ? [...cc, previousAssigneeId] : cc;
+
+    if (entry.action === "ASSIGNED" && !after.assigneeId && previousAssigneeId && previousAssigneeId !== actor.id) {
+      await notificationService.notify({
+        eventKey: "TICKET_REASSIGNED",
+        userIds: [previousAssigneeId],
+        ticketId: after.id,
+        type: "TICKET_ASSIGNED",
+        ticket: after,
+      });
+    }
+
     if (entry.action === "ASSIGNED" && after.assigneeId && after.assigneeId !== actor.id) {
       if (wasAlreadyAssigned) {
         // TICKET_REASSIGNED — TO the NEW assignee ONLY, requester moved to
@@ -1021,7 +1309,7 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
             ticketId: after.id,
             type: "TICKET_ASSIGNED",
             ticket: after,
-            ccUserIds: assignedCcUserIds,
+            ccUserIds: ccWithPrevious(assignedCcUserIds),
             assignmentComment,
           });
         }
@@ -1038,7 +1326,7 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
           ticketId: after.id,
           type: "TICKET_ASSIGNED",
           ticket: after,
-          ccUserIds: assignedCcUserIds,
+          ccUserIds: ccWithPrevious(assignedCcUserIds),
           assignmentComment,
         });
       }
@@ -1060,7 +1348,7 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
           ticketId: after.id,
           type: "TICKET_ASSIGNED",
           ticket: after,
-          ccUserIds: selfAssignedCcUserIds,
+          ccUserIds: ccWithPrevious(selfAssignedCcUserIds),
         });
       }
     }
@@ -1079,14 +1367,36 @@ async function notifyOnUpdate(before, after, historyEntries, actor, assignmentCo
   }
 }
 
-// Moves a ticket to a different department — a separate action from
-// updateTicket's generic toDepartmentId field (which is MANAGER/TEAMLEAD-
-// only and does NOT touch manager/assignee). This is the only path that:
-// (a) lets an assigned EMPLOYEE move their own ticket, and (b) automatically
-// re-derives the manager and clears the assignee, since the old assignee
-// belongs to the old department and the new department's management must
-// review and re-assign it themselves.
-async function transferDepartment(user, ticketId, { toDepartmentId, transferReason }) {
+// A reopened ticket that could not go back to its last resolver (inactive,
+// no longer eligible, or none recorded) is left unassigned in its
+// department's queue — tell that department's management so someone assigns
+// it. TO the active Team Leads (or Managers if there are none), CC Managers.
+async function notifyReopenedUnassigned(ticket, { lastResolverName }) {
+  const [teamLeads, managers] = await Promise.all([
+    userDepartmentAccessService.getActiveDepartmentTeamLeads(ticket.toDepartmentId),
+    userDepartmentAccessService.getActiveDepartmentManagers(ticket.toDepartmentId),
+  ]);
+  const toIds = (teamLeads.length ? teamLeads : managers).map((u) => u.id);
+  if (!toIds.length) return;
+  await notificationService.notify({
+    eventKey: "TICKET_REOPENED_UNASSIGNED",
+    userIds: toIds,
+    ticketId: ticket.id,
+    type: "TICKET_REOPENED_UNASSIGNED",
+    ticket,
+    ccUserIds: teamLeads.length ? managers.map((u) => u.id) : [],
+    reopenAssignment: { lastResolverName },
+  });
+}
+
+// Moves a ticket to a different department — the ONLY way a ticket's
+// department can change (updateTicket rejects toDepartmentId). Takes effect
+// immediately: no acceptance step. Allowed for the current assignee, or a
+// Manager/Team Lead with access to the SOURCE department (destination access
+// is not needed); clears the assignee, keeps the status. The reason is
+// optional. A destination the ticket has been handled by before is allowed
+// (the UI warns first) and recorded as a repeat visit.
+async function transferDepartment(user, ticketId, { toDepartmentId, transferReason, expectedAssignmentVersion }) {
   const ticket = await prisma.ticket.findUnique({
     where: { id: ticketId },
     include: { toDepartment: { select: { id: true, name: true } } },
@@ -1095,9 +1405,11 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
   const userDepartmentIds = await resolveUserDepartmentIds(user);
   assertCanView(user, ticket, userDepartmentIds);
   assertCanTransferDepartment(user, ticket, userDepartmentIds);
+  assertActiveForAssignment(ticket, "transfer it to another department");
+  assertExpectedAssignmentVersion(ticket, expectedAssignmentVersion);
 
   const reason = (transferReason || "").trim();
-  if (!reason) throw new ApiError(400, "Transfer reason is required.");
+  if (!reason) throw new ApiError(400, "Please provide a reason before transferring this ticket.");
 
   if (!toDepartmentId) throw new ApiError(400, "Destination department is required.");
   if (toDepartmentId === ticket.toDepartmentId) {
@@ -1129,19 +1441,17 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
   }
 
   const oldDepartmentName = ticket.toDepartment?.name || "Unassigned";
+  const repeatVisit = (await getVisitedDepartmentIds(ticket)).includes(toDepartmentId);
 
   const updated = await prisma.$transaction(async (tx) => {
-    const result = await tx.ticket.update({
-      where: { id: ticketId },
-      data: {
-        toDepartmentId,
-        managerId: newActiveTeamLeads[0]?.id || newActiveManagers[0]?.id || null,
-        // The old assignee belongs to the OLD department and must never
-        // remain assigned once the ticket routes elsewhere — the new
-        // department's agent(s) review the ticket and assign it themselves.
-        assigneeId: null,
-      },
-      include: ticketDetailInclude,
+    // Conditional on assignmentVersion (409 if someone changed the
+    // assignment/department meanwhile). The old assignee belongs to the OLD
+    // department and never stays assigned once the ticket routes elsewhere —
+    // the new department's management assigns it (or transfers it again).
+    const result = await versionedTicketUpdate(tx, ticket, {
+      toDepartmentId,
+      managerId: newActiveTeamLeads[0]?.id || newActiveManagers[0]?.id || null,
+      assigneeId: null,
     });
 
     await recordHistory(tx, {
@@ -1151,11 +1461,22 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
       fieldName: "toDepartmentId",
       oldValue: oldDepartmentName,
       newValue: destinationDepartment.name,
+      metadata: {
+        kind: "DEPARTMENT_TRANSFER",
+        actorRole: user.role.name,
+        fromDepartmentId: ticket.toDepartmentId,
+        toDepartmentId,
+        fromAssigneeId: ticket.assigneeId || null,
+        toAssigneeId: null,
+        statusBefore: ticket.status,
+        statusAfter: ticket.status,
+        cycle: ticket.assignmentCycle,
+        repeatVisit,
+        ...(reason ? { reason } : {}),
+      },
     });
     // Kept as its own permanent row — same pattern as RESOLUTION_NOTES/
-    // ON_HOLD_REASON/CLOSED_REASON — so the reason text is never lost even
-    // though only the before/after department lives on the
-    // DEPARTMENT_TRANSFERRED entry itself.
+    // ON_HOLD_REASON/CLOSED_REASON (the reason is mandatory).
     await recordHistory(tx, {
       ticketId,
       userId: user.id,
@@ -1167,29 +1488,30 @@ async function transferDepartment(user, ticketId, { toDepartmentId, transferReas
     return result;
   });
 
-  // Dedicated event — never reuses TICKET_UPDATED. Uses the SAME standard
-  // recipient shape as every other post-creation event (TO requester +
-  // current assignee — the assignee was just cleared above, so this is
-  // effectively "requester only" right after a transfer; CC every active
-  // TEAMLEAD and MANAGER of the ticket's CURRENT department, which by this
-  // point is already the NEW department — see buildStandardRecipients,
-  // which reads `updated.toDepartmentId`/`updated.assigneeId` as-is — plus
-  // the ticket's original Custom CC list, unchanged by the transfer). The
-  // OLD department's management users are never included: this function
-  // never queries them, and buildStandardRecipients only ever looks at the
-  // ticket's current toDepartmentId.
-  const standard = await buildStandardRecipients(updated);
+  // One email for the transfer (see recipientBuilder.js#buildTransferRecipients):
+  // TO the destination department's active Team Leads + Managers; CC the
+  // requester, the previous assignee, the SOURCE department's active Team
+  // Leads + Managers and the ticket's Custom CC. Source department and previous assignee come
+  // from `ticket` as read BEFORE the update — `updated` already points at the
+  // destination and has no assignee.
+  const transferRecipients = await buildTransferRecipients({
+    ticketId: ticket.id,
+    requesterId: ticket.requesterId,
+    fromDepartmentId: ticket.toDepartmentId,
+    toDepartmentId,
+    previousAssigneeId: ticket.assigneeId,
+  });
   await notificationService.notify({
     eventKey: "TICKET_DEPARTMENT_TRANSFERRED",
-    userIds: standard.userIds,
+    userIds: transferRecipients.userIds,
     ticketId: updated.id,
     type: "TICKET_DEPARTMENT_TRANSFERRED",
     ticket: updated,
-    ccUserIds: standard.ccUserIds,
+    ccUserIds: transferRecipients.ccUserIds,
     departmentTransfer: { oldDepartmentName, reason },
   });
 
-  return shapeTicketDetail(scrubInternalComments(updated, user, userDepartmentIds));
+  return { ...shapeTicketDetail(scrubInternalComments(updated, user, userDepartmentIds)), visitedDepartmentIds: await getVisitedDepartmentIds(updated) };
 }
 
 async function addComment(user, ticketId, { body, isInternal }, files = []) {
@@ -1305,7 +1627,11 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
   return finalComment;
 }
 
-async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, teamId }) {
+// Target statuses whose reason is mandatory, and the ticket field that
+// stores it (same fields updateTicket uses).
+const BULK_REASON_FIELDS = { ON_HOLD: "onHoldReason", RESOLVED: "resolutionNotes", CLOSED: "closedReason", REOPENED: "reopenedReason" };
+
+async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, teamId, reason }) {
   if (user.role.name !== "ADMIN") throw new ApiError(403, "Only Admins can perform bulk actions");
   if (!ticketIds?.length) throw new ApiError(400, "ticketIds is required");
   // Bulk actions are an Admin-only feature, but "assign" is still one of the
@@ -1315,13 +1641,48 @@ async function bulkUpdate(user, { ticketIds, status, priorityId, assigneeId, tea
     throw new ApiError(403, "Administrators cannot assign tickets.");
   }
 
+  // Mandatory reason for On Hold / Resolved / Closed / Reopened — checked
+  // before anything is read or written; stored (trimmed) in the same ticket
+  // field updateTicket uses and in the BULK_UPDATE history row.
+  const reasonField = status ? BULK_REASON_FIELDS[status] : null;
+  const bulkReason = (reason || "").trim();
+  if (reasonField && !bulkReason) {
+    throw new ApiError(400, "Please provide a reason for this status change.");
+  }
+
   const data = {};
   if (status) data.status = status;
+  if (reasonField) data[reasonField] = bulkReason;
   if (priorityId) data.priorityId = priorityId;
   if (teamId !== undefined) data.teamId = teamId || null;
 
+  // Assignment before status (same rule as updateTicket): every selected
+  // ticket whose status would actually change must have an assignee —
+  // except a reopen of a RESOLVED/CLOSED ticket. Checked up front (clear
+  // message listing the tickets) and again atomically at write time.
+  let statusGuardIds = [];
+  if (status) {
+    const selected = await prisma.ticket.findMany({ where: { id: { in: ticketIds } }, select: { id: true, ticketNumber: true, status: true, assigneeId: true } });
+    statusGuardIds = selected
+      .filter((t) => t.status !== status && !(status === "REOPENED" && TERMINAL_STATUSES.includes(t.status)))
+      .map((t) => t.id);
+    const unassigned = selected.filter((t) => statusGuardIds.includes(t.id) && !t.assigneeId);
+    if (unassigned.length) {
+      throw new ApiError(
+        409,
+        `These tickets are unassigned, so their status cannot be changed until they are assigned: ${unassigned.map((t) => t.ticketNumber).join(", ")}`,
+        { code: TICKET_UNASSIGNED_CODE, ticketNumbers: unassigned.map((t) => t.ticketNumber) }
+      );
+    }
+  }
+
   await prisma.$transaction(async (tx) => {
-    await tx.ticket.updateMany({ where: { id: { in: ticketIds } }, data });
+    if (statusGuardIds.length) {
+      const guarded = await tx.ticket.updateMany({ where: { id: { in: statusGuardIds }, assigneeId: { not: null } }, data });
+      if (guarded.count !== statusGuardIds.length) throw unassignedStatusChangeError();
+    }
+    const others = ticketIds.filter((tid) => !statusGuardIds.includes(tid));
+    if (others.length) await tx.ticket.updateMany({ where: { id: { in: others } }, data });
     for (const ticketId of ticketIds) {
       await recordHistory(tx, { ticketId, userId: user.id, action: "BULK_UPDATE", newValue: JSON.stringify(data) });
     }

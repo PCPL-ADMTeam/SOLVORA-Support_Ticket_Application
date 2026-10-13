@@ -6,6 +6,7 @@ const { uploadRoot } = require("../config/multer");
 const fs = require("fs");
 const path = require("path");
 const { buildInAppNotificationContent } = require("../utils/inAppNotificationContent");
+const env = require("../config/env");
 
 // Used ONLY when the PostgreSQL EmailTemplate for `eventKey` is missing,
 // inactive, or fails to render (Step 7) — a minimal safety net so the
@@ -21,6 +22,16 @@ function isUsableEmail(value) {
 }
 
 function fallbackContent(eventKey, ticket) {
+  // Event with no seeded template yet on older databases — still explain it.
+  if (eventKey === "TICKET_REOPENED_UNASSIGNED" && ticket) {
+    return {
+      subject: `Ticket ${ticket.ticketNumber} — reopened and needs assignment`,
+      body:
+        `<p>Ticket ${ticket.ticketNumber} was reopened, but it could not be returned to the employee who last resolved it because they are inactive or no longer eligible.</p>` +
+        `<p>It is now unassigned in the ${ticket.toDepartment?.name || "department"} queue. Please assign it to an eligible employee.</p>` +
+        `<p><a href="${env.clientUrl}/tickets/${ticket.id}">View Ticket</a></p>`,
+    };
+  }
   const label = eventKey ? eventKey.replace(/_/g, " ").toLowerCase() : "ticket update";
   return {
     subject: ticket ? `Ticket ${ticket.ticketNumber} — ${label}` : `Helpdesk — ${label}`,
@@ -63,7 +74,7 @@ function fallbackContent(eventKey, ticket) {
 // groups" (or two different people both legitimately in TO) from ever
 // becoming multiple email sends for the same event. Each id still gets
 // its own in-app Notification row, since the bell is inherently per-user.
-async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, ccUserIds = [], attachments = [], assignmentComment }) {
+async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comment, statusChange, departmentTransfer, reopenAssignment, ccUserIds = [], attachments = [], assignmentComment }) {
   // userId (singular) kept accepted for any caller not yet migrated to the
   // plural form — treated as a one-element array, identical behavior.
   const primaryIds = [...new Set((userIds || (userId ? [userId] : [])).filter(Boolean))];
@@ -84,7 +95,7 @@ async function notify({ eventKey, userIds, userId, ticketId, type, ticket, comme
   // EmailTemplate row exists/is active/was edited; it's the same fixed,
   // concise text for a given eventKey regardless. See
   // utils/inAppNotificationContent.js.
-  const inApp = buildInAppNotificationContent(eventKey, { ticket, comment, statusChange, departmentTransfer });
+  const inApp = buildInAppNotificationContent(eventKey, { ticket, comment, statusChange, departmentTransfer, reopenAssignment });
 
   // One Notification (bell) row per primary recipient — independent of how
   // many end up in the single combined email below.

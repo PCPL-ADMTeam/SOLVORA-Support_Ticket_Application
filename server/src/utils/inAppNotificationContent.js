@@ -49,7 +49,7 @@ function combine(message, details) {
 // No extra queries are made here — if a field this function wants isn't
 // already on `ticket`/`comment`, it's simply omitted from the output rather
 // than fetched separately.
-function buildInAppNotificationContent(eventKey, { ticket, comment, statusChange, departmentTransfer } = {}) {
+function buildInAppNotificationContent(eventKey, { ticket, comment, statusChange, departmentTransfer, reopenAssignment } = {}) {
   const ticketNumber = ticket?.ticketNumber || "";
 
   switch (eventKey) {
@@ -76,7 +76,7 @@ function buildInAppNotificationContent(eventKey, { ticket, comment, statusChange
       return {
         title: "Ticket Reassigned",
         message: combine(
-          `Ticket ${ticketNumber} has been reassigned to ${ticket?.assignee?.name || "an employee"}.`,
+          ticket?.assignee ? `Ticket ${ticketNumber} has been reassigned to ${ticket.assignee.name}.` : `Ticket ${ticketNumber} is no longer assigned to you.`,
           joinDetails([departmentName(ticket), priorityLabel(ticket), statusLabel(ticket)])
         ),
       };
@@ -138,6 +138,15 @@ function buildInAppNotificationContent(eventKey, { ticket, comment, statusChange
         message: combine(
           `Ticket ${ticketNumber} was moved to ${departmentName(ticket) || "a new department"}.`,
           joinDetails([priorityLabel(ticket), statusLabel(ticket)])
+        ),
+      };
+
+    case "TICKET_REOPENED_UNASSIGNED":
+      return {
+        title: "Reopened Ticket Needs Assignment",
+        message: combine(
+          `Ticket ${ticketNumber} was reopened but could not be returned to ${reopenAssignment?.lastResolverName || "the employee who last resolved it"} (inactive or no longer eligible). Please assign it.`,
+          joinDetails([departmentName(ticket), priorityLabel(ticket), statusLabel(ticket)])
         ),
       };
 
