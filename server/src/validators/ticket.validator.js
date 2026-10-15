@@ -112,6 +112,16 @@ const commentValidator = [
   body("isInternal").optional().isBoolean(),
 ];
 
+// Editing a comment's text (author-only; see ticket.service.js#updateComment).
+const updateCommentValidator = [
+  param("id").notEmpty(),
+  param("commentId").notEmpty(),
+  body("body").isString().withMessage("Comment text is required").trim().notEmpty().withMessage("Comment text cannot be empty."),
+  body("expectedUpdatedAt").optional({ nullable: true }).isISO8601(),
+];
+
+const deleteCommentValidator = [param("id").notEmpty(), param("commentId").notEmpty()];
+
 const bulkUpdateValidator = [
   body("ticketIds").isArray({ min: 1 }).withMessage("ticketIds must be a non-empty array"),
   body("status").optional().isIn(["OPEN", "IN_PROGRESS", "ON_HOLD", "RESOLVED", "CLOSED", "REOPENED"]),
@@ -134,6 +144,8 @@ module.exports = {
   updateTicketValidator,
   transferDepartmentValidator,
   commentValidator,
+  updateCommentValidator,
+  deleteCommentValidator,
   bulkUpdateValidator,
   listTicketsValidator,
 };

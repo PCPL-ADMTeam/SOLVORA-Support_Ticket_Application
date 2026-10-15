@@ -19,6 +19,8 @@ const ACTION_LABELS = {
   DEPARTMENT_TRANSFERRED: "Department transferred",
   TRANSFER_REASON: "Transfer reason",
   COMMENTED: "Commented",
+  COMMENT_EDITED: "Comment edited",
+  COMMENT_DELETED: "Comment deleted",
   BULK_UPDATE: "Bulk updated",
 };
 
@@ -27,6 +29,8 @@ const ACTION_COLORS = {
   STATUS_CHANGE: "warning",
   ASSIGNED: "info",
   COMMENTED: "grey",
+  COMMENT_EDITED: "grey",
+  COMMENT_DELETED: "grey",
   RESOLUTION_NOTES: "success",
   ON_HOLD_REASON: "warning",
   CLOSED_REASON: "grey",

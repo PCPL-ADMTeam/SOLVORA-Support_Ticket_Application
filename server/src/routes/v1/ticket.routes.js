@@ -9,6 +9,8 @@ const {
   updateTicketValidator,
   transferDepartmentValidator,
   commentValidator,
+  updateCommentValidator,
+  deleteCommentValidator,
   bulkUpdateValidator,
   listTicketsValidator,
 } = require("../../validators/ticket.validator");
@@ -39,6 +41,9 @@ router.patch("/:id/transfer-department", transferDepartmentValidator, validate, 
 // truncate a batch before ticket.service.js#addComment can produce its own
 // specific, user-facing message.
 router.post("/:id/comments", upload.array("attachments", 20), commentValidator, validate, ticketController.addComment);
+// Author-only edit/delete of an existing comment (ticket.service.js#updateComment/deleteComment).
+router.patch("/:id/comments/:commentId", updateCommentValidator, validate, ticketController.updateComment);
+router.delete("/:id/comments/:commentId", deleteCommentValidator, validate, ticketController.deleteComment);
 router.post("/:id/attachments", upload.single("file"), ticketController.uploadAttachment);
 router.get("/:id/attachments/:attachmentId/download", ticketController.downloadAttachment);
 router.delete("/:id/attachments/:attachmentId", ticketController.deleteAttachment);

@@ -38,4 +38,8 @@ export const ticketsApi = {
   downloadAttachment: (ticketId, attachmentId) =>
     api.get(`/tickets/${ticketId}/attachments/${attachmentId}/download`, { responseType: "blob" }),
   deleteAttachment: (ticketId, attachmentId) => api.delete(`/tickets/${ticketId}/attachments/${attachmentId}`),
+  // Author-only (enforced server-side). expectedUpdatedAt guards against
+  // overwriting a newer edit (409).
+  updateComment: (ticketId, commentId, payload) => api.patch(`/tickets/${ticketId}/comments/${commentId}`, payload),
+  deleteComment: (ticketId, commentId) => api.delete(`/tickets/${ticketId}/comments/${commentId}`),
 };

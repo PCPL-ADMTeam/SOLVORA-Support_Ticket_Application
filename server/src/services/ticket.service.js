@@ -1627,6 +1627,103 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
   return finalComment;
 }
 
+// ---- Editing / deleting a comment -----------------------------------------
+// Only the comment's AUTHOR (authorId vs the authenticated user — never a
+// client-supplied id) may edit or delete it, and only while they can still
+// take part in the ticket's conversation (assertCanParticipate). A comment
+// the caller cannot see (wrong ticket, or an internal note hidden from
+// them) is reported as 404, never revealed. Neither action sends a
+// notification. Public-comment edits/deletes get a content-free entry in the
+// ticket's Activity History; internal-note ones are recorded only in the
+// admin AuditLog (Activity History is visible to requesters too).
+async function loadOwnComment(user, ticketId, commentId) {
+  const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
+  if (!ticket) throw new ApiError(404, "Ticket not found");
+  const comment = await prisma.ticketComment.findUnique({ where: { id: commentId }, include: { attachments: true } });
+  if (!comment || comment.ticketId !== ticketId) throw new ApiError(404, "Comment not found");
+  const userDepartmentIds = await resolveUserDepartmentIds(user);
+  await assertCanParticipate(user, ticket, userDepartmentIds);
+  if (comment.isInternal && !canViewInternalNotes(user, ticket, userDepartmentIds)) {
+    throw new ApiError(404, "Comment not found");
+  }
+  if (comment.authorId !== user.id) {
+    throw new ApiError(403, "You can only edit or delete your own comments.");
+  }
+  return comment;
+}
+
+const commentResponseInclude = {
+  author: { select: { id: true, name: true, role: { select: { name: true } } } },
+  attachments: true,
+};
+
+// Updates ONLY the comment's text (author, ticket, visibility and creation
+// time are never taken from the request). `expectedUpdatedAt` — the
+// updatedAt the editor was opened with — makes the write conditional, so a
+// newer edit is never silently overwritten (409).
+async function updateComment(user, ticketId, commentId, { body, expectedUpdatedAt }) {
+  const comment = await loadOwnComment(user, ticketId, commentId);
+  const trimmed = (body || "").trim();
+  if (!trimmed) throw new ApiError(400, "Comment text cannot be empty.");
+  const cleanBody = sanitizeRichText(trimmed);
+  if (cleanBody === comment.body) {
+    return prisma.ticketComment.findUnique({ where: { id: commentId }, include: commentResponseInclude });
+  }
+
+  const updated = await prisma.$transaction(async (tx) => {
+    const res = await tx.ticketComment.updateMany({
+      where: { id: commentId, ...(expectedUpdatedAt ? { updatedAt: new Date(expectedUpdatedAt) } : {}) },
+      data: { body: cleanBody },
+    });
+    if (res.count === 0) {
+      throw new ApiError(409, "This comment was changed or removed since you opened it. Refresh the ticket and try again.");
+    }
+    if (!comment.isInternal) {
+      await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENT_EDITED", metadata: { commentId } });
+    }
+    return tx.ticketComment.findUnique({ where: { id: commentId }, include: commentResponseInclude });
+  });
+
+  await recordAudit({ userId: user.id, action: "COMMENT_EDITED", entityType: "TicketComment", entityId: commentId, newValues: { ticketId, isInternal: comment.isInternal } });
+  return updated;
+}
+
+// Hard delete (approved retention choice): the comment row and its
+// attachment rows (FK cascade) are removed; the attachment FILES are then
+// removed from storage best-effort (a storage failure is logged, never
+// undoes the delete). A content-free audit record remains.
+async function deleteComment(user, ticketId, commentId) {
+  const comment = await loadOwnComment(user, ticketId, commentId);
+
+  await prisma.$transaction(async (tx) => {
+    const res = await tx.ticketComment.deleteMany({ where: { id: commentId } });
+    if (res.count === 0) throw new ApiError(404, "Comment not found");
+    if (!comment.isInternal) {
+      await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENT_DELETED", metadata: { commentId, attachmentCount: comment.attachments.length } });
+    }
+  });
+
+  for (const attachment of comment.attachments) {
+    try {
+      if (attachment.storageProvider === "azure") {
+        await blobStorageService.deleteBlob(attachment.filePath);
+      } else {
+        await fs.promises.unlink(path.join(uploadRoot, attachment.filePath));
+      }
+    } catch (err) {
+      if (err.code !== "ENOENT") console.error(`[tickets] Failed to remove file for deleted comment ${commentId} attachment ${attachment.id}:`, err.message);
+    }
+  }
+
+  await recordAudit({
+    userId: user.id,
+    action: "COMMENT_DELETED",
+    entityType: "TicketComment",
+    entityId: commentId,
+    oldValues: { ticketId, isInternal: comment.isInternal, createdAt: comment.createdAt, attachmentCount: comment.attachments.length },
+  });
+}
+
 // Target statuses whose reason is mandatory, and the ticket field that
 // stores it (same fields updateTicket uses).
 const BULK_REASON_FIELDS = { ON_HOLD: "onHoldReason", RESOLVED: "resolutionNotes", CLOSED: "closedReason", REOPENED: "reopenedReason" };
@@ -1870,6 +1967,8 @@ module.exports = {
   updateTicket,
   transferDepartment,
   addComment,
+  updateComment,
+  deleteComment,
   addAttachment,
   streamAttachment,
   deleteAttachment,

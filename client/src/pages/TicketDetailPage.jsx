@@ -96,6 +96,16 @@ const REASON_CONFIG = {
   },
 };
 
+// Ticket Information: label for "when the ticket entered its current status".
+// OPEN has none — the Created field already shows that.
+const STATUS_SINCE_LABELS = {
+  IN_PROGRESS: "In Progress Since",
+  ON_HOLD: "On Hold Since",
+  RESOLVED: "Resolved On",
+  CLOSED: "Closed On",
+  REOPENED: "Reopened On",
+};
+
 // A distinct sentinel (never a real user id) so the Assign dialog's select
 // can represent "Assign to Me" as its own option, separate from picking a
 // specific Team Member id — translated to the dedicated `assignToMe: true`
@@ -249,6 +259,28 @@ export default function TicketDetailPage() {
       on: entry.createdAt ? format(new Date(entry.createdAt), "MMM d, yyyy h:mm a") : "Not recorded",
       reason: reason || "Not recorded",
     };
+  }, [ticket]);
+
+  // When the ticket entered its CURRENT status — one field under Created,
+  // replaced on every status change. Source: the ticket's own history (newest
+  // first): the latest STATUS_CHANGE row, or Admin BULK_UPDATE row (its JSON
+  // carries `status`), whose target is the current status. Never updatedAt.
+  // None for OPEN (Created already covers it); "—" if no such record exists.
+  const currentStatusSince = useMemo(() => {
+    const label = STATUS_SINCE_LABELS[ticket?.status];
+    if (!label) return null;
+    const entry = (ticket.history || []).find((h) => {
+      if (h.action === "STATUS_CHANGE") return h.newValue === ticket.status;
+      if (h.action === "BULK_UPDATE") {
+        try {
+          return JSON.parse(h.newValue || "{}").status === ticket.status;
+        } catch {
+          return false;
+        }
+      }
+      return false;
+    });
+    return { label, value: entry ? format(new Date(entry.createdAt), "MMM d, yyyy h:mm a") : "—" };
   }, [ticket]);
 
   const load = useCallback(async () => {
@@ -606,9 +638,22 @@ export default function TicketDetailPage() {
                   isStaff={isStaff && ticket.viewerAccess === "full"}
                   onAddComment={handleAddComment}
                   submitting={commentSubmitting}
+                  currentUserId={user.id}
+                  // Update the one comment in place, then refresh in the
+                  // background so Activity History / attachments stay in sync.
+                  onCommentUpdated={(updated) => {
+                    setTicket((prev) => ({ ...prev, comments: prev.comments.map((c) => (c.id === updated.id ? updated : c)) }));
+                    load();
+                  }}
+                  onCommentDeleted={(commentId) => {
+                    setTicket((prev) => ({ ...prev, comments: prev.comments.filter((c) => c.id !== commentId) }));
+                    load();
+                  }}
                 />
               ) : (
-                <Box sx={{ p: 2 }}>
+                // Bounded like the Comments list (same max height): only the
+                // entries scroll; the tab header above stays in place.
+                <Box sx={{ p: 2, maxHeight: { xs: 360, sm: 460 }, overflowY: "auto", overflowX: "hidden" }}>
                   <ActivityTimeline history={ticket.history} />
                 </Box>
               )}
@@ -725,6 +770,7 @@ export default function TicketDetailPage() {
                 }
               />
               <InfoRow label="Created" value={format(new Date(ticket.createdAt), "MMM d, yyyy h:mm a")} />
+              {currentStatusSince && <InfoRow label={currentStatusSince.label} value={currentStatusSince.value} />}
             </Stack>
           </Paper>
         </Grid>

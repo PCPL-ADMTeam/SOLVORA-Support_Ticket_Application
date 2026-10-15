@@ -13,6 +13,8 @@ import {
   CircularProgress,
   Paper,
   Stack,
+  Tooltip,
+  Button,
 } from "@mui/material";
 import { format } from "date-fns";
 import AttachFileIcon from "@mui/icons-material/AttachFile";
@@ -21,6 +23,10 @@ import InsertDriveFileIcon from "@mui/icons-material/InsertDriveFile";
 import CloseIcon from "@mui/icons-material/Close";
 import OpenInFullIcon from "@mui/icons-material/OpenInFull";
 import LockIcon from "@mui/icons-material/Lock";
+import EditOutlinedIcon from "@mui/icons-material/EditOutlined";
+import DeleteOutlineIcon from "@mui/icons-material/DeleteOutline";
+import { useSnackbar } from "notistack";
+import ConfirmDialog from "../common/ConfirmDialog";
 import SafeHtml from "../common/SafeHtml";
 import EmptyState from "../common/EmptyState";
 import { ticketsApi } from "../../api/tickets";
@@ -34,8 +40,27 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+// Comment header geometry, shared so the text below lines up exactly with
+// the author's name: avatar width + the header's gap (theme spacing units).
+const AVATAR_SIZE = 26;
+const HEADER_GAP = 1;
+const bodyIndentSx = { pl: (theme) => `calc(${AVATAR_SIZE}px + ${theme.spacing(HEADER_GAP)})` };
+
 function isImage(a) {
   return a.mimeType?.startsWith("image/");
+}
+
+// Comment bodies are stored sanitized (HTML-escaped). The inline editor is a
+// plain text field, so it is pre-filled with the visible text.
+function htmlToText(html) {
+  if (!html) return "";
+  return new DOMParser().parseFromString(html, "text/html").body.textContent || "";
+}
+
+// updatedAt is bumped only by an edit (a new comment's createdAt/updatedAt
+// are written together), so a gap of more than a second means "edited".
+function isEdited(c) {
+  return c.updatedAt && new Date(c.updatedAt).getTime() - new Date(c.createdAt).getTime() > 1000;
 }
 
 // Renders the public + internal comment thread: each comment as its own
@@ -45,7 +70,61 @@ function isImage(a) {
 // per RBAC — the API has already stripped them (and their attachments) out
 // server-side before an END USER ever sees this list, so no client-side
 // filtering is needed here.
-export default function CommentThread({ ticketId, comments, isStaff, onAddComment, submitting }) {
+export default function CommentThread({ ticketId, comments, isStaff, onAddComment, submitting, currentUserId, onCommentUpdated, onCommentDeleted }) {
+  const { enqueueSnackbar } = useSnackbar();
+  // Inline edit of ONE comment at a time; the typed text survives a failed save.
+  const [editingId, setEditingId] = useState(null);
+  const [editText, setEditText] = useState("");
+  const [editError, setEditError] = useState("");
+  const [savingEdit, setSavingEdit] = useState(false);
+  // Delete confirmation.
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const startEdit = (c) => {
+    setEditingId(c.id);
+    setEditText(htmlToText(c.body));
+    setEditError("");
+  };
+  const cancelEdit = () => {
+    setEditingId(null);
+    setEditText("");
+    setEditError("");
+  };
+  const saveEdit = async (c) => {
+    if (savingEdit) return;
+    const text = editText.trim();
+    if (!text) {
+      setEditError("Comment text cannot be empty.");
+      return;
+    }
+    setSavingEdit(true);
+    try {
+      const { data } = await ticketsApi.updateComment(ticketId, c.id, { body: text, expectedUpdatedAt: c.updatedAt });
+      onCommentUpdated?.(data.data);
+      cancelEdit();
+      enqueueSnackbar("Comment updated", { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to update comment", { variant: "error" });
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+  const confirmDelete = async () => {
+    if (deleting || !deleteTarget) return;
+    setDeleting(true);
+    try {
+      await ticketsApi.deleteComment(ticketId, deleteTarget.id);
+      onCommentDeleted?.(deleteTarget.id);
+      if (editingId === deleteTarget.id) cancelEdit();
+      setDeleteTarget(null);
+      enqueueSnackbar("Comment deleted", { variant: "success" });
+    } catch (err) {
+      enqueueSnackbar(err.response?.data?.message || "Failed to delete comment", { variant: "error" });
+    } finally {
+      setDeleting(false);
+    }
+  };
   const [body, setBody] = useState("");
   const [isInternal, setIsInternal] = useState(false);
   const [files, setFiles] = useState([]);
@@ -179,19 +258,77 @@ export default function CommentThread({ ticketId, comments, isStaff, onAddCommen
                     borderColor: c.isInternal ? "secondary.main" : undefined,
                   }}
                 >
-                  <Box sx={{ display: "flex", alignItems: "center", gap: 1, flexWrap: "wrap" }}>
-                    <Avatar sx={{ width: 26, height: 26, fontSize: 13, flexShrink: 0 }}>{c.author.name[0]}</Avatar>
-                    <Typography variant="body2" fontWeight={600}>{c.author.name}</Typography>
-                    {c.isInternal && <Chip label="Internal note" size="small" color="secondary" />}
-                    <Typography variant="caption" color="text.secondary" sx={{ ml: "auto" }}>
-                      {format(new Date(c.createdAt), "MMM d, h:mm a")}
-                    </Typography>
+                  {/* Header: [avatar · name · time · internal chip]  ...  [edit][delete] */}
+                  <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                    <Box sx={{ display: "flex", alignItems: "center", columnGap: HEADER_GAP, rowGap: 0.25, flexWrap: "wrap", flex: 1, minWidth: 0 }}>
+                      <Avatar sx={{ width: AVATAR_SIZE, height: AVATAR_SIZE, fontSize: 13, flexShrink: 0 }}>{c.author.name[0]}</Avatar>
+                      <Typography variant="body2" fontWeight={600} sx={{ minWidth: 0, wordBreak: "break-word" }}>{c.author.name}</Typography>
+                      <Typography variant="caption" color="text.secondary" sx={{ whiteSpace: "nowrap" }}>
+                        {format(new Date(c.createdAt), "MMM d, h:mm a")}
+                        {isEdited(c) && (
+                          <Tooltip title={`Edited ${format(new Date(c.updatedAt), "MMM d, h:mm a")}`}>
+                            <Box component="span" sx={{ ml: 0.5, fontStyle: "italic" }}>· Edited</Box>
+                          </Tooltip>
+                        )}
+                      </Typography>
+                      {c.isInternal && <Chip label="Internal note" size="small" color="secondary" />}
+                    </Box>
+                    {/* Author-only actions, grouped far right — always visible
+                        (no hover needed on mobile); the backend re-checks authorship. */}
+                    {c.author.id === currentUserId && editingId !== c.id && (
+                      <Box sx={{ display: "flex", alignItems: "center", gap: 0.5, flexShrink: 0 }}>
+                        <Tooltip title="Edit comment">
+                          <IconButton
+                            size="small"
+                            aria-label="Edit comment"
+                            onClick={() => startEdit(c)}
+                            sx={{ p: 0.5, color: "text.secondary", "&:hover": { color: "text.primary", bgcolor: "action.hover" } }}
+                          >
+                            <EditOutlinedIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>
+                        <Tooltip title="Delete comment">
+                          <IconButton
+                            size="small"
+                            aria-label="Delete comment"
+                            onClick={() => setDeleteTarget(c)}
+                            sx={{ p: 0.5, color: "text.secondary", "&:hover": { color: "primary.main", bgcolor: "primary.light" } }}
+                          >
+                            <DeleteOutlineIcon sx={{ fontSize: 16 }} />
+                          </IconButton>
+                        </Tooltip>
+                      </Box>
+                    )}
                   </Box>
 
-                  {hasText && (
-                    <Box sx={{ mt: 1 }}>
-                      <SafeHtml html={c.body} />
+                  {editingId === c.id ? (
+                    <Box sx={{ mt: 1, ...bodyIndentSx }}>
+                      <TextField
+                        autoFocus
+                        multiline
+                        minRows={2}
+                        maxRows={8}
+                        fullWidth
+                        size="small"
+                        value={editText}
+                        onChange={(e) => { setEditText(e.target.value); setEditError(""); }}
+                        error={Boolean(editError)}
+                        helperText={editError}
+                        inputProps={{ "aria-label": "Edit comment text" }}
+                      />
+                      <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1, mt: 1 }}>
+                        <Button size="small" onClick={cancelEdit} disabled={savingEdit}>Cancel</Button>
+                        <Button size="small" variant="contained" onClick={() => saveEdit(c)} disabled={savingEdit}>
+                          {savingEdit ? "Saving..." : "Save"}
+                        </Button>
+                      </Box>
                     </Box>
+                  ) : (
+                    hasText && (
+                      <Box sx={{ mt: 0.5, ...bodyIndentSx, wordBreak: "break-word" }}>
+                        <SafeHtml html={c.body} />
+                      </Box>
+                    )
                   )}
 
                   {images.length > 0 && (
@@ -377,6 +514,22 @@ export default function CommentThread({ ticketId, comments, isStaff, onAddCommen
           </Box>
         )}
       </Box>
+
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        title="Delete Comment"
+        message={
+          deleteTarget
+            ? `Delete this ${deleteTarget.isInternal ? "internal note" : "comment"}${
+                htmlToText(deleteTarget.body).trim() ? ` ("${htmlToText(deleteTarget.body).trim().slice(0, 80)}${htmlToText(deleteTarget.body).trim().length > 80 ? "…" : ""}")` : ""
+              }? This cannot be undone${deleteTarget.attachments?.length ? " and also removes its attachments" : ""}.`
+            : ""
+        }
+        confirmLabel={deleting ? "Deleting..." : "Delete Comment"}
+        danger
+        onConfirm={confirmDelete}
+        onClose={() => { if (!deleting) setDeleteTarget(null); }}
+      />
 
       <Dialog
         open={Boolean(preview)}
