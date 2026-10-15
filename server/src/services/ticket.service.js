@@ -1633,9 +1633,11 @@ async function addComment(user, ticketId, { body, isInternal }, files = []) {
 // take part in the ticket's conversation (assertCanParticipate). A comment
 // the caller cannot see (wrong ticket, or an internal note hidden from
 // them) is reported as 404, never revealed. Neither action sends a
-// notification. Public-comment edits/deletes get a content-free entry in the
-// ticket's Activity History; internal-note ones are recorded only in the
-// admin AuditLog (Activity History is visible to requesters too).
+// notification. Public-comment edits/deletes get an Activity History entry
+// carrying the comment text (before/after, or the deleted text) — the same
+// people can already read public comments; internal-note ones are recorded
+// only in the admin AuditLog without text (Activity History is visible to
+// requesters too).
 async function loadOwnComment(user, ticketId, commentId) {
   const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } });
   if (!ticket) throw new ApiError(404, "Ticket not found");
@@ -1679,7 +1681,9 @@ async function updateComment(user, ticketId, commentId, { body, expectedUpdatedA
       throw new ApiError(409, "This comment was changed or removed since you opened it. Refresh the ticket and try again.");
     }
     if (!comment.isInternal) {
-      await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENT_EDITED", metadata: { commentId } });
+      // Exact before/after text (as stored) so Activity History can show the
+      // change. Public comments only — internal notes never reach history.
+      await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENT_EDITED", metadata: { commentId, oldText: comment.body, newText: cleanBody } });
     }
     return tx.ticketComment.findUnique({ where: { id: commentId }, include: commentResponseInclude });
   });
@@ -1699,7 +1703,14 @@ async function deleteComment(user, ticketId, commentId) {
     const res = await tx.ticketComment.deleteMany({ where: { id: commentId } });
     if (res.count === 0) throw new ApiError(404, "Comment not found");
     if (!comment.isInternal) {
-      await recordHistory(tx, { ticketId, userId: user.id, action: "COMMENT_DELETED", metadata: { commentId, attachmentCount: comment.attachments.length } });
+      // The text is captured here, before the row is gone, so the deleted
+      // comment stays readable in Activity History. Public comments only.
+      await recordHistory(tx, {
+        ticketId,
+        userId: user.id,
+        action: "COMMENT_DELETED",
+        metadata: { commentId, attachmentCount: comment.attachments.length, deletedText: comment.body },
+      });
     }
   });
 

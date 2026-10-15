@@ -1,6 +1,72 @@
 import { Timeline, TimelineItem, TimelineSeparator, TimelineDot, TimelineConnector, TimelineContent, TimelineOppositeContent } from "@mui/lab";
 import { Typography, Box } from "@mui/material";
+import { alpha } from "@mui/material/styles";
 import { format } from "date-fns";
+import { diffText, commentHtmlToText } from "../../utils/textDiff";
+
+// Theme-aware red/green for removed/added text (readable in light and dark).
+const delSx = (theme) => ({
+  color: theme.palette.mode === "dark" ? theme.palette.error.light : theme.palette.error.dark,
+  bgcolor: alpha(theme.palette.error.main, theme.palette.mode === "dark" ? 0.22 : 0.12),
+});
+const insSx = (theme) => ({
+  color: theme.palette.mode === "dark" ? theme.palette.success.light : theme.palette.success.dark,
+  bgcolor: alpha(theme.palette.success.main, theme.palette.mode === "dark" ? 0.22 : 0.14),
+});
+// Comment text keeps its own spaces, tabs and line breaks, and wraps.
+const textBlockSx = { mt: 0.5, px: 1, py: 0.5, borderRadius: 1, whiteSpace: "pre-wrap", wordBreak: "break-word", typography: "body2" };
+
+// "Comment edited": one inline comparison (removed = red + strikethrough,
+// added = green), or both full texts when nothing in common. Older entries
+// recorded before text snapshots existed show a neutral note instead.
+function CommentEditDiff({ metadata }) {
+  if (typeof metadata?.oldText !== "string" || typeof metadata?.newText !== "string") {
+    return <Typography variant="caption" color="text.secondary">Comment text changes unavailable</Typography>;
+  }
+  const oldText = commentHtmlToText(metadata.oldText);
+  const newText = commentHtmlToText(metadata.newText);
+  const { parts, fullReplacement } = diffText(oldText, newText);
+  if (fullReplacement) {
+    return (
+      <Box>
+        {oldText && <Box sx={(theme) => ({ ...textBlockSx, ...delSx(theme), textDecoration: "line-through" })}>{oldText}</Box>}
+        {newText && <Box sx={(theme) => ({ ...textBlockSx, ...insSx(theme) })}>{newText}</Box>}
+      </Box>
+    );
+  }
+  return (
+    <Box sx={{ ...textBlockSx, px: 0, color: "text.primary" }}>
+      {parts.map((part, i) =>
+        part.type === "same" ? (
+          <span key={i}>{part.text}</span>
+        ) : (
+          <Box
+            key={i}
+            component={part.type === "del" ? "del" : "ins"}
+            sx={(theme) => ({ ...(part.type === "del" ? delSx(theme) : insSx(theme)), borderRadius: 0.5, px: 0.25, textDecoration: part.type === "del" ? "line-through" : "none" })}
+          >
+            {part.text}
+          </Box>
+        )
+      )}
+    </Box>
+  );
+}
+
+// "Comment deleted": the text captured at deletion time, in red.
+function DeletedCommentText({ metadata }) {
+  if (typeof metadata?.deletedText !== "string") {
+    return <Typography variant="caption" color="text.secondary">Deleted comment text unavailable</Typography>;
+  }
+  return (
+    <Box>
+      <Typography variant="caption" color="text.secondary">Deleted comment:</Typography>
+      <Box sx={(theme) => ({ ...textBlockSx, ...delSx(theme), mt: 0.25, borderLeft: 3, borderColor: "error.main" })}>
+        {commentHtmlToText(metadata.deletedText)}
+      </Box>
+    </Box>
+  );
+}
 
 const ACTION_LABELS = {
   CREATED: "Ticket created",
@@ -80,6 +146,8 @@ export default function ActivityTimeline({ history }) {
                       : h.newValue || "—"}
                 </Typography>
               )}
+              {h.action === "COMMENT_EDITED" && <CommentEditDiff metadata={h.metadata} />}
+              {h.action === "COMMENT_DELETED" && <DeletedCommentText metadata={h.metadata} />}
             </TimelineContent>
           </TimelineItem>
         ))}
